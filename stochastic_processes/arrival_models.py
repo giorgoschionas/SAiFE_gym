@@ -3,7 +3,7 @@ from typing import Optional
 
 import numpy as np
 
-from mbt_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
+from stochastic_processes.StochasticProcessModel import StochasticProcessModel
 
 
 class ArrivalModel(StochasticProcessModel):
