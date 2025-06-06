@@ -7,6 +7,9 @@ from typing import Optional
 import numpy as np
 from numpy.random import default_rng
 
+from SAiFE_gym.gym.index_names import RISKY_ASSET_INDEX, NUMERAIRE_ASSET_INDEX
+
+
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
 from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel
@@ -28,6 +31,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self.seed_ = seed
 
         self.state = None 
+        self.spot_price = None
 
     def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
         pass
@@ -41,12 +45,14 @@ class ModelDynamics(metaclass=abc.ABCMeta):
 
 class UniswapV2ModelDynamics(ModelDynamics):
     # the state in UniV2 is the reserves of the two assets in the pool - the midprice (spot price) is derived from these reserves
+    # the fees are a percentage of the trade amount, and are applied to the fills
     def __init__(
         self,
         midprice_model : MidpriceModel  = None,
         arrival_model : ArrivalModel  = None,
         num_trajectories: int = 1,
         seed: int = None,
+        FEES_PERCENTAGE: float = 0.003,  # 0.3% fee
     ):
         super().__init__(midprice_model = midprice_model,
                         arrival_model = arrival_model,
@@ -54,7 +60,11 @@ class UniswapV2ModelDynamics(ModelDynamics):
                         seed = seed)
 
     def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
-        pass
+        # THE UPDATE STATE FUNCTION IS WRONG - NEEDS TO BE REVISED
+        self.state[:, RISKY_ASSET_INDEX] += np.sum(arrivals, axis=1)
+        self.state[:, NUMERAIRE_ASSET_INDEX] -= np.sum(fills, axis=1) * (1 + self.FEES_PERCENTAGE)
+
+
 
     class UniswapV3ModelDynamics (ModelDynamics):
         # the state here should be more complex, as Uniswap V3 allows for concentrated liquidity
