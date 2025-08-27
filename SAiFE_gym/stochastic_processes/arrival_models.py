@@ -3,13 +3,13 @@ from typing import Optional
 
 import numpy as np
 
-from stochastic_processes.StochasticProcessModel import StochasticProcessModel
+from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
 
 
 class ArrivalModel(StochasticProcessModel):
-    """ArrivalModel models the arrival of orders to the order book. The first entry of arrivals represents an arrival
-    of an exogenous SELL order (arriving on the buy side of the book) and the second entry represents an arrival of an
-    exogenous BUY order (arriving on the sell side of the book).
+    """ArrivalModel models the arrival of orders to the AMM. The first entry of arrivals represents an arrival
+    of an exogenous SELL order (selling the risky asset) and the second entry represents an arrival of an
+    exogenous BUY order (buying the risky asset).
     """
 
     def __init__(

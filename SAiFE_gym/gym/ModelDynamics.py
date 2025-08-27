@@ -7,7 +7,7 @@ from typing import Optional
 import numpy as np
 from numpy.random import default_rng
 
-from SAiFE_gym.gym.index_names import RISKY_ASSET_INDEX, NUMERAIRE_ASSET_INDEX
+from SAiFE_gym.gym.index_names import X, Y
 
 
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
@@ -52,7 +52,7 @@ class UniswapV2ModelDynamics(ModelDynamics):
         arrival_model : ArrivalModel  = None,
         num_trajectories: int = 1,
         seed: int = None,
-        FEES_PERCENTAGE: float = 0.003,  # 0.3% fee
+        FEE: float = 0.003,  # 0.3% fee
     ):
         super().__init__(midprice_model = midprice_model,
                         arrival_model = arrival_model,
@@ -60,23 +60,33 @@ class UniswapV2ModelDynamics(ModelDynamics):
                         seed = seed)
 
     def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
-        # THE UPDATE STATE FUNCTION IS WRONG - NEEDS TO BE REVISED
-        self.state[:, RISKY_ASSET_INDEX] += np.sum(arrivals, axis=1)
-        self.state[:, NUMERAIRE_ASSET_INDEX] -= np.sum(fills, axis=1) * (1 + self.FEES_PERCENTAGE)
-
-
-
-    class UniswapV3ModelDynamics (ModelDynamics):
-        # the state here should be more complex, as Uniswap V3 allows for concentrated liquidity
-        def __init__(
-            self,
-            midprice_model: MidpriceModel = None,
-            arrival_model: ArrivalModel = None,
-            fill_probability_model: Optional[PriceImpactModel] = None,
-            price_impact_model: Optional[PriceImpactModel] = None,
-            seed: int = None,
-        ):
-            super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
+        # There is no action in Uniswap V2, the action is implicitly defined by the fills
+        # For now, the orderflow is handled as a batch - this actually does not impact the revenue of LP from fees
         
-        def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
-            pass
+        self.state[:, X] += np.sum(arrivals, axis=1)
+        self.state[:, Y] -= np.sum(fills, axis=1) * (1 + self.FEE)  # LP pays the fee to the pool
+
+    def get_action_space(self):
+        # agent does not do anything - LPing is passive in UniV2
+        pass
+
+
+
+class UniswapV3ModelDynamics (ModelDynamics):
+    # the state here should be more complex, as Uniswap V3 allows for concentrated liquidity
+    def __init__(
+        self,
+        midprice_model: MidpriceModel = None,
+        arrival_model: ArrivalModel = None,
+        fill_probability_model: Optional[PriceImpactModel] = None,
+        price_impact_model: Optional[PriceImpactModel] = None,
+        seed: int = None,
+    ):
+        super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
+    
+    def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
+        pass
+
+    def get_action_space(self):
+        # agent reallocates his capital 
+        pass

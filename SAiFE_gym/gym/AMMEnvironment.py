@@ -2,14 +2,12 @@ import gym
 import numpy as np
 
 from gym.spaces import Box
-from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel, PoissonArrivalModel
-from SAiFE_gym.stochastic_processes.midprice_models import MidPriceModel, BrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel
+from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics
 from SAiFE_gym.agents.Agent import Agent
-from SAiFE_gym.rewards import RewardFunction
-from SAiFE_gym.gym.index_names import TIME_INDEX, NUM_ARRIVALS_INDEX, NUM_FILLS_INDEX, SPOT_PRICE_INDEX, RESERVES_INDEX
+from SAiFE_gym.rewards.RewardFunctions import RewardFunction
+from SAiFE_gym.gym.index_names import TIME_INDEX
 
 
 
@@ -19,6 +17,8 @@ class AMMEnvironment(gym.Env):
         self, 
         terminal_time: float = 1.0,
         n_steps: int = 20 * 10,
+        initial_cash: float = 0.0,
+
         reward_function: RewardFunction = None,
         model_dynamics: ModelDynamics = None,
         arrival_model: ArrivalModel = None,
@@ -49,6 +49,16 @@ class AMMEnvironment(gym.Env):
         self.rng = np.random.default_rng(seed)
         for i, process in enumerate(self.stochastic_processes.values()):
             process.seed(seed + i + 1)
+
+    # clears internal state & returns initial observation (what the agent sees at the start)
+    def reset(self):
+        for process in self.stochastic_processes.values():
+            process.reset()
+        self.model_dynamics.state = self._initial_state
+        self.reward_function.reset(self.model_dynamics.state.copy())
+        return self.normalise_observation(self.model_dynamics.state.copy())
+
+
 
     # The step function is a core component of reinforcement learning environments, simulating one discrete time step 
     # within the trading environment. It takes an action from the agent, updates the environment's state based on that action, 

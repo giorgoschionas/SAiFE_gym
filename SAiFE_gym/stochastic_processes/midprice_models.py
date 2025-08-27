@@ -1,7 +1,7 @@
 from typing import Optional
 from math import sqrt
 
-from stochastic_processes.StochasticProcessModel import StochasticProcessModel
+from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
 
 import numpy as np
 
