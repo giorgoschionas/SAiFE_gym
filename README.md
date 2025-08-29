@@ -1,6 +1,6 @@
 # SAiFE Gym
 
-A reinforcement learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols.
+A Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols.
 
 ## Overview
 
