@@ -235,3 +235,8 @@ def calculate_capital_efficiency(
     concentration_factor = full_range / price_range
     
     return concentration_factor
+
+
+# ============================================================================
+# Uniswap V4 Hook Functions
+# ============================================================================
