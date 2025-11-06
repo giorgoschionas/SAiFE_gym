@@ -10,9 +10,8 @@ from SAiFE_gym.rewards.RewardFunctions import RewardFunction
 from SAiFE_gym.gym.index_names import TIME_INDEX
 
 from SAiFE_gym.gym.index_names import (
-    V3_AMOUNT0_INDEX, V3_AMOUNT1_INDEX, V3_LIQUIDITY_INDEX,
-    V3_SQRT_PRICE_INDEX, V3_TICK_INDEX, V3_TICK_LOWER_INDEX,
-    V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
+    V3_LIQUIDITY_INDEX, V3_SQRT_PRICE_INDEX, V3_TICK_INDEX,
+    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
     V3_MIDPRICE_INDEX, V3_TIME_INDEX
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
@@ -36,7 +35,7 @@ class AMMEnvironment(gym.Env):
         self.n_steps = n_steps
         self._step_size = self.terminal_time / self.n_steps
         self.reward_function = reward_function if reward_function else RewardFunction()
-        self.model_dynamics = model_dynamics or UniswapV2ModelDynamics(
+        self.model_dynamics = model_dynamics or UniswapV3ModelDynamics(
             midprice_model=BrownianMotionMidpriceModel(
                 step_size=self._step_size, num_trajectories=num_trajectories, seed=seed
             ),
@@ -61,10 +60,11 @@ class AMMEnvironment(gym.Env):
     def _initialize_v3_state(self) -> np.ndarray:
         """
         Initialize the state vector for Uniswap V3 with LP position and pool information.
+        Uses (P, L) parameterization - amounts computed on-demand.
         """
         # State shape: (num_trajectories, state_dim)
         # For simplicity, we'll start with 1 trajectory
-        state_dim = 10  # As defined in index_names
+        state_dim = 8  # Reduced from 10: removed V3_AMOUNT0_INDEX and V3_AMOUNT1_INDEX
         state = np.zeros((1, state_dim))
 
         # Set initial price and tick
@@ -74,8 +74,6 @@ class AMMEnvironment(gym.Env):
 
         # Initialize with no position (agent will set position with first action)
         state[0, V3_LIQUIDITY_INDEX] = 0.0
-        state[0, V3_AMOUNT0_INDEX] = 0.0
-        state[0, V3_AMOUNT1_INDEX] = 0.0
         state[0, V3_FEES_INDEX] = 0.0
         state[0, V3_TIME_INDEX] = 0.0
 

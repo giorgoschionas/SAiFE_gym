@@ -8,9 +8,8 @@ import numpy as np
 from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
-    V3_AMOUNT0_INDEX, V3_AMOUNT1_INDEX, V3_LIQUIDITY_INDEX,
-    V3_SQRT_PRICE_INDEX, V3_TICK_INDEX, V3_TICK_LOWER_INDEX,
-    V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
+    V3_LIQUIDITY_INDEX, V3_SQRT_PRICE_INDEX, V3_TICK_INDEX,
+    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
     V3_MIDPRICE_INDEX, V3_TIME_INDEX
 )
 
@@ -97,6 +96,30 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         return gym.spaces.Discrete(self.num_buckets)
 
+    def get_position_amounts(self) -> tuple:
+        """
+        Compute token amounts (amount0, amount1) on-demand from state.
+        Uses the (P, L) parameterization stored in state.
+
+        Returns:
+            tuple: (amount0, amount1) token amounts in the LP position
+        """
+        liquidity = self.state[0, V3_LIQUIDITY_INDEX]
+        sqrt_price_current = self.state[0, V3_SQRT_PRICE_INDEX]
+        tick_lower = int(self.state[0, V3_TICK_LOWER_INDEX])
+        tick_upper = int(self.state[0, V3_TICK_UPPER_INDEX])
+
+        # Convert ticks to sqrt prices
+        sqrt_price_lower = np.sqrt(tick_to_price(tick_lower))
+        sqrt_price_upper = np.sqrt(tick_to_price(tick_upper))
+
+        # Calculate amounts from liquidity and price
+        amount0, amount1 = calculate_position_amounts(
+            liquidity, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
+        )
+
+        return amount0, amount1
+
     def _rebalance_position(self, action: int, current_price: float):
         """
         Rebalance LP position to new price range based on action.
@@ -116,10 +139,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # If we have existing position, remove it first
         if self.state[0, V3_LIQUIDITY_INDEX] > 0:
-            # Return capital from old position
+            # Return capital from old position (compute amounts on-demand)
+            amount0_old, amount1_old = self.get_position_amounts()
             self.uninvested_capital += (
-                self.state[0, V3_AMOUNT0_INDEX] +
-                self.state[0, V3_AMOUNT1_INDEX] * current_price
+                amount0_old + amount1_old * current_price
             )
 
         # Calculate how much of each token to deposit
@@ -142,10 +165,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
             liquidity, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
         )
 
-        # Update state
+        # Update state (amounts computed on-demand, not stored)
         self.state[0, V3_LIQUIDITY_INDEX] = liquidity
-        self.state[0, V3_AMOUNT0_INDEX] = amount0_actual
-        self.state[0, V3_AMOUNT1_INDEX] = amount1_actual
         self.state[0, V3_TICK_LOWER_INDEX] = tick_lower
         self.state[0, V3_TICK_UPPER_INDEX] = tick_upper
 
@@ -226,22 +247,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
             swap_result = self._process_swap(buy_amount, zero_for_one=True)
 
             if swap_result['lp_participated']:
-                # Update pool price
+                # Update pool price (amounts will be computed on-demand)
                 self.state[0, V3_SQRT_PRICE_INDEX] = swap_result['sqrt_price_next']
                 new_price = swap_result['sqrt_price_next'] ** 2
                 self.state[0, V3_TICK_INDEX] = price_to_tick(new_price, self.tick_spacing)
-
-                # Update LP position amounts (as price changed, token amounts change)
-                liquidity = self.state[0, V3_LIQUIDITY_INDEX]
-                sqrt_price_lower = np.sqrt(tick_to_price(int(self.state[0, V3_TICK_LOWER_INDEX])))
-                sqrt_price_upper = np.sqrt(tick_to_price(int(self.state[0, V3_TICK_UPPER_INDEX])))
-
-                amount0_new, amount1_new = calculate_position_amounts(
-                    liquidity, swap_result['sqrt_price_next'], sqrt_price_lower, sqrt_price_upper
-                )
-
-                self.state[0, V3_AMOUNT0_INDEX] = amount0_new
-                self.state[0, V3_AMOUNT1_INDEX] = amount1_new
 
                 # Accumulate fees in token0 (fee from token0->token1 swap is in token0)
                 self.state[0, V3_FEES_INDEX] += swap_result['fee_amount']
@@ -251,22 +260,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
             swap_result = self._process_swap(sell_amount, zero_for_one=False)
 
             if swap_result['lp_participated']:
-                # Update pool price
+                # Update pool price (amounts will be computed on-demand)
                 self.state[0, V3_SQRT_PRICE_INDEX] = swap_result['sqrt_price_next']
                 new_price = swap_result['sqrt_price_next'] ** 2
                 self.state[0, V3_TICK_INDEX] = price_to_tick(new_price, self.tick_spacing)
-
-                # Update LP position amounts
-                liquidity = self.state[0, V3_LIQUIDITY_INDEX]
-                sqrt_price_lower = np.sqrt(tick_to_price(int(self.state[0, V3_TICK_LOWER_INDEX])))
-                sqrt_price_upper = np.sqrt(tick_to_price(int(self.state[0, V3_TICK_UPPER_INDEX])))
-
-                amount0_new, amount1_new = calculate_position_amounts(
-                    liquidity, swap_result['sqrt_price_next'], sqrt_price_lower, sqrt_price_upper
-                )
-
-                self.state[0, V3_AMOUNT0_INDEX] = amount0_new
-                self.state[0, V3_AMOUNT1_INDEX] = amount1_new
 
                 # Accumulate fees in token0 equivalent (fee from token1->token0 swap is in token1)
                 # Convert to token0 by multiplying by current price
