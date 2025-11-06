@@ -8,15 +8,16 @@ import numpy as np
 from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
-    X, Y,
     V3_AMOUNT0_INDEX, V3_AMOUNT1_INDEX, V3_LIQUIDITY_INDEX,
     V3_SQRT_PRICE_INDEX, V3_TICK_INDEX, V3_TICK_LOWER_INDEX,
     V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
     V3_MIDPRICE_INDEX, V3_TIME_INDEX
 )
+
 from SAiFE_gym.gym.helpers.AMM_utils import (
     price_to_tick, tick_to_price, calculate_liquidity_amounts,
-    calculate_position_amounts, swap_v3_single_tick, is_position_in_range
+    calculate_position_amounts, swap_v3_single_tick, is_position_in_range,
+    create_liquidity_range_buckets
 )
 
 
@@ -41,7 +42,6 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self.seed_ = seed
 
         self.state = None 
-        self.spot_price = None
 
     def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
         pass
@@ -88,59 +88,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # Define price range buckets (action space)
         # Each bucket represents a different concentration level around current price
-        self.bucket_ranges = self._define_buckets()
-
-        # Initialize state
-        self._initialize_state()
-
-    def _define_buckets(self):
-        """
-        Define discrete buckets for action space.
-        Each bucket is a price range defined as [lower_pct, upper_pct] around current price.
-
-        Examples:
-        - Bucket 0: [-5%, +5%] (very concentrated, high capital efficiency)
-        - Bucket 1: [-10%, +10%] (moderate concentration)
-        - Bucket 2: [-20%, +20%] (wider range, lower IL risk)
-        - etc.
-        """
-        buckets = []
-        base_widths = np.linspace(0.05, self.bucket_width_pct * self.num_buckets, self.num_buckets)
-
-        for width in base_widths:
-            buckets.append({
-                'lower_pct': 1 - width,  # e.g., 0.95 for -5%
-                'upper_pct': 1 + width,  # e.g., 1.05 for +5%
-                'width': width * 2
-            })
-
-        return buckets
-
-    def _initialize_state(self):
-        """Initialize the state vector with LP position and pool information."""
-        # State shape: (num_trajectories, state_dim)
-        # For simplicity, we'll start with 1 trajectory
-        state_dim = 10  # As defined in index_names
-        self.state = np.zeros((1, state_dim))
-
-        # Set initial price and tick
-        self.state[0, V3_SQRT_PRICE_INDEX] = np.sqrt(self.initial_price)
-        self.state[0, V3_TICK_INDEX] = price_to_tick(self.initial_price, self.tick_spacing)
-        self.state[0, V3_MIDPRICE_INDEX] = self.initial_price
-
-        # Initialize with no position (agent will set position with first action)
-        self.state[0, V3_LIQUIDITY_INDEX] = 0.0
-        self.state[0, V3_AMOUNT0_INDEX] = 0.0
-        self.state[0, V3_AMOUNT1_INDEX] = 0.0
-        self.state[0, V3_FEES_INDEX] = 0.0
-        self.state[0, V3_TIME_INDEX] = 0.0
-
-        # Set initial position ticks (will be updated by first action)
-        self.state[0, V3_TICK_LOWER_INDEX] = 0
-        self.state[0, V3_TICK_UPPER_INDEX] = 0
-
-        # Track total capital (starts as uninvested)
-        self.uninvested_capital = self.initial_capital
+        self.bucket_ranges = create_liquidity_range_buckets(self.num_buckets, self.bucket_width_pct)
 
     def get_action_space(self):
         """

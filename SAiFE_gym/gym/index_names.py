@@ -1,11 +1,3 @@
-X = 0
-Y = 1
-
-CASH_INDEX = 0
-INVENTORY_INDEX = 1
-TIME_INDEX = 2
-ASSET_PRICE_INDEX = 3
-
 # Uniswap V3 State Indices
 V3_AMOUNT0_INDEX = 0          # Token0 amount (e.g., USDC) in LP position
 V3_AMOUNT1_INDEX = 1          # Token1 amount (e.g., ETH) in LP position

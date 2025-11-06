@@ -52,7 +52,6 @@ def price_to_sqrt_price_x96(price: float) -> int:
 
 def get_sqrt_ratio_at_tick(tick: int) -> int:
     """Get sqrt price ratio at given tick (returns Q64.96 fixed point)"""
-    # Simplified version for simulation - less precise but much more readable
     price = 1.0001 ** tick
     sqrt_price = np.sqrt(price)
     return int(sqrt_price * (2**96))
@@ -233,8 +232,41 @@ def calculate_capital_efficiency(
     price_range = position_v3['price_upper'] - position_v3['price_lower']
     full_range = position_v3['price_upper'] * 2  # Approximate full range
     concentration_factor = full_range / price_range
-    
+
     return concentration_factor
+
+def create_liquidity_range_buckets(num_buckets: int, bucket_width_pct: float) -> list:
+    """
+    Define discrete buckets for liquidity concentration action space.
+    Each bucket is a price range defined as [lower_pct, upper_pct] around current price.
+
+    Args:
+        num_buckets: Number of discrete price range options
+        bucket_width_pct: Width of each bucket as % of price (e.g., 0.10 for 10%)
+
+    Returns:
+        List of dicts, each containing:
+            - 'lower_pct': Price multiplier for lower bound (e.g., 0.95 for -5%)
+            - 'upper_pct': Price multiplier for upper bound (e.g., 1.05 for +5%)
+            - 'width': Total width of the range
+
+    Examples:
+        - Bucket 0: [-5%, +5%] (very concentrated, high capital efficiency)
+        - Bucket 1: [-10%, +10%] (moderate concentration)
+        - Bucket 2: [-20%, +20%] (wider range, lower IL risk)
+        - etc.
+    """
+    buckets = []
+    base_widths = np.linspace(0.05, bucket_width_pct * num_buckets, num_buckets)
+
+    for width in base_widths:
+        buckets.append({
+            'lower_pct': 1 - width,  # e.g., 0.95 for -5%
+            'upper_pct': 1 + width,  # e.g., 1.05 for +5%
+            'width': width * 2
+        })
+
+    return buckets
 
 
 # ============================================================================

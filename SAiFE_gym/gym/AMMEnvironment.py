@@ -4,10 +4,18 @@ import numpy as np
 from gym.spaces import Box
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel, PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
-from SAiFE_gym.gym.ModelDynamics import ModelDynamics
+from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
 from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.rewards.RewardFunctions import RewardFunction
 from SAiFE_gym.gym.index_names import TIME_INDEX
+
+from SAiFE_gym.gym.index_names import (
+    V3_AMOUNT0_INDEX, V3_AMOUNT1_INDEX, V3_LIQUIDITY_INDEX,
+    V3_SQRT_PRICE_INDEX, V3_TICK_INDEX, V3_TICK_LOWER_INDEX,
+    V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
+    V3_MIDPRICE_INDEX, V3_TIME_INDEX
+)
+from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
 
 
@@ -36,14 +44,49 @@ class AMMEnvironment(gym.Env):
                 intensity=np.array([100, 100]), step_size=self._step_size, num_trajectories=num_trajectories, seed=seed
             ))
 
+        # Initialize state based on model dynamics type
+        if isinstance(self.model_dynamics, UniswapV3ModelDynamics):
+            self._initial_state = self._initialize_v3_state()
+        else:
+            # For other model types, initialize with placeholder or call their own init
+            self._initial_state = None
 
 
-        
         if seed:
             self.seed(seed)
             self.rng = np.random.default_rng(seed)
         self.rng = np.random.default_rng(seed)
 
+
+    def _initialize_v3_state(self) -> np.ndarray:
+        """
+        Initialize the state vector for Uniswap V3 with LP position and pool information.
+        """
+        # State shape: (num_trajectories, state_dim)
+        # For simplicity, we'll start with 1 trajectory
+        state_dim = 10  # As defined in index_names
+        state = np.zeros((1, state_dim))
+
+        # Set initial price and tick
+        state[0, V3_SQRT_PRICE_INDEX] = np.sqrt(self.model_dynamics.initial_price)
+        state[0, V3_TICK_INDEX] = price_to_tick(self.model_dynamics.initial_price, self.model_dynamics.tick_spacing)
+        state[0, V3_MIDPRICE_INDEX] = self.model_dynamics.initial_price
+
+        # Initialize with no position (agent will set position with first action)
+        state[0, V3_LIQUIDITY_INDEX] = 0.0
+        state[0, V3_AMOUNT0_INDEX] = 0.0
+        state[0, V3_AMOUNT1_INDEX] = 0.0
+        state[0, V3_FEES_INDEX] = 0.0
+        state[0, V3_TIME_INDEX] = 0.0
+
+        # Set initial position ticks (will be updated by first action)
+        state[0, V3_TICK_LOWER_INDEX] = 0
+        state[0, V3_TICK_UPPER_INDEX] = 0
+
+        # Track total capital (starts as uninvested)
+        self.model_dynamics.uninvested_capital = self.model_dynamics.initial_capital
+
+        return state
 
     def seed(self, seed: int = None):
         self.rng = np.random.default_rng(seed)
@@ -110,3 +153,15 @@ class AMMEnvironment(gym.Env):
     def _get_dones(self):
         done = self.model_dynamics.state[0, TIME_INDEX] >= self.terminal_time - self.step_size / 2
         return np.full((self.num_trajectories,), done, dtype=bool)
+    
+    @property
+    def initial_state(self):
+        return self._initial_state.copy()
+    
+    @property
+    def state(self):
+        return self.model_dynamics.state
+    
+    @property
+    def step_size(self):
+        return self._step_size
