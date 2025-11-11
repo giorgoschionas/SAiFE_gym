@@ -52,6 +52,13 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         return None, None 
 
 
+    def get_action_space(self) -> gym.spaces.Space:
+        pass
+
+    def get_required_stochastic_processes(self):
+        pass
+
+
 
 class UniswapV3ModelDynamics(ModelDynamics):
     """
@@ -69,7 +76,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         fill_probability_model: Optional[PriceImpactModel] = None,
         price_impact_model: Optional[PriceImpactModel] = None,
         initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
-        initial_price: float = 2000.0,     # Initial price (e.g., ETH/USDC)
         fee_tier: float = 0.003,           # 0.3% fee tier
         tick_spacing: int = 60,            # Tick spacing for fee tier
         num_buckets: int = 5,              # Number of discrete price range options
@@ -79,7 +85,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
 
         self.initial_capital = initial_capital
-        self.initial_price = initial_price
         self.fee_tier = fee_tier
         self.tick_spacing = tick_spacing
         self.num_buckets = num_buckets
@@ -120,101 +125,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return amount0, amount1
 
-    def _rebalance_position(self, action: int, current_price: float):
-        """
-        Rebalance LP position to new price range based on action.
-
-        Args:
-            action: Integer index of bucket to use
-            current_price: Current pool price
-        """
-        # Get target price range from action
-        bucket = self.bucket_ranges[action]
-        price_lower = current_price * bucket['lower_pct']
-        price_upper = current_price * bucket['upper_pct']
-
-        # Convert to ticks
-        tick_lower = price_to_tick(price_lower, self.tick_spacing)
-        tick_upper = price_to_tick(price_upper, self.tick_spacing)
-
-        # If we have existing position, remove it first
-        if self.state[0, V3_LIQUIDITY_INDEX] > 0:
-            # Return capital from old position (compute amounts on-demand)
-            amount0_old, amount1_old = self.get_position_amounts()
-            self.uninvested_capital += (
-                amount0_old + amount1_old * current_price
-            )
-
-        # Calculate how much of each token to deposit
-        # For simplicity, we'll split capital 50/50 in value terms
-        value_per_token = self.uninvested_capital / 2
-        amount0_desired = value_per_token  # USDC
-        amount1_desired = value_per_token / current_price  # ETH
-
-        # Calculate liquidity and actual amounts
-        sqrt_price_current = np.sqrt(current_price)
-        sqrt_price_lower = np.sqrt(price_lower)
-        sqrt_price_upper = np.sqrt(price_upper)
-
-        liquidity = calculate_liquidity_amounts(
-            sqrt_price_current, sqrt_price_lower, sqrt_price_upper,
-            amount0_desired, amount1_desired
-        )
-
-        amount0_actual, amount1_actual = calculate_position_amounts(
-            liquidity, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
-        )
-
-        # Update state (amounts computed on-demand, not stored)
-        self.state[0, V3_LIQUIDITY_INDEX] = liquidity
-        self.state[0, V3_TICK_LOWER_INDEX] = tick_lower
-        self.state[0, V3_TICK_UPPER_INDEX] = tick_upper
-
-        # Update uninvested capital
-        capital_used = amount0_actual + amount1_actual * current_price
-        self.uninvested_capital -= capital_used
-
-    def _process_swap(self, amount_in: float, zero_for_one: bool):
-        """
-        Process a single swap through the pool.
-
-        Args:
-            amount_in: Amount of input token
-            zero_for_one: True if swapping token0 for token1, False otherwise
-
-        Returns:
-            dict with swap results (amount_out, new_sqrt_price, fees)
-        """
-        current_sqrt_price = self.state[0, V3_SQRT_PRICE_INDEX]
-        tick_lower = self.state[0, V3_TICK_LOWER_INDEX]
-        tick_upper = self.state[0, V3_TICK_UPPER_INDEX]
-        current_tick = self.state[0, V3_TICK_INDEX]
-        liquidity = self.state[0, V3_LIQUIDITY_INDEX]
-
-        # Check if position is in range for this swap
-        in_range = tick_lower <= current_tick <= tick_upper and liquidity > 0
-
-        if not in_range:
-            # LP doesn't participate in this swap
-            return {
-                'amount_out': 0,
-                'sqrt_price_next': current_sqrt_price,
-                'fee_amount': 0,
-                'lp_participated': False
-            }
-
-        # Execute swap using LP's liquidity
-        swap_result = swap_v3_single_tick(
-            amount_in=amount_in,
-            sqrt_price_current=current_sqrt_price,
-            liquidity=liquidity,
-            fee_tier=self.fee_tier,
-            zero_for_one=zero_for_one
-        )
-
-        swap_result['lp_participated'] = True
-        return swap_result
-
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
         Update state based on arrivals (orderflow) and LP's action (bucket selection).
@@ -228,59 +138,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         1. Rebalances LP position to new range based on action
         2. Processes buy and sell arrivals as swaps
         3. Updates LP reserves and fees when swaps occur in their range
-        4. Updates pool price based on swaps
         """
-        # Extract current state
-        current_price = self.state[0, V3_SQRT_PRICE_INDEX] ** 2
 
-        # Step 1: Rebalance position based on action
-        action_idx = int(action[0]) if isinstance(action, np.ndarray) else int(action)
-        action_idx = np.clip(action_idx, 0, self.num_buckets - 1)
-        self._rebalance_position(action_idx, current_price)
-
-        # Step 2: Process arrivals (orderflow)
-        buy_amount = arrivals[0]   # Amount of token0 (USDC) to buy token1 (ETH)
-        sell_amount = arrivals[1]  # Amount of token1 (ETH) to sell for token0 (USDC)
-
-        # Process buy orders (token0 -> token1, zero_for_one=True)
-        if buy_amount > 0:
-            swap_result = self._process_swap(buy_amount, zero_for_one=True)
-
-            if swap_result['lp_participated']:
-                # Update pool price (amounts will be computed on-demand)
-                self.state[0, V3_SQRT_PRICE_INDEX] = swap_result['sqrt_price_next']
-                new_price = swap_result['sqrt_price_next'] ** 2
-                self.state[0, V3_TICK_INDEX] = price_to_tick(new_price, self.tick_spacing)
-
-                # Accumulate fees in token0 (fee from token0->token1 swap is in token0)
-                self.state[0, V3_FEES_INDEX] += swap_result['fee_amount']
-
-        # Process sell orders (token1 -> token0, zero_for_one=False)
-        if sell_amount > 0:
-            swap_result = self._process_swap(sell_amount, zero_for_one=False)
-
-            if swap_result['lp_participated']:
-                # Update pool price (amounts will be computed on-demand)
-                self.state[0, V3_SQRT_PRICE_INDEX] = swap_result['sqrt_price_next']
-                new_price = swap_result['sqrt_price_next'] ** 2
-                self.state[0, V3_TICK_INDEX] = price_to_tick(new_price, self.tick_spacing)
-
-                # Accumulate fees in token0 equivalent (fee from token1->token0 swap is in token1)
-                # Convert to token0 by multiplying by current price
-                current_price = swap_result['sqrt_price_next'] ** 2
-                self.state[0, V3_FEES_INDEX] += swap_result['fee_amount'] * current_price
-
-        # Step 3: Update midprice from stochastic process (if available)
-        if self.midprice_model is not None:
-            # Get next midprice from the model
-            midprice_trajectory = self.midprice_model.get_next_state()
-            self.state[0, V3_MIDPRICE_INDEX] = midprice_trajectory[0]
-
-        # Step 4: Update time
-        if self.midprice_model is not None and hasattr(self.midprice_model, 'step_size'):
-            self.state[0, V3_TIME_INDEX] += self.midprice_model.step_size
-
-        return self.state
+        pass
 
     def get_arrivals_and_fills(self, action: np.ndarray):
         """
