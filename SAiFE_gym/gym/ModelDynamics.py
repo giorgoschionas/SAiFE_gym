@@ -9,14 +9,13 @@ from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
     V3_LIQUIDITY_INDEX, V3_SQRT_PRICE_INDEX, V3_TICK_INDEX,
-    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
-    V3_MIDPRICE_INDEX, V3_TIME_INDEX
+    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
     price_to_tick, tick_to_price, calculate_liquidity_amounts,
     calculate_position_amounts, swap_v3_single_tick, is_position_in_range,
-    create_liquidity_range_buckets
+    create_buckets
 )
 
 
@@ -89,41 +88,25 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.tick_spacing = tick_spacing
         self.num_buckets = num_buckets
         self.bucket_width_pct = bucket_width_pct
+        self.use_mixed_strategy = True  
 
         # Define price range buckets (action space)
         # Each bucket represents a different concentration level around current price
-        self.bucket_ranges = create_liquidity_range_buckets(self.num_buckets, self.bucket_width_pct)
+        self.bucket_ranges = create_buckets(self.num_buckets, self.bucket_width_pct)
 
     def get_action_space(self):
         """
         Return the action space for the agent.
-        Action is a discrete choice of which bucket (price range) to allocate liquidity.
+        Action is a probability distribution over discrete buckets of price ranges.
         """
-        return gym.spaces.Discrete(self.num_buckets)
 
-    def get_position_amounts(self) -> tuple:
-        """
-        Compute token amounts (amount0, amount1) on-demand from state.
-        Uses the (P, L) parameterization stored in state.
+        if self.use_mixed_strategy:
+              # Output probability distribution over k strategies
+              return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_buckets,), dtype=np.float32)
+        else:
+              # Output single strategy index
+            return gym.spaces.Discrete(self.num_buckets)
 
-        Returns:
-            tuple: (amount0, amount1) token amounts in the LP position
-        """
-        liquidity = self.state[0, V3_LIQUIDITY_INDEX]
-        sqrt_price_current = self.state[0, V3_SQRT_PRICE_INDEX]
-        tick_lower = int(self.state[0, V3_TICK_LOWER_INDEX])
-        tick_upper = int(self.state[0, V3_TICK_UPPER_INDEX])
-
-        # Convert ticks to sqrt prices
-        sqrt_price_lower = np.sqrt(tick_to_price(tick_lower))
-        sqrt_price_upper = np.sqrt(tick_to_price(tick_upper))
-
-        # Calculate amounts from liquidity and price
-        amount0, amount1 = calculate_position_amounts(
-            liquidity, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
-        )
-
-        return amount0, amount1
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """

@@ -1,4 +1,5 @@
 import numpy as np
+import math
 
 # E.g for and ETH-USDC pair, Y is the reserves of ETH, and X is the reserves of USDC. P_{ETH in USDC} = X/Y
 def CPMM_Spot_Price (X, Y):
@@ -31,30 +32,17 @@ def Arb_Trade_CPMM(S, X, Y, eta):
 # Uniswap V3 Concentrated Liquidity Functions
 # ============================================================================
 
-def price_to_tick(price: float, tick_spacing: int = 60) -> int:
+def price_to_tick(price: float) -> int:
     """Convert price to tick index"""
-    tick = np.log(price) / np.log(1.0001)
-    return int(np.floor(tick / tick_spacing) * tick_spacing)
+    return int(np.floor(np.log(price) / np.log(1.0001)))
 
 def tick_to_price(tick: int) -> float:
     """Convert tick index to price"""
     return 1.0001 ** tick
 
-def sqrt_price_x96_to_price(sqrt_price_x96: int) -> float:
-    """Convert sqrt price X96 to actual price"""
-    sqrt_price = sqrt_price_x96 / (2**96)
-    return sqrt_price ** 2
-
-def price_to_sqrt_price_x96(price: float) -> int:
-    """Convert price to sqrt price X96 format"""
-    sqrt_price = np.sqrt(price)
-    return int(sqrt_price * (2**96))
-
 def get_sqrt_ratio_at_tick(tick: int) -> int:
-    """Get sqrt price ratio at given tick (returns Q64.96 fixed point)"""
     price = 1.0001 ** tick
-    sqrt_price = np.sqrt(price)
-    return int(sqrt_price * (2**96))
+    return np.sqrt(price)
 
 def calculate_liquidity_amounts(
     sqrt_price_current: float,
@@ -94,38 +82,7 @@ def calculate_position_amounts(
     
     return amount0, amount1
 
-def add_liquidity_v3(
-    current_price: float,
-    price_lower: float,
-    price_upper: float,
-    amount0_desired: float,
-    amount1_desired: float,
-    fee_tier: float = 0.003
-) -> dict:
-    """Add concentrated liquidity to Uniswap V3 position"""
-    sqrt_price_current = np.sqrt(current_price)
-    sqrt_price_lower = np.sqrt(price_lower)
-    sqrt_price_upper = np.sqrt(price_upper)
-    
-    liquidity = calculate_liquidity_amounts(
-        sqrt_price_current, sqrt_price_lower, sqrt_price_upper,
-        amount0_desired, amount1_desired
-    )
-    
-    amount0_actual, amount1_actual = calculate_position_amounts(
-        liquidity, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
-    )
-    
-    return {
-        'liquidity': liquidity,
-        'amount0': amount0_actual,
-        'amount1': amount1_actual,
-        'price_lower': price_lower,
-        'price_upper': price_upper,
-        'fee_tier': fee_tier,
-        'tick_lower': price_to_tick(price_lower),
-        'tick_upper': price_to_tick(price_upper)
-    }
+
 
 def remove_liquidity_v3(position: dict, liquidity_to_remove: float) -> tuple:
     """Remove liquidity from Uniswap V3 position"""
@@ -158,115 +115,30 @@ def calculate_fees_earned(
     
     return fee0_earned, fee1_earned
 
-def swap_v3_single_tick(
-    amount_in: float,
-    sqrt_price_current: float,
-    liquidity: float,
-    fee_tier: float,
-    zero_for_one: bool
-) -> dict:
-    """Execute swap within a single tick range"""
-    fee_amount = amount_in * fee_tier
-    amount_in_after_fee = amount_in - fee_amount
-    
-    if zero_for_one:  # Swapping token0 for token1
-        sqrt_price_next = liquidity / (liquidity / sqrt_price_current + amount_in_after_fee)
-        amount_out = liquidity * (sqrt_price_current - sqrt_price_next)
-    else:  # Swapping token1 for token0
-        sqrt_price_next = sqrt_price_current + amount_in_after_fee / liquidity
-        amount_out = liquidity * (1/sqrt_price_current - 1/sqrt_price_next)
-    
-    return {
-        'amount_out': amount_out,
-        'sqrt_price_next': sqrt_price_next,
-        'fee_amount': fee_amount
-    }
-
-def calculate_impermanent_loss_v3(
-    position: dict,
-    price_current: float,
-    price_at_deposit: float
-) -> dict:
-    """Calculate impermanent loss for V3 concentrated liquidity position"""
-    sqrt_price_current = np.sqrt(price_current)
-    sqrt_price_lower = np.sqrt(position['price_lower'])
-    sqrt_price_upper = np.sqrt(position['price_upper'])
-    
-    # Current token amounts in position
-    amount0_current, amount1_current = calculate_position_amounts(
-        position['liquidity'], sqrt_price_current, sqrt_price_lower, sqrt_price_upper
-    )
-    
-    # Initial token amounts when position was created
-    sqrt_price_deposit = np.sqrt(price_at_deposit)
-    amount0_initial, amount1_initial = calculate_position_amounts(
-        position['liquidity'], sqrt_price_deposit, sqrt_price_lower, sqrt_price_upper
-    )
-    
-    # Current value of position
-    current_value = amount0_current + amount1_current * price_current
-    
-    # Value if tokens were held without providing liquidity
-    hold_value = amount0_initial + amount1_initial * price_current
-    
-    impermanent_loss = (current_value - hold_value) / hold_value
-    
-    return {
-        'impermanent_loss_pct': impermanent_loss * 100,
-        'current_value': current_value,
-        'hold_value': hold_value,
-        'amount0_current': amount0_current,
-        'amount1_current': amount1_current
-    }
 
 def is_position_in_range(position: dict, current_price: float) -> bool:
     """Check if current price is within position's range"""
     return position['price_lower'] <= current_price <= position['price_upper']
 
-def calculate_capital_efficiency(
-    position_v3: dict,
-    position_v2_liquidity: float,
-    price_range_factor: float
-) -> float:
-    """Calculate capital efficiency of V3 position vs V2"""
-    price_range = position_v3['price_upper'] - position_v3['price_lower']
-    full_range = position_v3['price_upper'] * 2  # Approximate full range
-    concentration_factor = full_range / price_range
 
-    return concentration_factor
-
-def create_liquidity_range_buckets(num_buckets: int, bucket_width_pct: float) -> list:
-    """
-    Define discrete buckets for liquidity concentration action space.
-    Each bucket is a price range defined as [lower_pct, upper_pct] around current price.
-
-    Args:
-        num_buckets: Number of discrete price range options
-        bucket_width_pct: Width of each bucket as % of price (e.g., 0.10 for 10%)
-
-    Returns:
-        List of dicts, each containing:
-            - 'lower_pct': Price multiplier for lower bound (e.g., 0.95 for -5%)
-            - 'upper_pct': Price multiplier for upper bound (e.g., 1.05 for +5%)
-            - 'width': Total width of the range
-
-    Examples:
-        - Bucket 0: [-5%, +5%] (very concentrated, high capital efficiency)
-        - Bucket 1: [-10%, +10%] (moderate concentration)
-        - Bucket 2: [-20%, +20%] (wider range, lower IL risk)
-        - etc.
-    """
+def create_buckets(bucket_endpoints):
     buckets = []
-    base_widths = np.linspace(0.05, bucket_width_pct * num_buckets, num_buckets)
-
-    for width in base_widths:
-        buckets.append({
-            'lower_pct': 1 - width,  # e.g., 0.95 for -5%
-            'upper_pct': 1 + width,  # e.g., 1.05 for +5%
-            'width': width * 2
-        })
-
+    for i in range(1, len(bucket_endpoints)):
+        newBucket = {'p_low': bucket_endpoints[i - 1],
+                     'p_high': bucket_endpoints[i]}
+        buckets.append(newBucket)
     return buckets
+
+def get_buckets_given_center_bucket_id(center_bucket_id, tau, exponential_value=1.0001):
+    bucket_endpoints = []
+    for i in range(center_bucket_id - tau, center_bucket_id + tau + 2):
+        bucket_endpoints.append(exponential_value ** i)
+    return create_buckets(bucket_endpoints)
+
+def find_bucket_id(price, exponential_value=1.0001):
+    return math.floor(math.log(price, exponential_value))
+
+
 
 
 # ============================================================================

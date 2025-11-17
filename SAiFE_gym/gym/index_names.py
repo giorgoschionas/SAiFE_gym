@@ -6,5 +6,4 @@ V3_TICK_INDEX = 2             # Current tick
 V3_TICK_LOWER_INDEX = 3       # Lower tick of LP's range
 V3_TICK_UPPER_INDEX = 4       # Upper tick of LP's range
 V3_FEES_INDEX = 5             # Accumulated trading fees (in token0 equivalent)
-V3_MIDPRICE_INDEX = 6         # Reference midprice from stochastic process
-V3_TIME_INDEX = 7             # Current time
+V3_TIME_INDEX = 6           # Current time
