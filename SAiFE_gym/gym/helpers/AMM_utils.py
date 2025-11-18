@@ -63,62 +63,7 @@ def calculate_liquidity_amounts(
     
     return liquidity
 
-def calculate_position_amounts(
-    liquidity: float,
-    sqrt_price_current: float,
-    sqrt_price_lower: float,
-    sqrt_price_upper: float
-) -> tuple:
-    """Calculate token amounts for a given liquidity position"""
-    if sqrt_price_current <= sqrt_price_lower:
-        amount0 = liquidity * (1/sqrt_price_lower - 1/sqrt_price_upper)
-        amount1 = 0
-    elif sqrt_price_current >= sqrt_price_upper:
-        amount0 = 0
-        amount1 = liquidity * (sqrt_price_upper - sqrt_price_lower)
-    else:
-        amount0 = liquidity * (1/sqrt_price_current - 1/sqrt_price_upper)
-        amount1 = liquidity * (sqrt_price_current - sqrt_price_lower)
-    
-    return amount0, amount1
 
-
-
-def remove_liquidity_v3(position: dict, liquidity_to_remove: float) -> tuple:
-    """Remove liquidity from Uniswap V3 position"""
-    if liquidity_to_remove > position['liquidity']:
-        raise ValueError("Cannot remove more liquidity than available")
-    
-    proportion = liquidity_to_remove / position['liquidity']
-    amount0_removed = position['amount0'] * proportion
-    amount1_removed = position['amount1'] * proportion
-    
-    position['liquidity'] -= liquidity_to_remove
-    position['amount0'] -= amount0_removed
-    position['amount1'] -= amount1_removed
-    
-    return amount0_removed, amount1_removed
-
-def calculate_fees_earned(
-    position: dict,
-    volume0: float,
-    volume1: float,
-    total_liquidity: float
-) -> tuple:
-    """Calculate fees earned by a liquidity position"""
-    if total_liquidity == 0:
-        return 0, 0
-    
-    liquidity_share = position['liquidity'] / total_liquidity
-    fee0_earned = volume0 * position['fee_tier'] * liquidity_share
-    fee1_earned = volume1 * position['fee_tier'] * liquidity_share
-    
-    return fee0_earned, fee1_earned
-
-
-def is_position_in_range(position: dict, current_price: float) -> bool:
-    """Check if current price is within position's range"""
-    return position['price_lower'] <= current_price <= position['price_upper']
 
 
 def create_buckets(bucket_endpoints):
@@ -129,6 +74,7 @@ def create_buckets(bucket_endpoints):
         buckets.append(newBucket)
     return buckets
 
+# 
 def get_buckets_given_center_bucket_id(center_bucket_id, tau, exponential_value=1.0001):
     bucket_endpoints = []
     for i in range(center_bucket_id - tau, center_bucket_id + tau + 2):

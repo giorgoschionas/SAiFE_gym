@@ -77,8 +77,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
         fee_tier: float = 0.003,           # 0.3% fee tier
         tick_spacing: int = 60,            # Tick spacing for fee tier
-        num_buckets: int = 5,              # Number of discrete price range options
-        bucket_width_pct: float = 0.10,   # Width of each bucket as % of price (e.g., 10%)
+        endpoints: list = None,    # Price range endpoints for buckets
         seed: int = None,
     ):
         super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
@@ -86,13 +85,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.initial_capital = initial_capital
         self.fee_tier = fee_tier
         self.tick_spacing = tick_spacing
-        self.num_buckets = num_buckets
-        self.bucket_width_pct = bucket_width_pct
         self.use_mixed_strategy = True  
 
         # Define price range buckets (action space)
         # Each bucket represents a different concentration level around current price
-        self.bucket_ranges = create_buckets(self.num_buckets, self.bucket_width_pct)
+        self.buckets = create_buckets(endpoints)
+        self.num_buckets = len(self.buckets)
 
     def get_action_space(self):
         """
