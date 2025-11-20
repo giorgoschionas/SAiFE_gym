@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols, particularly Uniswap V2/V3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
+SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols, particularly Uniswap V3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
 
 **Current Status**: Active development. Core components implemented but integration is ongoing.
 
@@ -61,13 +61,10 @@ The environment follows a standard RL cycle with AMM-specific components:
 **Uniswap V3 State** (defined in `gym/index_names.py`):
 - Uses (P, L) parameterization - amounts computed via `calculate_position_amounts()`
 - State indices:
-  - `V3_LIQUIDITY_INDEX`: Liquidity amount L
-  - `V3_SQRT_PRICE_INDEX`: Current sqrt price
-  - `V3_TICK_INDEX`: Current tick
-  - `V3_TICK_LOWER_INDEX/V3_TICK_UPPER_INDEX`: LP position range
-  - `V3_FEES_INDEX`: Accumulated fees
-  - `V3_MIDPRICE_INDEX`: Midprice from stochastic model
-  - `V3_TIME_INDEX`: Current simulation time
+  - `LIQUIDITY_INDEX`: Liquidity amount L
+  - `LP_PRICE_INDEX`: Current LP price
+  - `ASSET_PRICE_INDEX`: Current real price tick
+  - `TIME_INDEX`: Current simulation time
 
 **Important**: State shape is `(num_trajectories, state_dim)` for batch processing.
 
@@ -147,10 +144,10 @@ class MyAgent(Agent):
 
 Always use the index constants from `gym/index_names.py`:
 ```python
-from SAiFE_gym.gym.index_names import V3_MIDPRICE_INDEX, V3_LIQUIDITY_INDEX
+from SAiFE_gym.gym.index_names import LP_PRICE_INDEX, LIQUIDITY_INDEX
 
-current_price = state[0, V3_MIDPRICE_INDEX]
-liquidity = state[:, V3_LIQUIDITY_INDEX]  # All trajectories
+current_price = state[0, LP_PRICE_INDEX]
+liquidity = state[:, LIQUIDITY_INDEX]  # All trajectories
 ```
 
 ## Work in Progress

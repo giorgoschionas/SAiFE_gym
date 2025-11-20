@@ -65,7 +65,6 @@ def calculate_liquidity_amounts(
 
 
 
-
 def create_buckets(bucket_endpoints):
     buckets = []
     for i in range(1, len(bucket_endpoints)):
@@ -75,7 +74,7 @@ def create_buckets(bucket_endpoints):
     return buckets
 
 # 
-def get_buckets_given_center_bucket_id(center_bucket_id, tau, exponential_value=1.0001):
+def get_buckets_given_center_bucket_id(center_bucket_id, tau=5, exponential_value=1.0001):
     bucket_endpoints = []
     for i in range(center_bucket_id - tau, center_bucket_id + tau + 2):
         bucket_endpoints.append(exponential_value ** i)
@@ -83,6 +82,10 @@ def get_buckets_given_center_bucket_id(center_bucket_id, tau, exponential_value=
 
 def find_bucket_id(price, exponential_value=1.0001):
     return math.floor(math.log(price, exponential_value))
+
+def is_out_of_range(price, center_bucket, tau=5):
+    center_bucket_id = find_bucket_id(price)
+    return center_bucket_id < center_bucket - tau or center_bucket_id > center_bucket + tau
 
 
 

@@ -12,9 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-    price_to_tick, tick_to_price, calculate_liquidity_amounts,
-    calculate_position_amounts, swap_v3_single_tick, is_position_in_range,
-    create_buckets, get_buckets_given_center_bucket_id, find_bucket_id
+    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range
 )
 
 
@@ -105,30 +103,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
             # Output single bucket index (from 0 to 2*tau)
             return gym.spaces.Discrete(self.num_active_buckets)
 
-    def get_active_buckets(self, current_price: float) -> list:
-        """
-        Get the active buckets around the current price.
-
-        Args:
-            current_price: Current market price
-
-        Returns:
-            List of bucket dictionaries with 'p_low' and 'p_high' keys
-        """
-        center_bucket_id = find_bucket_id(current_price, self.exponential_value)
-        return get_buckets_given_center_bucket_id(center_bucket_id, self.tau, self.exponential_value)
-
-    def get_center_bucket_id(self, current_price: float) -> int:
-        """
-        Get the bucket ID containing the current price.
-
-        Args:
-            current_price: Current market price
-
-        Returns:
-            Bucket ID (tick index)
-        """
-        return find_bucket_id(current_price, self.exponential_value)
 
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
