@@ -8,14 +8,13 @@ import numpy as np
 from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
-    V3_LIQUIDITY_INDEX, V3_SQRT_PRICE_INDEX, V3_TICK_INDEX,
-    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX
+    LIQUIDITY_INDEX, LP_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
     price_to_tick, tick_to_price, calculate_liquidity_amounts,
     calculate_position_amounts, swap_v3_single_tick, is_position_in_range,
-    create_buckets
+    create_buckets, get_buckets_given_center_bucket_id, find_bucket_id
 )
 
 
@@ -64,8 +63,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
     Uniswap V3 Model Dynamics with concentrated liquidity.
 
     The agent (LP) can choose to allocate liquidity in different price ranges (buckets).
-    The update_state function processes orderflow (arrivals) and updates the LP's reserves
-    based on swaps that occur within their liquidity range.
+    The action space is DYNAMIC - only buckets within tau of the current price are "active".
+    Agents return probability distributions over 2*tau+1 active buckets.
     """
 
     def __init__(
@@ -77,33 +76,59 @@ class UniswapV3ModelDynamics(ModelDynamics):
         initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
         fee_tier: float = 0.003,           # 0.3% fee tier
         tick_spacing: int = 60,            # Tick spacing for fee tier
-        endpoints: list = None,    # Price range endpoints for buckets
+        tau: int = 5,                      # Number of buckets on each side of current price
+        exponential_value: float = 1.0001, # Base for exponential bucket spacing (Uniswap V3 tick spacing)
         seed: int = None,
     ):
         super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
 
         self.initial_capital = initial_capital
+        self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
         self.tick_spacing = tick_spacing
-        self.use_mixed_strategy = True  
+        self.tau = tau  # Hyperparameter for active bucket window
+        self.exponential_value = exponential_value
+        self.use_mixed_strategy = True
 
-        # Define price range buckets (action space)
-        # Each bucket represents a different concentration level around current price
-        self.buckets = create_buckets(endpoints)
-        self.num_buckets = len(self.buckets)
+        # Dynamic action space: 2*tau + 1 active buckets around current price
+        self.num_active_buckets = 2 * tau + 1
 
     def get_action_space(self):
         """
         Return the action space for the agent.
-        Action is a probability distribution over discrete buckets of price ranges.
+        Action is a probability distribution over 2*tau+1 active buckets around current price.
         """
-
         if self.use_mixed_strategy:
-              # Output probability distribution over k strategies
-              return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_buckets,), dtype=np.float32)
+            # Output probability distribution over 2*tau+1 active buckets
+            return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_active_buckets,), dtype=np.float32)
         else:
-              # Output single strategy index
-            return gym.spaces.Discrete(self.num_buckets)
+            # Output single bucket index (from 0 to 2*tau)
+            return gym.spaces.Discrete(self.num_active_buckets)
+
+    def get_active_buckets(self, current_price: float) -> list:
+        """
+        Get the active buckets around the current price.
+
+        Args:
+            current_price: Current market price
+
+        Returns:
+            List of bucket dictionaries with 'p_low' and 'p_high' keys
+        """
+        center_bucket_id = find_bucket_id(current_price, self.exponential_value)
+        return get_buckets_given_center_bucket_id(center_bucket_id, self.tau, self.exponential_value)
+
+    def get_center_bucket_id(self, current_price: float) -> int:
+        """
+        Get the bucket ID containing the current price.
+
+        Args:
+            current_price: Current market price
+
+        Returns:
+            Bucket ID (tick index)
+        """
+        return find_bucket_id(current_price, self.exponential_value)
 
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
@@ -116,9 +141,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
             action: Integer action representing which bucket to allocate liquidity to
 
         The function:
-        1. Rebalances LP position to new range based on action
-        2. Processes buy and sell arrivals as swaps
-        3. Updates LP reserves and fees when swaps occur in their range
+        1. Processes buy and sell arrivals as swaps
+        2. Updates LP reserves and fees when swaps occur in their range
         """
 
         pass
