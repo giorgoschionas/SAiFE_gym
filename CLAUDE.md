@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols, particularly Uniswap V3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
+SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols, particularly Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
 
 **Current Status**: Active development. Core components implemented but integration is ongoing.
 
@@ -32,9 +32,9 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
-   - **Dynamic action space**: Only buckets within τ (tau) of current price are "active"
+   - **Dynamic action space**: Only buckets within `2*tau +1` of current price are "active"
    - Processes order flow and updates LP state
-   - Uses **(P, L) parameterization**: stores price and liquidity; computes token amounts on-demand
+   - Uses **(P, L) parameterization**: stores AMM price and LP's liquidity; computes token amounts on-demand
 
 3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
    - `MidpriceModel`: Price dynamics (Brownian Motion, Geometric Brownian Motion)
@@ -62,7 +62,7 @@ The environment follows a standard RL cycle with AMM-specific components:
 - Uses (P, L) parameterization - amounts computed via `calculate_position_amounts()`
 - State indices:
   - `LIQUIDITY_INDEX`: Liquidity amount L
-  - `LP_PRICE_INDEX`: Current LP price
+  - `AMM_PRICE_INDEX`: Current LP price
   - `ASSET_PRICE_INDEX`: Current real price tick
   - `TIME_INDEX`: Current simulation time
 
@@ -83,7 +83,7 @@ The environment follows a standard RL cycle with AMM-specific components:
 **Why dynamic?**
 - Focuses liquidity provision around the current trading range
 - Reduces action space dimensionality
-- Moves the active window as price evolves
+- Moves the active window as price evolves and LPs gets out of range
 
 **Bucket Structure:**
 - Each bucket: `{'p_low': lower_price, 'p_high': upper_price}`
@@ -144,9 +144,9 @@ class MyAgent(Agent):
 
 Always use the index constants from `gym/index_names.py`:
 ```python
-from SAiFE_gym.gym.index_names import LP_PRICE_INDEX, LIQUIDITY_INDEX
+from SAiFE_gym.gym.index_names import AMM_PRICE_INDEX, LIQUIDITY_INDEX
 
-current_price = state[0, LP_PRICE_INDEX]
+current_price = state[0, AMM_PRICE_INDEX]
 liquidity = state[:, LIQUIDITY_INDEX]  # All trajectories
 ```
 

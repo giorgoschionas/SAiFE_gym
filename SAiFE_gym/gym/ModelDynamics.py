@@ -8,7 +8,7 @@ import numpy as np
 from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
-    LIQUIDITY_INDEX, LP_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
+    LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
@@ -73,7 +73,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         price_impact_model: Optional[PriceImpactModel] = None,
         initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
         fee_tier: float = 0.003,           # 0.3% fee tier
-        tick_spacing: int = 60,            # Tick spacing for fee tier
         tau: int = 5,                      # Number of buckets on each side of current price
         exponential_value: float = 1.0001, # Base for exponential bucket spacing (Uniswap V3 tick spacing)
         seed: int = None,
@@ -83,7 +82,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.initial_capital = initial_capital
         self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
-        self.tick_spacing = tick_spacing
         self.tau = tau  # Hyperparameter for active bucket window
         self.exponential_value = exponential_value
         self.use_mixed_strategy = True

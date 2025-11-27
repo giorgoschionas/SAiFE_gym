@@ -10,9 +10,7 @@ from SAiFE_gym.rewards.RewardFunctions import RewardFunction
 from SAiFE_gym.gym.index_names import TIME_INDEX
 
 from SAiFE_gym.gym.index_names import (
-    V3_LIQUIDITY_INDEX, V3_SQRT_PRICE_INDEX, V3_TICK_INDEX,
-    V3_TICK_LOWER_INDEX, V3_TICK_UPPER_INDEX, V3_FEES_INDEX,
-    V3_MIDPRICE_INDEX, V3_TIME_INDEX
+    LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
@@ -58,33 +56,9 @@ class AMMEnvironment(gym.Env):
 
 
     def _initialize_v3_state(self) -> np.ndarray:
-        """
-        Initialize the state vector for Uniswap V3 with LP position and pool information.
-        Uses (P, L) parameterization - amounts computed on-demand.
-        """
-        # State shape: (num_trajectories, state_dim)
-        # For simplicity, we'll start with 1 trajectory
-        state_dim = 8  # Reduced from 10: removed V3_AMOUNT0_INDEX and V3_AMOUNT1_INDEX
-        state = np.zeros((1, state_dim))
+        pass
 
-        # Set initial price and tick
-        state[0, V3_SQRT_PRICE_INDEX] = np.sqrt(self.model_dynamics.initial_price)
-        state[0, V3_TICK_INDEX] = price_to_tick(self.model_dynamics.initial_price, self.model_dynamics.tick_spacing)
-        state[0, V3_MIDPRICE_INDEX] = self.model_dynamics.initial_price
 
-        # Initialize with no position (agent will set position with first action)
-        state[0, V3_LIQUIDITY_INDEX] = 0.0
-        state[0, V3_FEES_INDEX] = 0.0
-        state[0, V3_TIME_INDEX] = 0.0
-
-        # Set initial position ticks (will be updated by first action)
-        state[0, V3_TICK_LOWER_INDEX] = 0
-        state[0, V3_TICK_UPPER_INDEX] = 0
-
-        # Track total capital (starts as uninvested)
-        self.model_dynamics.uninvested_capital = self.model_dynamics.initial_capital
-
-        return state
 
     def seed(self, seed: int = None):
         self.rng = np.random.default_rng(seed)

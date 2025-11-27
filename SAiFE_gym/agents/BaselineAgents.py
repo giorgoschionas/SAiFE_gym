@@ -4,7 +4,7 @@ import numpy as np
 from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.index_names import (
-    LIQUIDITY_INDEX, LP_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
+    LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
 )
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.helpers.AMM_utils import is_out_of_range, find_bucket_id, get_buckets_given_center_bucket_id
@@ -52,7 +52,7 @@ class UniformAllocationAgent(Agent):
         Returns:
             action: Shape (num_trajectories, num_active_buckets) with uniform probabilities
         """
-        current_price = state[0, LP_PRICE_INDEX]
+        current_price = state[0, AMM_PRICE_INDEX]
         new_center_bucket = find_bucket_id(current_price, self.exponential_value)
 
         # First call OR price moved out of range
@@ -103,7 +103,7 @@ class ActiveLPAgent(Agent):
         Returns:
             action: a probability distribution over predefined price ranges.
         """
-        current_price = state[0, LP_PRICE_INDEX]
+        current_price = state[0, AMM_PRICE_INDEX]
         new_center_bucket = find_bucket_id(current_price, self.exponential_value)
 
         # First call OR price moved out of range
