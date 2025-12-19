@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range
+    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_one_step, transaction_fee_for_sequence
 )
 
 
@@ -105,7 +105,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
-        Update state based on arrivals (orderflow) and LP's action (bucket selection).
+        Update state based on arbitrage and noisy trader (orderflow) and LP's action (bucket selection).
 
         Args:
             arrivals: Array of shape (2,) representing [buy_arrivals, sell_arrivals]
@@ -116,8 +116,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
         1. Processes buy and sell arrivals as swaps
         2. Updates LP reserves and fees when swaps occur in their range
         """
+        # arbitrage trade
+        if self.state[:, AMM_PRICE_INDEX] < (1.0-self.fee_tier)*self.state[:, ASSET_PRICE_INDEX]:
+            self.state[:, AMM_PRICE_INDEX] = (1.0-self.fee_tier)*self.state[:, ASSET_PRICE_INDEX]
+        elif self.state[:, AMM_PRICE_INDEX] > self.state[:, ASSET_PRICE_INDEX]/(1.0-self.fee_tier):
+            self.state[:, AMM_PRICE_INDEX] = self.state[:, ASSET_PRICE_INDEX]/(1.0-self.fee_tier)
 
-        pass
+        # noisy traders that move the price
+        self.state[:, AMM_PRICE_INDEX] += np.sum(arrivals)
+
+        # ADD Collect Fees Logic!
 
     def get_arrivals_and_fills(self, action: np.ndarray):
         """

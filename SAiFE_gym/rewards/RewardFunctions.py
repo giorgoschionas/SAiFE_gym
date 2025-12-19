@@ -33,7 +33,8 @@ class ImpermanentLossV2(RewardFunction):
         pass
 
 class PnL(RewardFunction):
-    """A simple profit and loss reward function of the 'mark-to-market' value of the agent's portfolio."""
+    """A simple profit and loss reward function of the 'mark-to-market' value of the agent's portfolio
+    that does not account for fees."""
 
     def calculate(
         self, current_state: np.ndarray, action: np.ndarray, next_state: np.ndarray, is_terminal_step: bool = False

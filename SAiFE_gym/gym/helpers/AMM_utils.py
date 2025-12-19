@@ -1,33 +1,6 @@
 import numpy as np
 import math
 
-# E.g for and ETH-USDC pair, Y is the reserves of ETH, and X is the reserves of USDC. P_{ETH in USDC} = X/Y
-def CPMM_Spot_Price (X, Y):
-    return X / Y
-
-def update_CPMM(X, Y, dX, dY):
-    X += dX
-    Y += dY
-    return X, Y
-
-def Sell_CPMM(sell, X, Y, eta):
-    # eta is the fee tier - e.g. 0.003 for 0.3% fee in Uniswap v2
-
-    k = X * Y
-    output = X - k / (Y + sell * (1 - eta))
-    return output
-
-def Buy_CPMM(buy, X, Y, eta):
-    k = X * Y
-    output = Y - k / (X + buy * (1 - eta))
-    return output
-
-def Arb_Trade_CPMM(S, X, Y, eta):
-    sell_output = Sell_CPMM(S, X, Y, eta)
-    buy_output = Buy_CPMM(S, X, Y, eta)
-    return sell_output, buy_output
-
-
 # ============================================================================
 # Uniswap V3 Concentrated Liquidity Functions
 # ============================================================================
@@ -63,6 +36,37 @@ def calculate_liquidity_amounts(
     
     return liquidity
 
+def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper):
+    """
+    Calculates the Mark-to-Market value of a Uniswap v3 position
+    in terms of the Quote Asset (Asset Y).
+
+    Args:
+        L (float): Liquidity amount
+        sqrt_price_current (float): Current sqrt(Price)
+        sqrt_price_lower (float): Lower bound sqrt(Price) of the position
+        sqrt_price_upper (float): Upper bound sqrt(Price) of the position
+
+    Returns:
+        float: Total value in terms of Asset Y
+    """
+    P = sqrt_price_current ** 2
+
+    # Case 1: Current price is ABOVE the range (Position is 100% Asset Y)
+    if sqrt_price_current >= sqrt_price_upper:
+        return L * (sqrt_price_upper - sqrt_price_lower)
+
+    # Case 2: Current price is BELOW the range (Position is 100% Asset X)
+    elif sqrt_price_current <= sqrt_price_lower:
+        # We hold max X, valued at current price P
+        # x_max = L * (upper - lower) / (lower * upper)
+        return P * L * (sqrt_price_upper - sqrt_price_lower) / (sqrt_price_lower * sqrt_price_upper)
+
+    # Case 3: Current price is IN RANGE (Mix of X and Y)
+    else:
+        # Derived from V = y + x*P
+        return L * (2 * sqrt_price_current - sqrt_price_lower - (P / sqrt_price_upper))
+
 
 
 def create_buckets(bucket_endpoints):
@@ -86,6 +90,44 @@ def find_bucket_id(price, exponential_value=1.0001):
 def is_out_of_range(price, center_bucket, tau=5):
     center_bucket_id = find_bucket_id(price)
     return center_bucket_id < center_bucket - tau or center_bucket_id > center_bucket + tau
+
+
+# Functions for collecting fees
+# delta change of amount of Token A
+def delta_x(p1, p2):
+    return 1 / math.sqrt(p2) - 1 / math.sqrt(p1)
+
+
+# delta change of amount of Token B
+def delta_y(p1, p2):
+    return math.sqrt(p2) - math.sqrt(p1)
+
+# transaction fee collected for a single price change by 1 unit of liquidity over [a, b]
+def transaction_fee_one_step(a, b, p1, p2, fee_rate):
+    # return token A, token B amounts
+    if (p1 < a and p2 < a) or (p1 > b and p2 > b) or p1 == p2:
+        return 0., 0.
+    if p1 < p2:
+        return 0., fee_rate * delta_y(max(p1, a), min(p2, b))
+    else:
+        return fee_rate * delta_x(min(b, p1), max(p2, a)), 0.
+
+
+# calculate transaction fee for a price sequence
+def transaction_fee_for_sequence(buckets, pool_price_seq, fee_rate):
+    earned_token_a_each_bucket = []
+    earned_token_b_each_bucket = []
+    for _ in buckets:
+        earned_token_a_each_bucket.append(0.)
+        earned_token_b_each_bucket.append(0.)
+
+    for i in range(len(pool_price_seq) - 1):
+        for j, bucket in enumerate(buckets):
+            earned_tokens = transaction_fee_one_step(bucket['p_low'], bucket['p_high'], pool_price_seq[i],
+                                                     pool_price_seq[i + 1], fee_rate)
+            earned_token_a_each_bucket[j] += earned_tokens[0]
+            earned_token_b_each_bucket[j] += earned_tokens[1]
+    return earned_token_a_each_bucket, earned_token_b_each_bucket
 
 
 
