@@ -8,7 +8,7 @@ import numpy as np
 from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
-    LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
+    LIQUIDITY_INDEX, AMM_PRICE_INDEX, FEES_TOKEN_A_INDEX, FEES_TOKEN_B_INDEX, TIME_INDEX
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
@@ -54,6 +54,10 @@ class ModelDynamics(metaclass=abc.ABCMeta):
     def get_required_stochastic_processes(self):
         pass
 
+    @property
+    def midprice(self):
+        return self.midprice_model.current_state[:, 0].reshape(-1, 1)
+
 
 
 class UniswapV3ModelDynamics(ModelDynamics):
@@ -75,6 +79,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of buckets on each side of current price
         exponential_value: float = 1.0001, # Base for exponential bucket spacing (Uniswap V3 tick spacing)
+        non_arb_lambda: float = 0.00005,
         seed: int = None,
     ):
         super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
@@ -84,6 +89,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.fee_tier = fee_tier
         self.tau = tau  # Hyperparameter for active bucket window
         self.exponential_value = exponential_value
+        self.non_arb_lambda = non_arb_lambda
         self.use_mixed_strategy = True
 
         # Dynamic action space: 2*tau + 1 active buckets around current price
@@ -105,27 +111,119 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
-        Update state based on arbitrage and noisy trader (orderflow) and LP's action (bucket selection).
+        Update state based on arbitrage, noisy traders, and fee collection.
 
         Args:
-            arrivals: Array of shape (2,) representing [buy_arrivals, sell_arrivals]
-                     These are order sizes in token amounts
-            action: Integer action representing which bucket to allocate liquidity to
+            arrivals: Array of shape (num_trajectories, 2) - boolean array [SELL, BUY]
+            action: Array of shape (num_trajectories, 2*tau+1) - probability distribution over active buckets
 
-        The function:
-        1. Processes buy and sell arrivals as swaps
-        2. Updates LP reserves and fees when swaps occur in their range
+        The function implements a 3-phase update:
+        1. Arbitrage trades: Snap AMM price to no-arbitrage bounds
+        2. Noisy trader orders: Apply multiplicative price impacts from BUY/SELL arrivals
+        3. Fee collection: Calculate and accumulate fees from all price movements
         """
-        # arbitrage trade
-        if self.state[:, AMM_PRICE_INDEX] < (1.0-self.fee_tier)*self.state[:, ASSET_PRICE_INDEX]:
-            self.state[:, AMM_PRICE_INDEX] = (1.0-self.fee_tier)*self.state[:, ASSET_PRICE_INDEX]
-        elif self.state[:, AMM_PRICE_INDEX] > self.state[:, ASSET_PRICE_INDEX]/(1.0-self.fee_tier):
-            self.state[:, AMM_PRICE_INDEX] = self.state[:, ASSET_PRICE_INDEX]/(1.0-self.fee_tier)
+        num_trajectories = self.state.shape[0]
 
-        # noisy traders that move the price
-        self.state[:, AMM_PRICE_INDEX] += np.sum(arrivals)
+        # ====================================================================
+        # PHASE 0: Initialize price tracking and determine active buckets
+        # ====================================================================
+        # Store price sequence for fee calculation (in sqrt space)
+        price_sequence_sqrt = []
+        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
 
-        # ADD Collect Fees Logic!
+        # Determine active buckets BEFORE any price changes
+        # This ensures action probabilities map to correct absolute price ranges
+        buckets_per_trajectory = []
+        for traj_idx in range(num_trajectories):
+            current_price = self.state[traj_idx, AMM_PRICE_INDEX] ** 2
+            center_bucket_id = find_bucket_id(current_price, self.exponential_value)
+            buckets = get_buckets_given_center_bucket_id(
+                center_bucket_id, self.tau, self.exponential_value
+            )
+            buckets_per_trajectory.append(buckets)
+
+        # ====================================================================
+        # PHASE 1: Arbitrage Trades
+        # ====================================================================
+        # Calculate no-arbitrage bounds (in sqrt space)
+        midprice = self.midprice.flatten()  # shape: (num_trajectories,)
+        lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
+        upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
+
+        # Snap AMM price to bounds (vectorized)
+        self.state[:, AMM_PRICE_INDEX] = np.clip(
+            self.state[:, AMM_PRICE_INDEX],
+            lower_bound,
+            upper_bound
+        )
+
+        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
+
+        # ====================================================================
+        # PHASE 2: Noisy Trader Orders
+        # ====================================================================
+        # Extract arrival masks
+        sell_mask = arrivals[:, 0].astype(bool)  # Column 0 = SELL
+        buy_mask = arrivals[:, 1].astype(bool)   # Column 1 = BUY
+
+        # Apply multiplicative price impacts
+        # SELL orders decrease price
+        self.state[sell_mask, AMM_PRICE_INDEX] *= (1.0 - self.non_arb_lambda)
+
+        # BUY orders increase price
+        self.state[buy_mask, AMM_PRICE_INDEX] *= (1.0 + self.non_arb_lambda)
+
+        # Safety: ensure prices stay positive
+        self.state[:, AMM_PRICE_INDEX] = np.maximum(self.state[:, AMM_PRICE_INDEX], 1e-8)
+
+        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
+
+        # ====================================================================
+        # PHASE 3: Fee Collection
+        # ====================================================================
+        # For each trajectory, calculate fees across active buckets
+        for traj_idx in range(num_trajectories):
+            buckets = buckets_per_trajectory[traj_idx]
+
+            # Convert sqrt prices to regular prices for this trajectory
+            price_seq = [p[traj_idx] ** 2 for p in price_sequence_sqrt]
+
+            # Optimize: remove duplicate consecutive prices
+            price_seq_compact = [price_seq[0]]
+            for p in price_seq[1:]:
+                if not np.isclose(p, price_seq_compact[-1]):
+                    price_seq_compact.append(p)
+
+            # Skip if no price movement
+            if len(price_seq_compact) == 1:
+                continue
+
+            # For each active bucket
+            for bucket_idx, bucket in enumerate(buckets):
+                action_prob = action[traj_idx, bucket_idx]
+
+                if action_prob > 1e-10:  # Skip if essentially zero
+                    # Calculate liquidity allocated to this bucket
+                    L_bucket = action_prob * self.initial_capital
+
+                    # Calculate fees through price sequence
+                    for step_idx in range(len(price_seq_compact) - 1):
+                        p1 = price_seq_compact[step_idx]
+                        p2 = price_seq_compact[step_idx + 1]
+
+                        # Get fees per unit liquidity
+                        fee_a, fee_b = transaction_fee_one_step(
+                            bucket['p_low'],
+                            bucket['p_high'],
+                            p1,
+                            p2,
+                            self.fee_tier
+                        )
+
+                        # Scale by actual liquidity and accumulate
+                        self.state[traj_idx, FEES_TOKEN_A_INDEX] += fee_a * L_bucket
+                        self.state[traj_idx, FEES_TOKEN_B_INDEX] += fee_b * L_bucket
+
 
     def get_arrivals_and_fills(self, action: np.ndarray):
         """

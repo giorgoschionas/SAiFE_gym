@@ -33,8 +33,9 @@ The environment follows a standard RL cycle with AMM-specific components:
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
    - **Dynamic action space**: Only buckets within `2*tau +1` of current price are "active"
-   - Processes order flow and updates LP state
-   - Uses **(P, L) parameterization**: stores AMM price and LP's liquidity; computes token amounts on-demand
+   - Processes order flow and updates LP state via `update_state()` method
+   - Uses **(P, L) parameterization**: stores AMM sqrt price and LP's liquidity; computes token amounts on-demand
+   - **3-Phase State Update**: Arbitrage correction → Noisy trader orders → Fee collection
 
 3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
    - `MidpriceModel`: Price dynamics (Brownian Motion, Geometric Brownian Motion)
@@ -60,13 +61,15 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 **Uniswap V3 State** (defined in `gym/index_names.py`):
 - Uses (P, L) parameterization - amounts computed via `calculate_position_amounts()`
+- State shape: `(num_trajectories, 5)` for batch processing
 - State indices:
-  - `LIQUIDITY_INDEX`: Liquidity amount L
-  - `AMM_PRICE_INDEX`: Current LP price
-  - `ASSET_PRICE_INDEX`: Current real price tick
-  - `TIME_INDEX`: Current simulation time
+  - `LIQUIDITY_INDEX = 0`: Liquidity amount L
+  - `AMM_PRICE_INDEX = 1`: Current AMM **sqrt(price)** - IMPORTANT: stores √P, not P
+  - `FEES_TOKEN_A_INDEX = 2`: Accumulated fees in Token A
+  - `FEES_TOKEN_B_INDEX = 3`: Accumulated fees in Token B
+  - `TIME_INDEX = 4`: Current simulation time
 
-**Important**: State shape is `(num_trajectories, state_dim)` for batch processing.
+**Critical Note**: `AMM_PRICE_INDEX` stores the square root of price (√P), following Uniswap V3 convention. When calling helper functions that expect regular price, convert using `price = sqrt_price ** 2`.
 
 ### Action Space - Dynamic Active Buckets
 
@@ -100,12 +103,57 @@ The environment follows a standard RL cycle with AMM-specific components:
 - If `use_mixed_strategy=True`: Action is probability distribution over 2τ+1 active buckets (must sum to 1.0)
 - Otherwise: Single discrete bucket index (0 to 2τ)
 
+### State Update Mechanism
+
+**3-Phase Update Algorithm** (in `ModelDynamics.update_state()`):
+
+The `update_state` method processes state transitions through three sequential phases:
+
+#### Phase 1: Arbitrage Correction
+- Checks if AMM price is outside no-arbitrage bounds
+- Bounds (in sqrt space): `[√((1-fee)*midprice), √(midprice/(1-fee))]`
+- Snaps price back to bounds if profitable arbitrage exists
+- Prevents arbitrageurs from extracting value from the pool
+
+#### Phase 2: Noisy Trader Orders
+- Processes arrivals array: `(num_trajectories, 2)` where columns are `[SELL, BUY]`
+- **SELL orders**: `sqrt_price *= (1 - non_arb_lambda)` (price decreases)
+- **BUY orders**: `sqrt_price *= (1 + non_arb_lambda)` (price increases)
+- Applies multiplicative price impact based on `non_arb_lambda` parameter
+- If both BUY and SELL occur, both effects apply sequentially
+
+#### Phase 3: Fee Collection
+- Determines active buckets based on **initial** price (before movements)
+- For each bucket with non-zero action probability:
+  - Calculates liquidity: `L_bucket = action[bucket_idx] * initial_capital`
+  - Tracks price sequence: [initial → after arbitrage → after noisy trades]
+  - Calls `transaction_fee_one_step(bucket_low, bucket_high, p1, p2, fee_rate)`
+  - Scales fees by liquidity: `fee_actual = fee_per_unit * L_bucket`
+  - Accumulates in `FEES_TOKEN_A_INDEX` and `FEES_TOKEN_B_INDEX`
+- Fees collected from **both** arbitrage and noisy trader price movements
+
+**Key Parameters**:
+- `non_arb_lambda` (default: 0.00005): Price impact per noisy trader order
+- `initial_capital` (default: 10000.0): Total capital for liquidity provision
+- `fee_tier` (default: 0.003): Pool fee rate (0.3%)
+
 ### Key Utility Functions
 
 **AMM Utilities** (`gym/helpers/AMM_utils.py`):
 - `CPMM_Spot_Price(X, Y)`: Constant product market maker price
-- `calculate_liquidity_amounts()`: Compute liquidity for given token amounts and price range
-- Price/tick conversions for Uniswap V3
+- `calculate_liquidity_amounts(sqrt_price_current, sqrt_price_lower, sqrt_price_upper, amount0, amount1)`: Compute liquidity for given token amounts and price range
+- `get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper)`: Calculate mark-to-market value of LP position
+- Price/tick conversions for Uniswap V3:
+  - `price_to_tick(price)`: Convert price to tick index
+  - `tick_to_price(tick)`: Convert tick index to price
+
+**Fee Calculation Functions** (`gym/helpers/AMM_utils.py`):
+- `delta_x(p1, p2)`: Calculate change in Token X reserves per unit liquidity
+- `delta_y(p1, p2)`: Calculate change in Token Y reserves per unit liquidity
+- `transaction_fee_one_step(a, b, p1, p2, fee_rate)`: Calculate fees for price movement from p1 to p2 within range [a, b]
+  - Returns `(fee_token_a, fee_token_b)` **per unit of liquidity**
+  - Must multiply by actual liquidity to get total fees
+  - Used internally by `update_state()` for fee accumulation
 
 ## Important Implementation Details
 
@@ -144,19 +192,39 @@ class MyAgent(Agent):
 
 Always use the index constants from `gym/index_names.py`:
 ```python
-from SAiFE_gym.gym.index_names import AMM_PRICE_INDEX, LIQUIDITY_INDEX
+from SAiFE_gym.gym.index_names import (
+    AMM_PRICE_INDEX,
+    LIQUIDITY_INDEX,
+    FEES_TOKEN_A_INDEX,
+    FEES_TOKEN_B_INDEX
+)
 
-current_price = state[0, AMM_PRICE_INDEX]
-liquidity = state[:, LIQUIDITY_INDEX]  # All trajectories
+# Get sqrt price (remember: AMM_PRICE_INDEX stores √P, not P)
+sqrt_price = state[0, AMM_PRICE_INDEX]
+actual_price = sqrt_price ** 2  # Convert to regular price
+
+# Get liquidity across all trajectories
+liquidity = state[:, LIQUIDITY_INDEX]
+
+# Get accumulated fees
+fees_token_a = state[:, FEES_TOKEN_A_INDEX]
+fees_token_b = state[:, FEES_TOKEN_B_INDEX]
 ```
 
 ## Work in Progress
 
 Areas under active development:
-- State update mechanism integration in `AMMEnvironment.step()`
-- Reward function implementations (ImpermanentLoss, LVR)
-- Linking stochastic processes with model dynamics
-- Testing and validation framework
+- Reward function implementations (ImpermanentLoss, LVR) - 🚧 Currently stubs
+- Full integration of state updates in `AMMEnvironment.step()`
+- Comprehensive testing and validation framework
+
+## Recently Completed
+
+- ✅ `update_state()` method with 3-phase algorithm (arbitrage, noisy trades, fee collection)
+- ✅ Fee calculation functions (`transaction_fee_one_step`, `delta_x`, `delta_y`)
+- ✅ State representation with fee tracking (`FEES_TOKEN_A_INDEX`, `FEES_TOKEN_B_INDEX`)
+- ✅ Dynamic active bucket system with tau parameter
+- ✅ Baseline agent implementations
 
 ## Common Patterns
 
@@ -189,9 +257,10 @@ model = UniswapV3ModelDynamics(
     midprice_model=midprice_model,
     arrival_model=arrival_model,
     tau=5,  # 5 buckets on each side of current price (11 total active buckets)
-    initial_capital=10000.0,
-    fee_tier=0.003,
-    exponential_value=1.0001  # Uniswap V3 tick spacing
+    initial_capital=10000.0,  # Total LP capital
+    fee_tier=0.003,  # 0.3% fee
+    exponential_value=1.0001,  # Uniswap V3 tick spacing
+    non_arb_lambda=0.00005  # Price impact per noisy trader order
 )
 
 env = AMMEnvironment(
@@ -224,7 +293,9 @@ for _ in range(100):
 Current branch: `feature/trading-env`
 
 Recent focus areas (from commit history):
+- Complete `update_state()` implementation with arbitrage, noisy trades, and fee collection
+- Fee calculation functions for Uniswap V3 concentrated liquidity
 - Dynamic active bucket implementation (tau-based action space)
 - Bucket creation and price discretization utilities
-- UniswapV3ModelDynamics refactoring to use (P, L) state
+- UniswapV3ModelDynamics refactoring to use (√P, L) state representation
 - Baseline agent implementations for dynamic action space
