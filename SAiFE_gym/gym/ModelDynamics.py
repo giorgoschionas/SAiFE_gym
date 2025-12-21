@@ -25,14 +25,12 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self,
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
-        fill_probability_model: PriceImpactModel = None,
         price_impact_model: PriceImpactModel = None,
         num_trajectories: int = 1,
         seed: int = None,
     ):
         self.midprice_model = midprice_model
         self.arrival_model = arrival_model
-        self.fill_probability_model = fill_probability_model
         self.price_impact_model = price_impact_model
         self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
@@ -40,13 +38,11 @@ class ModelDynamics(metaclass=abc.ABCMeta):
 
         self.state = None 
 
-    def update_state(self, arrivals: np.ndarray, fills: np.ndarray, action: np.ndarray):
+    def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         pass
 
-    def get_fills(self, action: np.ndarray):
-        pass
     
-    def get_arrivals_and_fills(self, action: np.ndarray):
+    def get_arrivals(self, action: np.ndarray):
         return None, None 
 
 
@@ -171,8 +167,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # BUY orders increase price
         self.state[buy_mask, AMM_PRICE_INDEX] /= (1.0 - self.non_arb_lambda)
 
-        # Safety: ensure prices stay positive
-        self.state[:, AMM_PRICE_INDEX] = np.maximum(self.state[:, AMM_PRICE_INDEX], 1e-8)
 
         price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
 
@@ -194,15 +188,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[:, FEES_TOKEN_B_INDEX] += liquidity_matrix @ unit_fees_b
 
 
-    def get_arrivals_and_fills(self, action: np.ndarray):
-        """
-        Generate arrivals from the arrival model.
-        In V3, fills = arrivals (all orders are filled by the AMM).
-        """
-        if self.arrival_model is not None:
-            arrivals = self.arrival_model.get_next_state()
-            # For AMMs, all arrivals are filled (no order book)
-            fills = arrivals.copy()
-            return arrivals[0], fills[0]  # Return first trajectory
-        else:
-            return np.zeros(2), np.zeros(2)
+    def get_arrivals(self):
+        arrivals = self.arrival_model.get_arrivals()
+        return arrivals
+
