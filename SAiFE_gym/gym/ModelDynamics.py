@@ -180,43 +180,18 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # PHASE 3: Fee Collection
         # ====================================================================
         # For each trajectory, calculate fees across active buckets
-        for traj_idx in range(self.num_trajectories):
-            buckets = buckets_per_trajectory[traj_idx]
+        # 1. Pre-calculate fees per unit of liquidity (Result shape: [num_buckets])
+        price_sequence = price_sequence_sqrt ** 2
+        unit_fees_a, unit_fees_b = transaction_fee_for_sequence(buckets, price_sequence, self.fee_tier)
 
-            # Convert sqrt prices to regular prices for this trajectory
-            price_seq = [p[traj_idx] ** 2 for p in price_sequence_sqrt]
+        # 2. Calculate Liquidity Matrix (Shape: [num_trajectories, num_buckets])
+        liquidity_matrix = action * self.initial_capital
 
-            # Optimize: remove duplicate consecutive prices
-            price_seq_compact = [price_seq[0]]
-            for p in price_seq[1:]:
-                if not np.isclose(p, price_seq_compact[-1]):
-                    price_seq_compact.append(p)
-
-            # Skip if no price movement
-            if len(price_seq_compact) == 1:
-                continue
-
-            # Vectorized fee calculation across all buckets
-            # Get fees per unit liquidity for all buckets at once
-            fees_token_a_per_bucket, fees_token_b_per_bucket = transaction_fee_for_sequence(
-                buckets, price_seq_compact, self.fee_tier
-            )
-
-            # Convert to numpy arrays for vectorized operations
-            fees_token_a_per_bucket = np.array(fees_token_a_per_bucket)
-            fees_token_b_per_bucket = np.array(fees_token_b_per_bucket)
-
-            # Get action probabilities for this trajectory (shape: num_active_buckets)
-            action_probs = action[traj_idx]
-
-            # Calculate liquidity per bucket: L_bucket = action_prob * initial_capital
-            # Then scale fees by liquidity: fee_actual = fee_per_unit * L_bucket
-            # Combine: fee_actual = fee_per_unit * action_prob * initial_capital
-            liquidity_weights = action_probs * self.initial_capital
-
-            # Accumulate weighted fees (vectorized dot product)
-            self.state[traj_idx, FEES_TOKEN_A_INDEX] += np.dot(fees_token_a_per_bucket, liquidity_weights)
-            self.state[traj_idx, FEES_TOKEN_B_INDEX] += np.dot(fees_token_b_per_bucket, liquidity_weights)
+        # 3. Update all trajectories simultaneously using Dot Product
+        # Logic: Sum(Liquidity_in_Bucket * Fee_per_Bucket)
+        # Shape: (num_trajs, num_buckets) @ (num_buckets,) -> (num_trajs,)
+        self.state[:, FEES_TOKEN_A_INDEX] += liquidity_matrix @ unit_fees_a
+        self.state[:, FEES_TOKEN_B_INDEX] += liquidity_matrix @ unit_fees_b
 
 
     def get_arrivals_and_fills(self, action: np.ndarray):

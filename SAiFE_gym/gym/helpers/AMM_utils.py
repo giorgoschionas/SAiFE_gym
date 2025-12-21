@@ -115,19 +115,25 @@ def transaction_fee_one_step(a, b, p1, p2, fee_rate):
 
 # calculate transaction fee for a price sequence
 def transaction_fee_for_sequence(buckets, pool_price_seq, fee_rate):
-    earned_token_a_each_bucket = []
-    earned_token_b_each_bucket = []
-    for _ in buckets:
-        earned_token_a_each_bucket.append(0.)
-        earned_token_b_each_bucket.append(0.)
+    """Calculates fee per unit of liquidity for each bucket over the price sequence."""
+    # Pre-allocate arrays (cleaner than appending to lists)
+    unit_fees_a = np.zeros(len(buckets))
+    unit_fees_b = np.zeros(len(buckets))
 
-    for i in range(len(pool_price_seq) - 1):
-        for j, bucket in enumerate(buckets):
-            earned_tokens = transaction_fee_one_step(bucket['p_low'], bucket['p_high'], pool_price_seq[i],
-                                                     pool_price_seq[i + 1], fee_rate)
-            earned_token_a_each_bucket[j] += earned_tokens[0]
-            earned_token_b_each_bucket[j] += earned_tokens[1]
-    return earned_token_a_each_bucket, earned_token_b_each_bucket
+    # Use zip to iterate over pairs (p1, p2) without manual indexing
+    for p1, p2 in zip(pool_price_seq[:-1], pool_price_seq[1:]):
+        for i, bucket in enumerate(buckets):
+            fa, fb = transaction_fee_one_step(
+                bucket['p_low'], 
+                bucket['p_high'], 
+                p1, 
+                p2, 
+                fee_rate
+            )
+            unit_fees_a[i] += fa
+            unit_fees_b[i] += fb
+            
+    return unit_fees_a, unit_fees_b
 
 
 
