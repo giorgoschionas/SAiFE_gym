@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_for_sequence
+    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_one_step_vec
 )
 
 
@@ -104,88 +104,91 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
 
 
-    def update_state(self, arrivals: np.ndarray, action: np.ndarray):
-        """
-        Update state based on arbitrage, noisy traders, and fee collection.
+def update_state(self, arrivals: np.ndarray, action: np.ndarray):
+    """
+    Vectorized update_state using:
+      - vectorized bucket selection (center_ids -> p_low/p_high arrays)
+      - vectorized fee collection across trajectories (loop only over buckets)
+      - transaction_fee_one_step_vec directly (no scalar fallback)
+    """
+    N = self.state.shape[0]
+    B = action.shape[1]  # expected: 2*self.tau + 1
 
-        Args:
-            arrivals: Array of shape (num_trajectories, 2) - boolean array [SELL, BUY]
-            action: Array of shape (num_trajectories, 2*tau+1) - probability distribution over active buckets
+    # ====================================================================
+    # PHASE 0: Determine active buckets (vectorized) and store initial price
+    # ====================================================================
+    price_sqrt_0 = self.state[:, AMM_PRICE_INDEX].copy()
+    price_0 = price_sqrt_0 ** 2
 
-        The function implements a 3-phase update:
-        1. Arbitrage trades: Snap AMM price to no-arbitrage bounds
-        2. Noisy trader orders: Apply multiplicative price impacts from BUY/SELL arrivals
-        3. Fee collection: Calculate and accumulate fees from all price movements
-        """
+    center_ids = find_bucket_id_vec(price_0, self.exponential_value)  # (N,)
+    p_low, p_high = bucket_bounds_from_center_ids(
+        center_ids, self.tau, self.exponential_value
+    )  # both (N, B)
 
-        # ====================================================================
-        # PHASE 0: Initialize price tracking and determine active buckets
-        # ====================================================================
-        # Store price sequence for fee calculation (in sqrt space)
-        price_sequence_sqrt = []
-        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
+    # ====================================================================
+    # PHASE 1: Arbitrage Trades (vectorized)
+    # ====================================================================
+    midprice = self.midprice.reshape(-1)  # (N,)
+    lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
+    upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
 
-        # Determine active buckets BEFORE any price changes
-        # This ensures action probabilities map to correct absolute price ranges
-        buckets_per_trajectory = []
-        for traj_idx in range(self.num_trajectories):
-            current_price = self.state[traj_idx, AMM_PRICE_INDEX] ** 2
-            center_bucket_id = find_bucket_id(current_price, self.exponential_value)
-            buckets = get_buckets_given_center_bucket_id(
-                center_bucket_id, self.tau, self.exponential_value
+    price_sqrt_1 = np.clip(price_sqrt_0, lower_bound, upper_bound)
+    self.state[:, AMM_PRICE_INDEX] = price_sqrt_1
+    price_1 = price_sqrt_1 ** 2
+
+    # ====================================================================
+    # PHASE 2: Noisy Trader Orders (vectorized)
+    # ====================================================================
+    sell_mask = arrivals[:, 0].astype(bool)
+    buy_mask = arrivals[:, 1].astype(bool)
+
+    price_sqrt_2 = price_sqrt_1.copy()
+    price_sqrt_2[sell_mask] *= (1.0 - self.non_arb_lambda)
+    price_sqrt_2[buy_mask] *= (1.0 + self.non_arb_lambda)
+
+    price_sqrt_2 = np.maximum(price_sqrt_2, 1e-8)
+    self.state[:, AMM_PRICE_INDEX] = price_sqrt_2
+    price_2 = price_sqrt_2 ** 2
+
+    # ====================================================================
+    # PHASE 3: Fee Collection (vectorized over trajectories; loop over buckets)
+    # ====================================================================
+    move01 = ~np.isclose(price_0, price_1)
+    move12 = ~np.isclose(price_1, price_2)
+
+    for b in range(B):
+        probs = action[:, b]                 # (N,)
+        active = probs > 1e-10
+        if not np.any(active):
+            continue
+
+        L = probs * self.initial_capital     # (N,)
+
+        # Step 0 -> 1
+        mask = active & move01
+        if np.any(mask):
+            fa, fb = transaction_fee_one_step_vec(
+                p_low[mask, b],
+                p_high[mask, b],
+                price_0[mask],
+                price_1[mask],
+                self.fee_tier
             )
-            buckets_per_trajectory.append(buckets)
+            self.state[mask, FEES_TOKEN_A_INDEX] += fa * L[mask]
+            self.state[mask, FEES_TOKEN_B_INDEX] += fb * L[mask]
 
-        # ====================================================================
-        # PHASE 1: Arbitrage Trades
-        # ====================================================================
-        # Calculate no-arbitrage bounds (in sqrt space)
-        midprice = self.midprice.flatten()  # shape: (num_trajectories,)
-        lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
-        upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
-
-        # Snap AMM price to bounds (vectorized)
-        self.state[:, AMM_PRICE_INDEX] = np.clip(
-            self.state[:, AMM_PRICE_INDEX],
-            lower_bound,
-            upper_bound
-        )
-
-        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
-
-        # ====================================================================
-        # PHASE 2: Noisy Trader Orders
-        # ====================================================================
-        # Extract arrival masks
-        sell_mask = arrivals[:, 0].astype(bool)  # Column 0 = SELL
-        buy_mask = arrivals[:, 1].astype(bool)   # Column 1 = BUY
-
-        # Apply multiplicative price impacts
-        # SELL orders decrease price
-        self.state[sell_mask, AMM_PRICE_INDEX] *= (1.0 - self.non_arb_lambda)
-
-        # BUY orders increase price
-        self.state[buy_mask, AMM_PRICE_INDEX] /= (1.0 - self.non_arb_lambda)
-
-
-        price_sequence_sqrt.append(self.state[:, AMM_PRICE_INDEX].copy())
-
-        # ====================================================================
-        # PHASE 3: Fee Collection
-        # ====================================================================
-        # For each trajectory, calculate fees across active buckets
-        # 1. Pre-calculate fees per unit of liquidity (Result shape: [num_buckets])
-        price_sequence = price_sequence_sqrt ** 2
-        unit_fees_a, unit_fees_b = transaction_fee_for_sequence(buckets, price_sequence, self.fee_tier)
-
-        # 2. Calculate Liquidity Matrix (Shape: [num_trajectories, num_buckets])
-        liquidity_matrix = action * self.initial_capital
-
-        # 3. Update all trajectories simultaneously using Dot Product
-        # Logic: Sum(Liquidity_in_Bucket * Fee_per_Bucket)
-        # Shape: (num_trajs, num_buckets) @ (num_buckets,) -> (num_trajs,)
-        self.state[:, FEES_TOKEN_A_INDEX] += liquidity_matrix @ unit_fees_a
-        self.state[:, FEES_TOKEN_B_INDEX] += liquidity_matrix @ unit_fees_b
+        # Step 1 -> 2
+        mask = active & move12
+        if np.any(mask):
+            fa, fb = transaction_fee_one_step_vec(
+                p_low[mask, b],
+                p_high[mask, b],
+                price_1[mask],
+                price_2[mask],
+                self.fee_tier
+            )
+            self.state[mask, FEES_TOKEN_A_INDEX] += fa * L[mask]
+            self.state[mask, FEES_TOKEN_B_INDEX] += fb * L[mask]
 
 
     def get_arrivals(self):

@@ -69,72 +69,102 @@ def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
 
 
 
-def create_buckets(bucket_endpoints):
-    buckets = []
-    for i in range(1, len(bucket_endpoints)):
-        newBucket = {'p_low': bucket_endpoints[i - 1],
-                     'p_high': bucket_endpoints[i]}
-        buckets.append(newBucket)
-    return buckets
+def bucket_bounds_from_center_ids(
+    center_ids: np.ndarray,
+    tau: int = 5,
+    exponential_value: float = 1.0001
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    center_ids: shape (N,) int
+    returns:
+      p_low:  shape (N, 2*tau+1)
+      p_high: shape (N, 2*tau+1)
+    """
+    center_ids = np.asarray(center_ids, dtype=np.int64)
+    N = center_ids.shape[0]
 
-# 
-def get_buckets_given_center_bucket_id(center_bucket_id, tau=5, exponential_value=1.0001):
-    bucket_endpoints = []
-    for i in range(center_bucket_id - tau, center_bucket_id + tau + 2):
-        bucket_endpoints.append(exponential_value ** i)
-    return create_buckets(bucket_endpoints)
+    # endpoints count is B+1 = (2*tau+1) + 1 = 2*tau+2
+    # offsets for endpoints: [-tau, ..., +tau+1]
+    endpoint_offsets = np.arange(-tau, tau + 2, dtype=np.int64)  # length 2*tau+2
 
-def find_bucket_id(price, exponential_value=1.0001):
-    return math.floor(math.log(price, exponential_value))
+    # exponents: shape (N, B+1)
+    exponents = center_ids[:, None] + endpoint_offsets[None, :]
 
-def is_out_of_range(price, center_bucket, tau=5):
-    center_bucket_id = find_bucket_id(price)
-    return center_bucket_id < center_bucket - tau or center_bucket_id > center_bucket + tau
+    # compute endpoints: ev**exponent, vectorized
+    log_ev = np.log(exponential_value)
+    endpoints = np.exp(exponents.astype(np.float64) * log_ev)  # (N, B+1)
+
+    p_low = endpoints[:, :-1]   # (N, B)
+    p_high = endpoints[:, 1:]   # (N, B)
+    return p_low, p_high
+
+def find_bucket_id_vec(prices: np.ndarray, exponential_value: float = 1.0001) -> np.ndarray:
+    """
+    prices: shape (N,) > 0
+    returns: shape (N,) int64
+    """
+    prices = np.asarray(prices, dtype=np.float64)
+    prices = np.maximum(prices, 1e-300)  # avoid log(0)
+    log_ev = np.log(exponential_value)
+    return np.floor(np.log(prices) / log_ev).astype(np.int64)
 
 
 # Functions for collecting fees
 # delta change of amount of Token A
-def delta_x(p1, p2):
-    return 1 / math.sqrt(p2) - 1 / math.sqrt(p1)
+# def delta_x(p1, p2):
+#     return 1 / math.sqrt(p2) - 1 / math.sqrt(p1)
 
 
-# delta change of amount of Token B
-def delta_y(p1, p2):
-    return math.sqrt(p2) - math.sqrt(p1)
+# # delta change of amount of Token B
+# def delta_y(p1, p2):
+#     return math.sqrt(p2) - math.sqrt(p1)
+
+def delta_x_vec(p_high, p_low):
+    p_high = np.asarray(p_high, dtype=np.float64)
+    p_low = np.asarray(p_low, dtype=np.float64)
+    p_high = np.maximum(p_high, 1e-300)
+    p_low = np.maximum(p_low, 1e-300)
+    return (1.0 / np.sqrt(p_low)) - (1.0 / np.sqrt(p_high))
 
 # transaction fee collected for a single price change by 1 unit of liquidity over [a, b]
-def transaction_fee_one_step(a, b, p1, p2, fee_rate):
-    # return token A, token B amounts
-    if (p1 < a and p2 < a) or (p1 > b and p2 > b) or p1 == p2:
-        return 0., 0.
-    if p1 < p2:
-        return 0., fee_rate * delta_y(max(p1, a), min(p2, b))
-    else:
-        return fee_rate * delta_x(min(b, p1), max(p2, a)), 0.
+def transaction_fee_one_step_vec(a, b, p1, p2, fee_rate):
+    a, b, p1, p2 = np.broadcast_arrays(
+        np.asarray(a, dtype=np.float64),
+        np.asarray(b, dtype=np.float64),
+        np.asarray(p1, dtype=np.float64),
+        np.asarray(p2, dtype=np.float64),
+    )
 
+    fee_a = np.zeros_like(p1, dtype=np.float64)
+    fee_b = np.zeros_like(p1, dtype=np.float64)
 
-# calculate transaction fee for a price sequence
-def transaction_fee_for_sequence(buckets, pool_price_seq, fee_rate):
-    """Calculates fee per unit of liquidity for each bucket over the price sequence."""
-    # Pre-allocate arrays (cleaner than appending to lists)
-    unit_fees_a = np.zeros(len(buckets))
-    unit_fees_b = np.zeros(len(buckets))
+    no_overlap_or_no_move = (
+        ((p1 < a) & (p2 < a)) |
+        ((p1 > b) & (p2 > b)) |
+        (p1 == p2)
+    )
+    valid = ~no_overlap_or_no_move
 
-    # Use zip to iterate over pairs (p1, p2) without manual indexing
-    for p1, p2 in zip(pool_price_seq[:-1], pool_price_seq[1:]):
-        for i, bucket in enumerate(buckets):
-            fa, fb = transaction_fee_one_step(
-                bucket['p_low'], 
-                bucket['p_high'], 
-                p1, 
-                p2, 
-                fee_rate
-            )
-            unit_fees_a[i] += fa
-            unit_fees_b[i] += fb
-            
-    return unit_fees_a, unit_fees_b
+    up = valid & (p1 < p2)
+    dn = valid & (p1 > p2)
 
+    # Price increases => Token B fees on overlap
+    if np.any(up):
+        lo = np.maximum(p1, a)
+        hi = np.minimum(p2, b)
+        ok = up & (hi > lo)
+        fee_b[ok] = fee_rate * (np.sqrt(hi[ok]) - np.sqrt(lo[ok]))
+
+    # Price decreases => Token A fees on overlap
+    if np.any(dn):
+        hi = np.minimum(b, p1)
+        lo = np.maximum(p2, a)
+        ok = dn & (hi > lo)
+        fee_a[ok] = fee_rate * delta_x_vec(hi[ok], lo[ok])
+
+    if fee_a.ndim == 0:
+        return float(fee_a), float(fee_b)
+    return fee_a, fee_b
 
 
 
