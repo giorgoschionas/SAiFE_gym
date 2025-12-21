@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_one_step, transaction_fee_for_sequence
+    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_for_sequence
 )
 
 
@@ -27,12 +27,14 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         arrival_model: ArrivalModel = None,
         fill_probability_model: PriceImpactModel = None,
         price_impact_model: PriceImpactModel = None,
+        num_trajectories: int = 1,
         seed: int = None,
     ):
         self.midprice_model = midprice_model
         self.arrival_model = arrival_model
         self.fill_probability_model = fill_probability_model
         self.price_impact_model = price_impact_model
+        self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
         self.seed_ = seed
 
@@ -73,8 +75,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self,
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
-        fill_probability_model: Optional[PriceImpactModel] = None,
-        price_impact_model: Optional[PriceImpactModel] = None,
+        num_trajectories: int = 1,
         initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of buckets on each side of current price
@@ -82,15 +83,17 @@ class UniswapV3ModelDynamics(ModelDynamics):
         non_arb_lambda: float = 0.00005,
         seed: int = None,
     ):
-        super().__init__(midprice_model, arrival_model, fill_probability_model, price_impact_model, seed)
+        super().__init__(midprice_model = midprice_model, 
+                         arrival_model = arrival_model, 
+                         num_trajectories = num_trajectories, 
+                         seed = seed)
 
         self.initial_capital = initial_capital
         self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
         self.tau = tau  # Hyperparameter for active bucket window
         self.exponential_value = exponential_value
-        self.non_arb_lambda = non_arb_lambda
-        self.use_mixed_strategy = True
+        self.non_arb_lambda = non_arb_lambda #Price movement of noisy trades
 
         # Dynamic action space: 2*tau + 1 active buckets around current price
         self.num_active_buckets = 2 * tau + 1
@@ -100,12 +103,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Return the action space for the agent.
         Action is a probability distribution over 2*tau+1 active buckets around current price.
         """
-        if self.use_mixed_strategy:
-            # Output probability distribution over 2*tau+1 active buckets
-            return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_active_buckets,), dtype=np.float32)
-        else:
-            # Output single bucket index (from 0 to 2*tau)
-            return gym.spaces.Discrete(self.num_active_buckets)
+
+        return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_active_buckets,), dtype=np.float32)
 
 
 
@@ -122,7 +121,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         2. Noisy trader orders: Apply multiplicative price impacts from BUY/SELL arrivals
         3. Fee collection: Calculate and accumulate fees from all price movements
         """
-        num_trajectories = self.state.shape[0]
 
         # ====================================================================
         # PHASE 0: Initialize price tracking and determine active buckets
@@ -134,7 +132,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Determine active buckets BEFORE any price changes
         # This ensures action probabilities map to correct absolute price ranges
         buckets_per_trajectory = []
-        for traj_idx in range(num_trajectories):
+        for traj_idx in range(self.num_trajectories):
             current_price = self.state[traj_idx, AMM_PRICE_INDEX] ** 2
             center_bucket_id = find_bucket_id(current_price, self.exponential_value)
             buckets = get_buckets_given_center_bucket_id(
@@ -171,7 +169,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[sell_mask, AMM_PRICE_INDEX] *= (1.0 - self.non_arb_lambda)
 
         # BUY orders increase price
-        self.state[buy_mask, AMM_PRICE_INDEX] *= (1.0 + self.non_arb_lambda)
+        self.state[buy_mask, AMM_PRICE_INDEX] /= (1.0 - self.non_arb_lambda)
 
         # Safety: ensure prices stay positive
         self.state[:, AMM_PRICE_INDEX] = np.maximum(self.state[:, AMM_PRICE_INDEX], 1e-8)
@@ -182,7 +180,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # PHASE 3: Fee Collection
         # ====================================================================
         # For each trajectory, calculate fees across active buckets
-        for traj_idx in range(num_trajectories):
+        for traj_idx in range(self.num_trajectories):
             buckets = buckets_per_trajectory[traj_idx]
 
             # Convert sqrt prices to regular prices for this trajectory
@@ -198,31 +196,27 @@ class UniswapV3ModelDynamics(ModelDynamics):
             if len(price_seq_compact) == 1:
                 continue
 
-            # For each active bucket
-            for bucket_idx, bucket in enumerate(buckets):
-                action_prob = action[traj_idx, bucket_idx]
+            # Vectorized fee calculation across all buckets
+            # Get fees per unit liquidity for all buckets at once
+            fees_token_a_per_bucket, fees_token_b_per_bucket = transaction_fee_for_sequence(
+                buckets, price_seq_compact, self.fee_tier
+            )
 
-                if action_prob > 1e-10:  # Skip if essentially zero
-                    # Calculate liquidity allocated to this bucket
-                    L_bucket = action_prob * self.initial_capital
+            # Convert to numpy arrays for vectorized operations
+            fees_token_a_per_bucket = np.array(fees_token_a_per_bucket)
+            fees_token_b_per_bucket = np.array(fees_token_b_per_bucket)
 
-                    # Calculate fees through price sequence
-                    for step_idx in range(len(price_seq_compact) - 1):
-                        p1 = price_seq_compact[step_idx]
-                        p2 = price_seq_compact[step_idx + 1]
+            # Get action probabilities for this trajectory (shape: num_active_buckets)
+            action_probs = action[traj_idx]
 
-                        # Get fees per unit liquidity
-                        fee_a, fee_b = transaction_fee_one_step(
-                            bucket['p_low'],
-                            bucket['p_high'],
-                            p1,
-                            p2,
-                            self.fee_tier
-                        )
+            # Calculate liquidity per bucket: L_bucket = action_prob * initial_capital
+            # Then scale fees by liquidity: fee_actual = fee_per_unit * L_bucket
+            # Combine: fee_actual = fee_per_unit * action_prob * initial_capital
+            liquidity_weights = action_probs * self.initial_capital
 
-                        # Scale by actual liquidity and accumulate
-                        self.state[traj_idx, FEES_TOKEN_A_INDEX] += fee_a * L_bucket
-                        self.state[traj_idx, FEES_TOKEN_B_INDEX] += fee_b * L_bucket
+            # Accumulate weighted fees (vectorized dot product)
+            self.state[traj_idx, FEES_TOKEN_A_INDEX] += np.dot(fees_token_a_per_bucket, liquidity_weights)
+            self.state[traj_idx, FEES_TOKEN_B_INDEX] += np.dot(fees_token_b_per_bucket, liquidity_weights)
 
 
     def get_arrivals_and_fills(self, action: np.ndarray):

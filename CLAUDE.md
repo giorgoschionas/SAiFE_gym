@@ -118,7 +118,7 @@ The `update_state` method processes state transitions through three sequential p
 #### Phase 2: Noisy Trader Orders
 - Processes arrivals array: `(num_trajectories, 2)` where columns are `[SELL, BUY]`
 - **SELL orders**: `sqrt_price *= (1 - non_arb_lambda)` (price decreases)
-- **BUY orders**: `sqrt_price *= (1 + non_arb_lambda)` (price increases)
+- **BUY orders**: `sqrt_price /= (1 - non_arb_lambda)` (price increases)
 - Applies multiplicative price impact based on `non_arb_lambda` parameter
 - If both BUY and SELL occur, both effects apply sequentially
 
