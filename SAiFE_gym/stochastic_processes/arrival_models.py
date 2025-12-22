@@ -56,7 +56,7 @@ class PoissonArrivalModel(ArrivalModel):
         return unif < self.intensity * self.step_size
     
 
-  class UnidirectionalPoissonArrivalModel(ArrivalModel):
+class UnidirectionalPoissonArrivalModel(ArrivalModel):
       """Unidirectional uninformed arrivals for path-dependent models.
       
       Each step has at most ONE order (either buy OR sell, not both).
