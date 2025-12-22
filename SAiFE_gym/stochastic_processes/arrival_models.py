@@ -54,3 +54,194 @@ class PoissonArrivalModel(ArrivalModel):
     def get_arrivals(self) -> np.ndarray:
         unif = self.rng.uniform(size=(self.num_trajectories, 2))
         return unif < self.intensity * self.step_size
+    
+
+  class UnidirectionalPoissonArrivalModel(ArrivalModel):
+      """Unidirectional uninformed arrivals for path-dependent models.
+      
+      Each step has at most ONE order (either buy OR sell, not both).
+      Direction is random (50/50) since traders are uninformed.
+      """
+
+      def __init__(
+          self,
+          intensity: float = 140.0,  # Single intensity (not array)
+          step_size: float = 0.001,
+          num_trajectories: int = 1,
+          seed: Optional[int] = None,
+      ):
+          self.intensity = intensity
+          super().__init__(
+              min_value=np.array([[]]),
+              max_value=np.array([[]]),
+              step_size=step_size,
+              terminal_time=0.0,
+              initial_state=np.array([[]]),
+              num_trajectories=num_trajectories,
+              seed=seed,
+          )
+
+      def get_arrivals(self) -> np.ndarray:
+          """Generate unidirectional arrivals (only one side per step)."""
+          # Step 1: Sample if order arrives
+          unif_arrival = self.rng.uniform(size=(self.num_trajectories,))
+          order_arrives = unif_arrival < self.intensity * self.step_size
+
+          # Step 2: Randomly choose direction (50/50 for uninformed)
+          unif_direction = self.rng.uniform(size=(self.num_trajectories,))
+          is_buy = unif_direction < 0.5  # 50% chance buy
+          is_sell = ~is_buy              # 50% chance sell
+
+          # Step 3: Combine arrival AND direction (only one side active)
+          arrivals = np.zeros((self.num_trajectories, 2))
+          arrivals[:, 0] = order_arrives & is_sell  # Sell side
+          arrivals[:, 1] = order_arrives & is_buy   # Buy side
+
+          return arrivals
+
+      def update(self, arrivals, fills, actions, state=None):
+          pass  
+    
+class InformedArrivalModel(ArrivalModel):
+    """Informed orderflow with directional bias based on the discrepancy between 
+    midprice and AMM price.
+    Only one side active per arrival (unidirectional).
+    """
+
+    def __init__(
+        self,
+        intensity: float = 14.0,  # 10x less than uninformed by default
+        midprice_model: StochasticProcessModel = None,
+        step_size: float = 0.001,
+        num_trajectories: int = 1,
+        seed: Optional[int] = None,
+    ):
+        self.intensity = intensity
+        self.midprice_model = midprice_model
+        self.previous_midprice = None
+
+        super().__init__(
+            min_value=np.array([[]]),
+            max_value=np.array([[]]),
+            step_size=step_size,
+            terminal_time=0.0,
+            initial_state=np.array([[]]),
+            num_trajectories=num_trajectories,
+            seed=seed,
+        )
+
+    def get_arrivals(self) -> np.ndarray:
+        """Generate directional arrivals based on midprice movement."""
+        # Get current midprice from midprice_model
+        if self.midprice_model is None:
+            return np.zeros((self.num_trajectories, 2))
+
+        current_midprice = self.midprice_model.current_state[:, 0:1]  # (num_traj, 1)
+
+        # Initialize on first call
+        if self.previous_midprice is None:
+            self.previous_midprice = current_midprice.copy()
+            return np.zeros((self.num_trajectories, 2))
+
+        # Calculate price change
+        price_change = current_midprice - self.previous_midprice  # (num_traj, 1)
+
+        # Sample if order arrives (Bernoulli)
+        unif = self.rng.uniform(size=(self.num_trajectories,))
+        order_arrives = unif < self.intensity * self.step_size  # (num_traj,)
+
+        # Determine direction (contrarian):
+        # Buy if price dropped (price_change < 0)
+        # Sell if price rose (price_change >= 0)
+        buy_signal = (price_change < 0).flatten()  # (num_traj,)
+        sell_signal = (price_change >= 0).flatten()  # (num_traj,)
+
+        # Combine: order arrives AND direction (only one side active)
+        arrivals = np.zeros((self.num_trajectories, 2))
+        arrivals[:, 0] = order_arrives & sell_signal  # Sell side
+        arrivals[:, 1] = order_arrives & buy_signal   # Buy side
+
+        # Update for next step
+        self.previous_midprice = current_midprice.copy()
+
+        return arrivals
+
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
+        pass
+
+    def reset(self):
+        """Reset midprice tracking."""
+        super().reset()
+        self.previous_midprice = None
+
+
+class MultiOrderflowArrivalModel(ArrivalModel):
+    """Combines multiple orderflows with different sampling frequencies.
+
+    Returns 3D array: (num_trajectories, num_orderflows, 2_sides)
+    """
+
+    def __init__(
+        self,
+        uninformed_model: ArrivalModel,
+        informed_model: ArrivalModel,
+        informed_frequency: int = 10,  # Sample informed every N steps
+        num_trajectories: int = 1,
+        seed: Optional[int] = None,
+    ):
+        self.uninformed_model = uninformed_model
+        self.informed_model = informed_model
+        self.informed_frequency = informed_frequency
+        self.step_counter = 0
+
+        super().__init__(
+            min_value=np.array([[]]),
+            max_value=np.array([[]]),
+            step_size=uninformed_model.step_size,
+            terminal_time=0.0,
+            initial_state=np.array([[]]),
+            num_trajectories=num_trajectories,
+            seed=seed,
+        )
+
+    def get_arrivals(self) -> np.ndarray:
+        """Get arrivals from both orderflows.
+
+        Returns:
+            np.ndarray: Shape (num_trajectories, 2, 2)
+                        [uninformed, informed] x [sell, buy]
+        """
+        # Always sample uninformed
+        uninformed = self.uninformed_model.get_arrivals()  # (num_traj, 2)
+
+        # Sample informed only every N steps
+        if self.step_counter % self.informed_frequency == 0:
+            informed = self.informed_model.get_arrivals()  # (num_traj, 2)
+        else:
+            informed = np.zeros((self.num_trajectories, 2))
+
+        self.step_counter += 1
+
+        # Stack into 3D: (num_traj, 2_orderflows, 2_sides)
+        return np.stack([uninformed, informed], axis=1)
+
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
+        """Update both underlying models."""
+        # Extract orderflows from 3D arrivals
+        if arrivals.ndim == 3:
+            uninformed_arrivals = arrivals[:, 0, :]  # (num_traj, 2)
+            informed_arrivals = arrivals[:, 1, :]    # (num_traj, 2)
+        else:
+            # Fallback for 2D (shouldn't happen, but for safety)
+            uninformed_arrivals = arrivals
+            informed_arrivals = np.zeros_like(arrivals)
+
+        self.uninformed_model.update(uninformed_arrivals, fills, actions, state)
+        self.informed_model.update(informed_arrivals, fills, actions, state)
+
+    def reset(self):
+        """Reset both models and step counter."""
+        super().reset()
+        self.step_counter = 0
+        self.uninformed_model.reset()
+        self.informed_model.reset()

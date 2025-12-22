@@ -111,9 +111,7 @@ def update_state(self, arrivals: np.ndarray, action: np.ndarray):
       - vectorized fee collection across trajectories (loop only over buckets)
       - transaction_fee_one_step_vec directly (no scalar fallback)
     """
-    N = self.state.shape[0]
-    B = action.shape[1]  # expected: 2*self.tau + 1
-
+    
     # ====================================================================
     # PHASE 0: Determine active buckets (vectorized) and store initial price
     # ====================================================================
@@ -156,7 +154,7 @@ def update_state(self, arrivals: np.ndarray, action: np.ndarray):
     move01 = ~np.isclose(price_0, price_1)
     move12 = ~np.isclose(price_1, price_2)
 
-    for b in range(B):
+    for b in range(self.num_active_buckets):
         probs = action[:, b]                 # (N,)
         active = probs > 1e-10
         if not np.any(active):
