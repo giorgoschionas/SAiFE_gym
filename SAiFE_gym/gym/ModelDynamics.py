@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-    get_buckets_given_center_bucket_id, find_bucket_id, is_out_of_range, transaction_fee_one_step_vec
+   bucket_bounds_from_center_ids, find_bucket_id_vec, transaction_fee_one_step_vec
 )
 
 
@@ -144,7 +144,7 @@ def update_state(self, arrivals: np.ndarray, action: np.ndarray):
 
     price_sqrt_2 = price_sqrt_1.copy()
     price_sqrt_2[sell_mask] *= (1.0 - self.non_arb_lambda)
-    price_sqrt_2[buy_mask] *= (1.0 + self.non_arb_lambda)
+    price_sqrt_2[buy_mask] /= (1.0 - self.non_arb_lambda)
 
     price_sqrt_2 = np.maximum(price_sqrt_2, 1e-8)
     self.state[:, AMM_PRICE_INDEX] = price_sqrt_2
