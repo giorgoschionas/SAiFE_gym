@@ -25,7 +25,16 @@ class ArrivalModel(StochasticProcessModel):
         super().__init__(min_value, max_value, step_size, terminal_time, initial_state, num_trajectories, seed)
 
     @abc.abstractmethod
-    def get_arrivals(self) -> np.ndarray:
+    def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
+        """Generate arrival events.
+
+        Args:
+            state: Optional environment state of shape (num_trajectories, state_dim).
+                   Required for state-dependent models like PoissonLinearArrivalModel.
+
+        Returns:
+            np.ndarray: Arrival indicators of shape (num_trajectories, 2) for [SELL, BUY]
+        """
         pass
 
 
@@ -51,9 +60,104 @@ class PoissonArrivalModel(ArrivalModel):
     def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
         pass
 
-    def get_arrivals(self) -> np.ndarray:
+    def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
+        """Generate arrivals using Poisson process (state-independent).
+
+        Args:
+            state: Optional state (unused, for signature compatibility)
+
+        Returns:
+            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+        """
         unif = self.rng.uniform(size=(self.num_trajectories, 2))
         return unif < self.intensity * self.step_size
+    
+
+class PoissonLinearArrivalModel(ArrivalModel):
+    def __init__(
+            self,
+            # applying the linear model with intensities a0, a1, a2, a3 - For now, I put arbitrary values
+            intensity: np.ndarray = np.array([[140.0, 140.0], [130, 130], [120, 120], [110, 110]]),
+            step_size: float = 0.001,
+            num_trajectories: int = 1,
+            seed: Optional[int] = None,
+    ):
+        self.intensity = np.array(intensity)
+
+        # Validate intensity shape
+        assert self.intensity.shape == (4, 2), \
+            f"intensity must have shape (4, 2) for [a0, a1, a2, a3] x [SELL, BUY], got {self.intensity.shape}"
+
+        # Validate a_0 >= 0 (minimum intensity must be non-negative)
+        assert np.all(self.intensity[0, :] >= 0), \
+            f"a_0 (minimum intensity) must be non-negative, got {self.intensity[0, :]}"
+
+        super().__init__(
+            min_value=np.array([[]]),
+            max_value=np.array([[]]),
+            step_size=step_size,
+            terminal_time=0.0,
+            initial_state=np.array([[]]),
+            num_trajectories=num_trajectories,
+            seed=seed,
+        )
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
+        pass
+
+    def get_arrivals(self, state: np.ndarray) -> np.ndarray:
+        """Generate arrivals with state-dependent linear intensity.
+
+        Formula: a = max(a_0, a_1 + a_2*L + a_3*(Z-S))
+        Applied separately for SELL and BUY sides.
+
+        Args:
+            state: Environment state of shape (num_trajectories, state_dim).
+                   Must contain LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX.
+
+        Returns:
+            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+
+        Raises:
+            ValueError: If state is None or has wrong batch size
+        """
+        # Import indices (avoid circular import)
+        from SAiFE_gym.gym.index_names import (
+            LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX
+        )
+
+        # Validate state
+        if state is None:
+            raise ValueError("PoissonLinearArrivalModel requires state parameter")
+        if state.shape[0] != self.num_trajectories:
+            raise ValueError(
+                f"State batch size {state.shape[0]} != num_trajectories {self.num_trajectories}"
+            )
+
+        # Extract state variables (vectorized across trajectories)
+        L = state[:, LIQUIDITY_INDEX]           # (N,)
+        Z_sqrt = state[:, AMM_PRICE_INDEX]      # (N,) - SQRT price!
+        Z = Z_sqrt ** 2                          # Convert sqrt to regular price
+        S = state[:, ASSET_PRICE_INDEX]         # (N,)
+
+        # Extract intensity parameters: shape (4, 2) for [SELL, BUY]
+        a_0 = self.intensity[0, :]  # (2,) - minimum intensity
+        a_1 = self.intensity[1, :]  # (2,) - base intensity
+        a_2 = self.intensity[2, :]  # (2,) - liquidity coefficient
+        a_3 = self.intensity[3, :]  # (2,) - price discrepancy coefficient
+
+        # Compute intensity: broadcast (N,) × (2,) -> (N, 2)
+        price_discrepancy = (Z - S)[:, None]  # (N, 1)
+        linear_part = a_1 + a_2 * L[:, None] + a_3 * price_discrepancy  # (N, 2)
+
+        # Apply floor at minimum intensity
+        intensity_computed = np.maximum(a_0, linear_part)  # (N, 2)
+
+        # Sample Bernoulli trials for arrivals
+        unif = self.rng.uniform(size=(self.num_trajectories, 2))
+        arrivals = unif < intensity_computed * self.step_size  # (N, 2)
+
+        return arrivals 
+
     
 
 class UnidirectionalPoissonArrivalModel(ArrivalModel):
@@ -65,7 +169,7 @@ class UnidirectionalPoissonArrivalModel(ArrivalModel):
 
       def __init__(
           self,
-          intensity: float = 140.0,  # Single intensity (not array)
+          intensity: float = 140.0,  
           step_size: float = 0.001,
           num_trajectories: int = 1,
           seed: Optional[int] = None,
@@ -81,8 +185,15 @@ class UnidirectionalPoissonArrivalModel(ArrivalModel):
               seed=seed,
           )
 
-      def get_arrivals(self) -> np.ndarray:
-          """Generate unidirectional arrivals (only one side per step)."""
+      def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
+          """Generate unidirectional arrivals (only one side per step).
+
+          Args:
+              state: Optional state (unused, for signature compatibility)
+
+          Returns:
+              np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+          """
           # Step 1: Sample if order arrives
           unif_arrival = self.rng.uniform(size=(self.num_trajectories,))
           order_arrives = unif_arrival < self.intensity * self.step_size
@@ -130,8 +241,15 @@ class InformedArrivalModel(ArrivalModel):
             seed=seed,
         )
 
-    def get_arrivals(self) -> np.ndarray:
-        """Generate directional arrivals based on midprice movement."""
+    def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
+        """Generate directional arrivals based on midprice movement.
+
+        Args:
+            state: Optional state (unused, uses self.midprice_model instead)
+
+        Returns:
+            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+        """
         # Get current midprice from midprice_model
         if self.midprice_model is None:
             return np.zeros((self.num_trajectories, 2))
@@ -174,7 +292,7 @@ class InformedArrivalModel(ArrivalModel):
         super().reset()
         self.previous_midprice = None
 
-
+# NEED TO BE CHECKED
 class MultiOrderflowArrivalModel(ArrivalModel):
     """Combines multiple orderflows with different sampling frequencies.
 
@@ -204,19 +322,22 @@ class MultiOrderflowArrivalModel(ArrivalModel):
             seed=seed,
         )
 
-    def get_arrivals(self) -> np.ndarray:
+    def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
         """Get arrivals from both orderflows.
+
+        Args:
+            state: Optional environment state to pass to sub-models
 
         Returns:
             np.ndarray: Shape (num_trajectories, 2, 2)
                         [uninformed, informed] x [sell, buy]
         """
-        # Always sample uninformed
-        uninformed = self.uninformed_model.get_arrivals()  # (num_traj, 2)
+        # Always sample uninformed (pass state to sub-model)
+        uninformed = self.uninformed_model.get_arrivals(state)  # (num_traj, 2)
 
         # Sample informed only every N steps
         if self.step_counter % self.informed_frequency == 0:
-            informed = self.informed_model.get_arrivals()  # (num_traj, 2)
+            informed = self.informed_model.get_arrivals(state)  # (num_traj, 2)
         else:
             informed = np.zeros((self.num_trajectories, 2))
 

@@ -104,17 +104,14 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
 
 
-def update_state(self, arrivals: np.ndarray, action: np.ndarray):
+def update_state(self, arrivals: np.ndarray, action: np.ndarray, arbitrage: bool):
     """
     Vectorized update_state using:
       - vectorized bucket selection (center_ids -> p_low/p_high arrays)
       - vectorized fee collection across trajectories (loop only over buckets)
       - transaction_fee_one_step_vec directly (no scalar fallback)
     """
-    
-    # ====================================================================
-    # PHASE 0: Determine active buckets (vectorized) and store initial price
-    # ====================================================================
+
     price_sqrt_0 = self.state[:, AMM_PRICE_INDEX].copy()
     price_0 = price_sqrt_0 ** 2
 
@@ -123,73 +120,22 @@ def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         center_ids, self.tau, self.exponential_value
     )  # both (N, B)
 
-    # ====================================================================
-    # PHASE 1: Arbitrage Trades (vectorized)
-    # ====================================================================
-    midprice = self.midprice.reshape(-1)  # (N,)
-    lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
-    upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
+    if arbitrage:
+        midprice = self.midprice.reshape(-1)  # (N,)
+        lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
+        upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
 
-    price_sqrt_1 = np.clip(price_sqrt_0, lower_bound, upper_bound)
-    self.state[:, AMM_PRICE_INDEX] = price_sqrt_1
-    price_1 = price_sqrt_1 ** 2
+        price_sqrt_1 = np.clip(price_sqrt_0, lower_bound, upper_bound)
+        self.state[:, AMM_PRICE_INDEX] = price_sqrt_1
+    else:
+        self.state[:, AMM_PRICE_INDEX] *= (1- self.non_arb_lambda * np.sum(arrivals*self.fill_multiplier, axis =1))
 
-    # ====================================================================
-    # PHASE 2: Noisy Trader Orders (vectorized)
-    # ====================================================================
-    sell_mask = arrivals[:, 0].astype(bool)
-    buy_mask = arrivals[:, 1].astype(bool)
+    # TODO Update self.state[:, FEES_TOKEN_A_INDEX] & self.state[FEES_TOKEN_B_INDEX]
 
-    price_sqrt_2 = price_sqrt_1.copy()
-    price_sqrt_2[sell_mask] *= (1.0 - self.non_arb_lambda)
-    price_sqrt_2[buy_mask] /= (1.0 - self.non_arb_lambda)
-
-    price_sqrt_2 = np.maximum(price_sqrt_2, 1e-8)
-    self.state[:, AMM_PRICE_INDEX] = price_sqrt_2
-    price_2 = price_sqrt_2 ** 2
-
-    # ====================================================================
-    # PHASE 3: Fee Collection (vectorized over trajectories; loop over buckets)
-    # ====================================================================
-    move01 = ~np.isclose(price_0, price_1)
-    move12 = ~np.isclose(price_1, price_2)
-
-    for b in range(self.num_active_buckets):
-        probs = action[:, b]                 # (N,)
-        active = probs > 1e-10
-        if not np.any(active):
-            continue
-
-        L = probs * self.initial_capital     # (N,)
-
-        # Step 0 -> 1
-        mask = active & move01
-        if np.any(mask):
-            fa, fb = transaction_fee_one_step_vec(
-                p_low[mask, b],
-                p_high[mask, b],
-                price_0[mask],
-                price_1[mask],
-                self.fee_tier
-            )
-            self.state[mask, FEES_TOKEN_A_INDEX] += fa * L[mask]
-            self.state[mask, FEES_TOKEN_B_INDEX] += fb * L[mask]
-
-        # Step 1 -> 2
-        mask = active & move12
-        if np.any(mask):
-            fa, fb = transaction_fee_one_step_vec(
-                p_low[mask, b],
-                p_high[mask, b],
-                price_1[mask],
-                price_2[mask],
-                self.fee_tier
-            )
-            self.state[mask, FEES_TOKEN_A_INDEX] += fa * L[mask]
-            self.state[mask, FEES_TOKEN_B_INDEX] += fb * L[mask]
 
 
     def get_arrivals(self):
-        arrivals = self.arrival_model.get_arrivals()
+        """Get arrivals from arrival model, passing current state."""
+        arrivals = self.arrival_model.get_arrivals(self.state)
         return arrivals
 
