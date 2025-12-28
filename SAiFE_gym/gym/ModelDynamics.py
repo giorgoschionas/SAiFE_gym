@@ -102,6 +102,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return gym.spaces.Box(low=0.0, high=1.0, shape=(self.num_active_buckets,), dtype=np.float32)
 
+def update_state(self, arrivals: np.ndarray, action: np.ndarray):
+    """
+    update_state using a unified orderflow that captures 
+    baseline, depth-dependent and arbitrage flow
+    """
+    pass 
 
 
 def update_state(self, arrivals: np.ndarray, action: np.ndarray, arbitrage: bool):

@@ -1,0 +1,1 @@
+Yes, I want you to refactor the function `execute_swap_vec` to an array-based approach in order to be able to vectorize across trajectories. I want you to think hard how to implement a fully vectorized sapw that processes all trajectories in parallel. Keep the current dict-based version for reference.
