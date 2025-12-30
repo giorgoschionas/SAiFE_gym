@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
 )
 
 from SAiFE_gym.gym.helpers.AMM_utils import (
-   bucket_bounds_from_center_ids, find_bucket_id_vec, transaction_fee_one_step_vec
+   bucket_bounds_from_center_ids, find_bucket_id_vec
 )
 
 
@@ -72,11 +72,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
         num_trajectories: int = 1,
-        initial_capital: float = 10000.0,  # Total initial capital to provide as liquidity
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of buckets on each side of current price
         exponential_value: float = 1.0001, # Base for exponential bucket spacing (Uniswap V3 tick spacing)
-        non_arb_lambda: float = 0.00005,
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model, 
@@ -84,12 +82,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
                          num_trajectories = num_trajectories, 
                          seed = seed)
 
-        self.initial_capital = initial_capital
         self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
         self.tau = tau  # Hyperparameter for active bucket window
         self.exponential_value = exponential_value
-        self.non_arb_lambda = non_arb_lambda #Price movement of noisy trades
 
         # Dynamic action space: 2*tau + 1 active buckets around current price
         self.num_active_buckets = 2 * tau + 1
@@ -108,36 +104,6 @@ def update_state(self, arrivals: np.ndarray, action: np.ndarray):
     baseline, depth-dependent and arbitrage flow
     """
     pass 
-
-
-def update_state(self, arrivals: np.ndarray, action: np.ndarray, arbitrage: bool):
-    """
-    Vectorized update_state using:
-      - vectorized bucket selection (center_ids -> p_low/p_high arrays)
-      - vectorized fee collection across trajectories (loop only over buckets)
-      - transaction_fee_one_step_vec directly (no scalar fallback)
-    """
-
-    price_sqrt_0 = self.state[:, AMM_PRICE_INDEX].copy()
-    price_0 = price_sqrt_0 ** 2
-
-    center_ids = find_bucket_id_vec(price_0, self.exponential_value)  # (N,)
-    p_low, p_high = bucket_bounds_from_center_ids(
-        center_ids, self.tau, self.exponential_value
-    )  # both (N, B)
-
-    if arbitrage:
-        midprice = self.midprice.reshape(-1)  # (N,)
-        lower_bound = np.sqrt((1.0 - self.fee_tier) * midprice)
-        upper_bound = np.sqrt(midprice / (1.0 - self.fee_tier))
-
-        price_sqrt_1 = np.clip(price_sqrt_0, lower_bound, upper_bound)
-        self.state[:, AMM_PRICE_INDEX] = price_sqrt_1
-    else:
-        self.state[:, AMM_PRICE_INDEX] *= (1- self.non_arb_lambda * np.sum(arrivals*self.fill_multiplier, axis =1))
-
-    # TODO Update self.state[:, FEES_TOKEN_A_INDEX] & self.state[FEES_TOKEN_B_INDEX]
-
 
 
     def get_arrivals(self):

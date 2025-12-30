@@ -274,9 +274,6 @@ def execute_swap_vec_array(
     """
     Fully vectorized Uniswap v3 swap processing all trajectories in parallel.
 
-    This is the array-based implementation that processes all trajectories simultaneously
-    using active trajectory masking, providing 10-100x speedup over the dict-based version.
-
     Args:
         sqrt_price_current: Current sqrt(price) for each trajectory, shape (num_trajectories,)
         liquidity_array: Liquidity per tick, either:
@@ -295,12 +292,8 @@ def execute_swap_vec_array(
             - amount_out: Total output amount for each trajectory, shape (num_trajectories,)
             - fee_amount: Total fee paid for each trajectory, shape (num_trajectories,)
             - ticks_crossed: Number of ticks crossed for each trajectory, shape (num_trajectories,)
-
-    Performance:
-        - Dict version: O(N × T) where N=num_trajectories, T=avg_ticks_crossed
-        - Array version: O(MAX_ITER) where MAX_ITER ≈ max_ticks_crossed
-        - Expected speedup: 10-100x for batches of 100-1000 trajectories
     """
+
     # Ensure inputs are arrays
     sqrt_price_current = np.atleast_1d(sqrt_price_current)
     amount_in = np.atleast_1d(amount_in)
@@ -340,7 +333,7 @@ def execute_swap_vec_array(
         # Vectorized liquidity lookup
         tick_indices = current_ticks - tick_lower
 
-        # Bounds checking - treat out-of-bounds as zero liquidity
+        # Bounds checking - treat out-of-bounds as zero  
         out_of_bounds = (tick_indices < 0) | (tick_indices >= num_ticks)
 
         # Get liquidity for active trajectories
@@ -426,48 +419,6 @@ def execute_swap_vec_array(
                 )
 
     return sqrt_p, amount_out_total, fee_total, ticks_crossed
-
-
-
-# transaction fee collected for a single price change by 1 unit of liquidity over [a, b]
-def transaction_fee_one_step_vec(a, b, p1, p2, fee_rate):
-    a, b, p1, p2 = np.broadcast_arrays(
-        np.asarray(a, dtype=np.float64),
-        np.asarray(b, dtype=np.float64),
-        np.asarray(p1, dtype=np.float64),
-        np.asarray(p2, dtype=np.float64),
-    )
-
-    fee_a = np.zeros_like(p1, dtype=np.float64)
-    fee_b = np.zeros_like(p1, dtype=np.float64)
-
-    no_overlap_or_no_move = (
-        ((p1 < a) & (p2 < a)) |
-        ((p1 > b) & (p2 > b)) |
-        (p1 == p2)
-    )
-    valid = ~no_overlap_or_no_move
-
-    up = valid & (p1 < p2)
-    dn = valid & (p1 > p2)
-
-    # Price increases => Token B fees on overlap
-    if np.any(up):
-        lo = np.maximum(p1, a)
-        hi = np.minimum(p2, b)
-        ok = up & (hi > lo)
-        fee_b[ok] = fee_rate * (np.sqrt(hi[ok]) - np.sqrt(lo[ok]))
-
-    # Price decreases => Token A fees on overlap
-    if np.any(dn):
-        hi = np.minimum(b, p1)
-        lo = np.maximum(p2, a)
-        ok = dn & (hi > lo)
-        fee_a[ok] = fee_rate * delta_x_vec(hi[ok], lo[ok])
-
-    if fee_a.ndim == 0:
-        return float(fee_a), float(fee_b)
-    return fee_a, fee_b
 
 
 
