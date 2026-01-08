@@ -15,3 +15,5 @@ TMP_NOTEBOOKS
 __pycache__/
 *.py[cod]
 *$py.class
+
+prompts/

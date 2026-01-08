@@ -68,47 +68,6 @@ def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
         return L * (2 * sqrt_price_current - sqrt_price_lower - (P / sqrt_price_upper))
 
 
-
-def bucket_bounds_from_center_ids(
-    center_ids: np.ndarray,
-    tau: int = 5,
-    exponential_value: float = 1.0001
-) -> tuple[np.ndarray, np.ndarray]:
-    """
-    center_ids: shape (N,) int
-    returns:
-      p_low:  shape (N, 2*tau+1)
-      p_high: shape (N, 2*tau+1)
-    """
-    center_ids = np.asarray(center_ids, dtype=np.int64)
-    N = center_ids.shape[0]
-
-    # endpoints count is B+1 = (2*tau+1) + 1 = 2*tau+2
-    # offsets for endpoints: [-tau, ..., +tau+1]
-    endpoint_offsets = np.arange(-tau, tau + 2, dtype=np.int64)  # length 2*tau+2
-
-    # exponents: shape (N, B+1)
-    exponents = center_ids[:, None] + endpoint_offsets[None, :]
-
-    # compute endpoints: ev**exponent, vectorized
-    log_ev = np.log(exponential_value)
-    endpoints = np.exp(exponents.astype(np.float64) * log_ev)  # (N, B+1)
-
-    p_low = endpoints[:, :-1]   # (N, B)
-    p_high = endpoints[:, 1:]   # (N, B)
-    return p_low, p_high
-
-def find_bucket_id_vec(prices: np.ndarray, exponential_value: float = 1.0001) -> np.ndarray:
-    """
-    prices: shape (N,) > 0
-    returns: shape (N,) int64
-    """
-    prices = np.asarray(prices, dtype=np.float64)
-    prices = np.maximum(prices, 1e-300)  # avoid log(0)
-    log_ev = np.log(exponential_value)
-    return np.floor(np.log(prices) / log_ev).astype(np.int64)
-
-
 # Functions for collecting fees
 # delta change of amount of Token A
 # def delta_x(p1, p2):
@@ -422,6 +381,100 @@ def execute_swap_vec_array(
 
 
 
-# ============================================================================
-# Uniswap V4 Hook Functions
-# ============================================================================
+def collect_fees_vec(
+    liquidity_array: np.ndarray,
+    tick_lower_global: int,
+    sqrt_price_start: np.ndarray,
+    sqrt_price_end: np.ndarray,
+    lp_tick_lower: np.ndarray,
+    lp_tick_upper: np.ndarray,
+    lp_liquidity: np.ndarray,
+    fee_rate: float,
+    exponential_value: float = 1.0001
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Calculate fees collected by LP positions during price movement (vectorized).
+
+    This function calculates the fees earned by LP positions as the price moves
+    from sqrt_price_start to sqrt_price_end. Fees are proportional to:
+    - The LP's liquidity in each tick
+    - The trading volume that occurred in that tick
+    - The fee rate
+
+    Args:
+        liquidity_array: Pool liquidity per tick, either (num_ticks,) or (num_trajectories, num_ticks)
+        tick_lower_global: Starting tick index for liquidity_array
+        sqrt_price_start: (num_trajectories,) starting sqrt prices
+        sqrt_price_end: (num_trajectories,) ending sqrt prices
+        lp_tick_lower: (num_trajectories,) LP position lower bounds
+        lp_tick_upper: (num_trajectories,) LP position upper bounds
+        lp_liquidity: (num_trajectories,) LP position liquidity amounts
+        fee_rate: Pool fee rate (e.g., 0.003 for 0.3%)
+        exponential_value: Base for tick spacing
+
+    Returns:
+        (fees_token_a, fees_token_b) each shape (num_trajectories,)
+
+    Note:
+        This is a simplified fee calculation that approximates fees based on
+        price movement through the LP's range. Full Uniswap v3 fee accounting
+        would require tracking fee growth accumulators per tick.
+    """
+    num_trajectories = len(sqrt_price_start)
+    fees_token_a = np.zeros(num_trajectories, dtype=np.float64)
+    fees_token_b = np.zeros(num_trajectories, dtype=np.float64)
+
+    # For each trajectory, calculate fees based on price movement
+    for i in range(num_trajectories):
+        # Skip if LP has no liquidity
+        if lp_liquidity[i] == 0:
+            continue
+
+        p_start = sqrt_price_start[i] ** 2
+        p_end = sqrt_price_end[i] ** 2
+
+        # Skip if no price movement
+        if p_start == p_end:
+            continue
+
+        # Get LP position bounds
+        tick_low = lp_tick_lower[i]
+        tick_high = lp_tick_upper[i]
+        p_low = exponential_value ** tick_low
+        p_high = exponential_value ** tick_high
+
+        # Clip price movement to LP's range
+        p_start_clipped = np.clip(p_start, p_low, p_high)
+        p_end_clipped = np.clip(p_end, p_low, p_high)
+
+        # If both prices outside range (same side), no fees collected
+        if p_start_clipped == p_end_clipped:
+            continue
+
+        # Simplified fee calculation: approximate trading volume
+        # In reality, we'd need to integrate across all ticks with proper liquidity
+        # For now, use a simplified model:
+
+        # Calculate effective volume that touched the LP's range
+        price_change = abs(p_end_clipped - p_start_clipped)
+
+        # Fee is proportional to volume, which is proportional to sqrt(price) change
+        # This is a simplification - real calculation would sum across ticks
+        sqrt_p_start_clipped = np.sqrt(p_start_clipped)
+        sqrt_p_end_clipped = np.sqrt(p_end_clipped)
+
+        # Determine direction
+        if p_end > p_start:
+            # Price increased: collect fees in Token A
+            delta = delta_x_vec(p_end_clipped, p_start_clipped)
+            # Volume = liquidity * delta
+            volume_token_a = lp_liquidity[i] * delta
+            fees_token_a[i] = volume_token_a * fee_rate
+        else:
+            # Price decreased: collect fees in Token B
+            delta = delta_y_vec(p_start_clipped, p_end_clipped)
+            volume_token_b = lp_liquidity[i] * delta
+            fees_token_b[i] = volume_token_b * fee_rate
+
+    return fees_token_a, fees_token_b
+

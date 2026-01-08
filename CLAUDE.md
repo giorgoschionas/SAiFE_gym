@@ -54,10 +54,8 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
-   - **Dynamic action space**: Only buckets within `2*tau +1` of current price are "active"
+   - **Dynamic action space**: Only ticks within `2*tau +1` of current price are "active"
    - Processes order flow and updates LP state via `update_state()` method
-   - Uses **(P, L) parameterization**: stores AMM sqrt price and LP's liquidity; computes token amounts on-demand
-   - **3-Phase State Update**: Arbitrage correction → Noisy trader orders → Fee collection
 
 3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
    - `MidpriceModel`: Price dynamics (Brownian Motion, Geometric Brownian Motion)
@@ -67,12 +65,10 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 4. **Agents** (`agents/`) - Trading strategies
    - All inherit from `Agent` base class with `get_action(state) -> action` interface
-   - **Action format**: Probability distribution over **active buckets only** (shape: `num_trajectories × (2*tau+1)`)
+   - **Action format**: Probability distribution over **active ticks only** (shape: `num_trajectories × (2*tau+1)`)
    - **Baseline agents**:
      - `RandomAgent`: Samples from action space
-     - `UniformAllocationAgent`: Equal allocation across 2τ+1 active buckets
-     - `SingleBucketAgent`: Concentrates on one active bucket (e.g., center, leftmost, rightmost)
-     - `CurrentPriceBucketAgent`: Always allocates to center bucket (contains current price)
+     - `UniformAllocationAgent`: Equal allocation across 2τ+1 active tick
 
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
@@ -93,16 +89,16 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 **Critical Note**: `AMM_PRICE_INDEX` stores the square root of price (√P), following Uniswap V3 convention. When calling helper functions that expect regular price, convert using `price = sqrt_price ** 2`.
 
-### Action Space - Dynamic Active Buckets
+### Action Space - Dynamic Active Ticks
 
-**IMPORTANT**: The action space is DYNAMIC - agents allocate only to "active buckets" around the current price.
+**IMPORTANT**: The action space is DYNAMIC - agents allocate only to "active ticks" around the current price.
 
 **Key Concept:**
-- **Tau (τ)**: Hyperparameter defining the active bucket window
-- **Active buckets**: 2τ+1 consecutive price buckets centered on the current price
-  - τ buckets below current price
-  - 1 bucket containing current price (center bucket at index τ)
-  - τ buckets above current price
+- **Tau (τ)**: Hyperparameter defining the active tick window
+- **Active ticks**: 2τ+1 consecutive price ticks centered on the current price
+  - τ ticks below current price
+  - 1 tick containing current price (center tick at index τ)
+  - τ ticks above current price
 - **Action space shape**: `Box(low=0, high=1, shape=(2*tau+1,))`
 
 **Why dynamic?**
@@ -110,49 +106,24 @@ The environment follows a standard RL cycle with AMM-specific components:
 - Reduces action space dimensionality
 - Moves the active window as price evolves and LPs gets out of range
 
-**Bucket Structure:**
-- Each bucket: `{'p_low': lower_price, 'p_high': upper_price}`
-- Bucket endpoints use exponential spacing: `base^tick_id` (default base=1.0001, matching Uniswap V3)
-- Buckets are created on-demand based on current price using helper functions
+**tick Structure:**
+- Each tick: `{'p_low': lower_price, 'p_high': upper_price}`
+- tick endpoints use exponential spacing: `base^tick_id` (default base=1.0001, matching Uniswap V3)
+- ticks are created on-demand based on current price using helper functions
 
 **Helper functions** (`gym/helpers/AMM_utils.py`):
-- `find_bucket_id(price)`: Maps price → bucket ID (tick index) via `floor(log(price))`
-- `get_buckets_given_center_bucket_id(center_id, tau)`: Creates 2τ+1 buckets centered around a tick
-- `create_buckets(endpoints)`: Converts tick endpoints to bucket dictionaries
+- `find_tick_id(price)`: Maps price → tick ID (tick index) via `floor(log(price))`
+- `get_ticks_given_center_tick_id(center_id, tau)`: Creates 2τ+1 ticks centered around a tick
+- `create_ticks(endpoints)`: Converts tick endpoints to tick dictionaries
 - `price_to_tick(price)` / `tick_to_price(tick)`: Standard Uniswap V3 conversions
 
 **Action interpretation:**
-- If `use_mixed_strategy=True`: Action is probability distribution over 2τ+1 active buckets (must sum to 1.0)
-- Otherwise: Single discrete bucket index (0 to 2τ)
+- If `use_mixed_strategy=True`: Action is probability distribution over 2τ+1 active ticks (must sum to 1.0)
+- Otherwise: Single discrete tick index (0 to 2τ)
 
 ### State Update Mechanism
 
-**3-Phase Update Algorithm** (in `ModelDynamics.update_state()`):
 
-The `update_state` method processes state transitions through three sequential phases:
-
-#### Phase 1: Arbitrage Correction
-- Checks if AMM price is outside no-arbitrage bounds
-- Bounds (in sqrt space): `[√((1-fee)*midprice), √(midprice/(1-fee))]`
-- Snaps price back to bounds if profitable arbitrage exists
-- Prevents arbitrageurs from extracting value from the pool
-
-#### Phase 2: Noisy Trader Orders
-- Processes arrivals array: `(num_trajectories, 2)` where columns are `[SELL, BUY]`
-- **SELL orders**: `sqrt_price *= (1 - non_arb_lambda)` (price decreases)
-- **BUY orders**: `sqrt_price /= (1 - non_arb_lambda)` (price increases)
-- Applies multiplicative price impact based on `non_arb_lambda` parameter
-- If both BUY and SELL occur, both effects apply sequentially
-
-#### Phase 3: Fee Collection
-- Determines active buckets based on **initial** price (before movements)
-- For each bucket with non-zero action probability:
-  - Calculates liquidity: `L_bucket = action[bucket_idx] * initial_capital`
-  - Tracks price sequence: [initial → after arbitrage → after noisy trades]
-  - Calls `transaction_fee_one_step(bucket_low, bucket_high, p1, p2, fee_rate)`
-  - Scales fees by liquidity: `fee_actual = fee_per_unit * L_bucket`
-  - Accumulates in `FEES_TOKEN_A_INDEX` and `FEES_TOKEN_B_INDEX`
-- Fees collected from **both** arbitrage and noisy trader price movements
 
 **Key Parameters**:
 - `non_arb_lambda` (default: 0.00005): Price impact per noisy trader order
@@ -161,13 +132,6 @@ The `update_state` method processes state transitions through three sequential p
 
 ### Key Utility Functions
 
-**AMM Utilities** (`gym/helpers/AMM_utils.py`):
-- `CPMM_Spot_Price(X, Y)`: Constant product market maker price
-- `calculate_liquidity_amounts(sqrt_price_current, sqrt_price_lower, sqrt_price_upper, amount0, amount1)`: Compute liquidity for given token amounts and price range
-- `get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper)`: Calculate mark-to-market value of LP position
-- Price/tick conversions for Uniswap V3:
-  - `price_to_tick(price)`: Convert price to tick index
-  - `tick_to_price(tick)`: Convert tick index to price
 
 **Vectorized Swap Functions** (`gym/helpers/AMM_utils.py`):
 
@@ -196,7 +160,6 @@ The `update_state` method processes state transitions through three sequential p
    - Fully vectorized with `np.where()` conditionals (no Python loops)
    - Handles both scalar and array inputs via `np.atleast_1d()`
    - Fee output represents swapper's fee, different from Uniswap v3's `feeGrowthOutside0X128`
-   - Stateless design (vs Uniswap v3's stateful tick tracking)
 
 2. **`execute_swap_vec_array()`** - Multi-tick vectorized swap execution
    ```python
@@ -280,17 +243,17 @@ price = np.where(active, update_price(price, amount), price)
 ### Environment Initialization
 
 When creating `UniswapV3ModelDynamics`:
-- **Must provide `tau`** parameter (number of buckets on each side of current price)
+- **Must provide `tau`** parameter (number of ticks on each side of current price)
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
 - The action space is automatically set to `Box(shape=(2*tau+1,))`
-- Example: `tau=5` creates action space over 11 active buckets (5 left + 1 center + 5 right)
+- Example: `tau=5` creates action space over 11 active ticks (5 left + 1 center + 5 right)
 
 ### Agent Implementation Pattern
 
 ```python
 class MyAgent(Agent):
     def __init__(self, env: AMMEnvironment):
-        self.num_active_buckets = env.model_dynamics.num_active_buckets  # 2*tau+1
+        self.num_active_ticks = env.model_dynamics.num_active_ticks  # 2*tau+1
         self.tau = env.model_dynamics.tau
         self.num_trajectories = getattr(env, 'num_trajectories', 1)
 
@@ -298,15 +261,15 @@ class MyAgent(Agent):
         # state shape: (num_trajectories, state_dim)
         # return shape: (num_trajectories, 2*tau+1)
         # action must be valid probability distribution (sum to 1)
-        # Index tau is the center bucket (contains current price)
+        # Index tau is the center tick (contains current price)
         action = self._compute_strategy(state)
         return np.repeat(action.reshape(1, -1), self.num_trajectories, axis=0)
 ```
 
 **Important Notes:**
-- Agents return distributions over **active buckets only**, not all possible buckets
-- The center bucket (index `tau`) always contains the current price
-- No need to track bucket boundaries - handled by ModelDynamics
+- Agents return distributions over **active ticks only**, not all possible ticks
+- The center tick (index `tau`) always contains the current price
+- No need to track tick boundaries - handled by ModelDynamics
 
 ### State Access Patterns
 
@@ -349,7 +312,7 @@ Areas under active development:
 - ✅ `update_state()` method with 3-phase algorithm (arbitrage, noisy trades, fee collection)
 - ✅ Fee calculation functions (`transaction_fee_one_step`, `delta_x`, `delta_y`, `delta_x_vec`, `delta_y_vec`)
 - ✅ State representation with fee tracking (`FEES_TOKEN_A_INDEX`, `FEES_TOKEN_B_INDEX`)
-- ✅ Dynamic active bucket system with tau parameter
+- ✅ Dynamic active tick system with tau parameter
 - ✅ Baseline agent implementations
 
 ## Common Patterns
@@ -378,11 +341,11 @@ arrival_model = PoissonArrivalModel(
     num_trajectories=1
 )
 
-# Create model dynamics with tau (active bucket window size)
+# Create model dynamics with tau (active tick window size)
 model = UniswapV3ModelDynamics(
     midprice_model=midprice_model,
     arrival_model=arrival_model,
-    tau=5,  # 5 buckets on each side of current price (11 total active buckets)
+    tau=5,  # 5 ticks on each side of current price (11 total active ticks)
     initial_capital=10000.0,  # Total LP capital
     fee_tier=0.003,  # 0.3% fee
     exponential_value=1.0001,  # Uniswap V3 tick spacing
@@ -395,7 +358,7 @@ env = AMMEnvironment(
     n_steps=200
 )
 
-# Action space will be Box(shape=(11,)) for probability distribution over 11 active buckets
+# Action space will be Box(shape=(11,)) for probability distribution over 11 active ticks
 print(f"Action space: {env.action_space}")  # Box(0.0, 1.0, (11,), float32)
 ```
 
@@ -509,7 +472,7 @@ Recent focus areas (from commit history):
   - Comprehensive test suite (11 tests, all passing)
 - Complete `update_state()` implementation with arbitrage, noisy trades, and fee collection
 - Fee calculation functions for Uniswap V3 concentrated liquidity (`delta_x_vec`, `delta_y_vec`)
-- Dynamic active bucket implementation (tau-based action space)
-- Bucket creation and price discretization utilities
+- Dynamic active tick implementation (tau-based action space)
+- tick creation and price discretization utilities
 - UniswapV3ModelDynamics refactoring to use (√P, L) state representation
 - Baseline agent implementations for dynamic action space
