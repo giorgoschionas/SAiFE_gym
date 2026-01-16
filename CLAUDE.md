@@ -243,6 +243,57 @@ The state is a **dictionary** with the following keys:
    - **Out-of-bounds handling**: Ticks outside `[0, num_ticks)` treated as zero liquidity
    - **10-100x faster** than dict-based sequential implementation
 
+3. **`unified_swap_single_tick()`** - Simplified single-tick swap with NO branching (NEW)
+   ```python
+   def unified_swap_single_tick(
+       sqrt_price_current: np.ndarray,     # (num_trajectories,)
+       liquidity: np.ndarray,               # (num_trajectories,)
+       amount_in: np.ndarray,               # (num_trajectories, 2) [sell_token0, buy_token0]
+       tick_lower_boundary: np.ndarray,     # (num_trajectories,)
+       tick_upper_boundary: np.ndarray,     # (num_trajectories,)
+       fee_rate: float = 0.003,
+   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+       """
+       Unified swap for single-tick execution with two-column arrivals.
+
+       Uses multiplier/indexing approach instead of if/else branching.
+       Assumes swaps cross at most one tick boundary.
+
+       Args:
+           amount_in: Two-column input [sell_token0, buy_token0]
+               - Column 0: Token0 being sold (into pool, price decreases)
+               - Column 1: Token0 being bought (out of pool, price increases)
+               - Net direction determined by difference: sell - buy
+
+       Returns:
+           - sqrt_price_next: New sqrt(price)
+           - amount_token0_net: Net token0 flow (positive = into pool)
+           - amount_token1_net: Net token1 flow (positive = into pool)
+           - fee_token0: Fee in token0
+           - fee_token1: Fee in token1
+           - hit_boundary: Whether tick boundary was crossed
+       """
+   ```
+
+   **Key Features:**
+   - **No if/else branching**: Uses `np.where()` and array indexing for direction
+   - **Two-column arrivals**: Supports simultaneous buy/sell with NET processing
+   - **Single-tick assumption**: Eliminates iteration loop for simpler swaps
+   - **Direction via sign**: `direction = np.sign(amount_in[:, 0] - amount_in[:, 1])`
+
+4. **`get_tick_boundaries()`** - Helper to compute tick boundaries
+   ```python
+   def get_tick_boundaries(
+       sqrt_price_current: np.ndarray,
+       exponential_value: float = 1.0001
+   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+       """
+       Get lower and upper sqrt price boundaries for the current tick.
+
+       Returns: (tick_lower_sqrt, tick_upper_sqrt, current_tick)
+       """
+   ```
+
 **Fee Calculation Functions** (`gym/helpers/AMM_utils.py`):
 - `delta_x(p1, p2)`: Calculate change in Token X reserves per unit liquidity (vectorized)
 - `delta_y(p1, p2)`: Calculate change in Token Y reserves per unit liquidity (vectorized)
@@ -366,12 +417,18 @@ Areas under active development:
 
 ## Recently Completed
 
+- ✅ **Unified single-tick swap with NO branching** (NEW)
+  - `unified_swap_single_tick()`: Single function replacing `swap_step_within_tick_vec` for simple swaps
+  - Two-column arrivals: `[sell_token0, buy_token0]` with NET amount processing
+  - Multiplier/indexing approach eliminates `if zero_for_one` branching
+  - Uses `np.where()` and array indexing for direction-dependent logic
+  - `get_tick_boundaries()`: Helper to compute tick boundaries from current price
+  - Comprehensive test suite (14 new tests, 25 total)
 - ✅ **Fully vectorized swap implementation** with 10-100x performance improvement
   - `swap_step_within_tick_vec()`: Single-tick vectorized swap with `np.where()` conditionals
   - `execute_swap_vec_array()`: Multi-tick vectorized swap with active trajectory masking
   - Array-based liquidity representation (replaced dict-based approach)
   - Dynamic tick ranges with no hardcoded limits
-  - Comprehensive test suite with 11 array-based tests
 - ✅ `update_state()` method with 3-phase algorithm (arbitrage, noisy trades, fee collection)
 - ✅ Fee calculation functions (`transaction_fee_one_step`, `delta_x`, `delta_y`, `delta_x_vec`, `delta_y_vec`)
 - ✅ Dict-based state representation with per-tick fee tracking (`FEES_A_KEY`, `FEES_B_KEY`)
@@ -522,6 +579,51 @@ print(f"Total fees collected: {total_fee.sum():.2f}")
 - Out-of-bounds ticks automatically treated as zero liquidity
 - No explicit tick boundaries needed - handled internally
 - Performance: processes 1000 trajectories faster than 1 sequential trajectory with dicts
+
+#### Unified Single-Tick Swap (No Branching) - NEW
+
+```python
+import numpy as np
+from SAiFE_gym.gym.helpers.AMM_utils import (
+    unified_swap_single_tick,
+    get_tick_boundaries
+)
+
+# Setup: 1000 trajectories
+num_trajectories = 1000
+sqrt_price_current = np.full(num_trajectories, 10.0)  # sqrt(100) = 10
+liquidity = np.full(num_trajectories, 100000.0)
+
+# Two-column arrivals: [sell_token0, buy_token0]
+# Some trajectories sell, some buy, some do both
+rng = np.random.RandomState(42)
+amount_in = rng.uniform(0, 100, size=(num_trajectories, 2))
+
+# Get tick boundaries
+tick_lower, tick_upper, current_tick = get_tick_boundaries(sqrt_price_current)
+
+# Execute unified swap (no if/else branching internally)
+sqrt_price_next, token0_net, token1_net, fee0, fee1, hit_boundary = unified_swap_single_tick(
+    sqrt_price_current=sqrt_price_current,
+    liquidity=liquidity,
+    amount_in=amount_in,
+    tick_lower_boundary=tick_lower,
+    tick_upper_boundary=tick_upper,
+    fee_rate=0.003
+)
+
+# Results shape: (1000,) for all outputs
+print(f"Trajectories with boundary crossing: {hit_boundary.sum()}")
+print(f"Total token0 fees: {fee0.sum():.2f}")
+print(f"Total token1 fees: {fee1.sum():.2f}")
+```
+
+**Key Points:**
+- Input `amount_in` has shape `(num_trajectories, 2)`: column 0 = sell token0, column 1 = buy token0
+- Net direction computed internally: `net = amount_in[:, 0] - amount_in[:, 1]`
+- No `if zero_for_one` branching - uses multiplier/indexing approach
+- Single-tick assumption: suitable for small swaps or high-frequency state updates
+- Returns both token flows with sign convention: positive = into pool
 
 ## Git Workflow
 

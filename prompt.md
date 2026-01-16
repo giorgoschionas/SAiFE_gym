@@ -1,0 +1,4 @@
+
+I want to improve and simplify the logic of the swap mechanics in AMM_utils. Currently, we have two functions: swap_step_within_tick_vec and execute_swap_vec_array in AMM_utils that handle the swaps. I want to merge their logic in one function by making the following simplification.
+I will assume that each swap is of fixed size and it can cross at most one tick. In this way, I will avoid the sequential loop over ticks in multi cross tick swaps. By doing this, we can stil replicate a big trade as multiple small swaps and by the intensity of the arrivals.
+Moreover, I want to avoid the `if` `zero_for_one` statements that handle the direction of the swap. In order to handle the direction of the trades, I want you to follow the implementation of /home/gchionas/Programming/Blockchain/Ethereum/defi-trading/mbt_gym/ which use a multiplier/indexing approach. I want you to think and implement those changes.

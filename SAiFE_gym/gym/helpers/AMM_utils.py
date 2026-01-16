@@ -104,282 +104,185 @@ def delta_y_vec(p_high, p_low):
     p_low = np.maximum(p_low, 1e-300)
     return np.sqrt(p_high) - np.sqrt(p_low)
 
-def swap_step_within_tick_vec(
-    sqrt_price_current: np.ndarray | float,
-    sqrt_price_target: np.ndarray | float,
-    liquidity: np.ndarray | float,
-    amount_remaining: np.ndarray | float,
-    fee_rate: float,
-    zero_for_one: bool
-) -> tuple[np.ndarray | float, np.ndarray | float, np.ndarray | float, np.ndarray | float]:
-    """
-    Compute a single swap step within one tick (L constant, sqrt_price changes).
-
-    This function handles the Uniswap v3 constant product math for swaps that
-    occur within a single tick range, where liquidity L remains constant.
-
-    Supports both scalar and array inputs for vectorized processing across trajectories.
-
-    Args:
-        sqrt_price_current: Current sqrt(price) - scalar or array
-        sqrt_price_target: Target sqrt(price) at tick boundary - scalar or array
-        liquidity: Liquidity L in the current tick - scalar or array
-        amount_remaining: Remaining input amount (after fees already applied) - scalar or array
-        fee_rate: Trading fee rate (e.g., 0.003 for 0.3%)
-        zero_for_one: True = selling Token 0 (price decreases),
-                      False = buying Token 0 (price increases)
-
-    Returns:
-        tuple: (sqrt_price_next, amount_in_consumed, amount_out_generated, fee_consumed)
-            - sqrt_price_next: New sqrt(price) after this step
-            - amount_in_consumed: Input amount consumed (excluding fee)
-            - amount_out_generated: Output amount generated
-            - fee_consumed: Fee amount paid on this step
-    """
-    # Convert inputs to arrays for vectorized operations
-    sqrt_price_current = np.atleast_1d(sqrt_price_current)
-    sqrt_price_target = np.atleast_1d(sqrt_price_target)
-    liquidity = np.atleast_1d(liquidity)
-    amount_remaining = np.atleast_1d(amount_remaining)
-
-    # Track which trajectories have liquidity
-    has_liquidity = liquidity > 0
-
-    # Guard against numerical issues
-    sqrt_price_current = np.maximum(sqrt_price_current, 1e-150)
-    sqrt_price_target = np.maximum(sqrt_price_target, 1e-150)
-
-    if zero_for_one:
-        # Selling Token 0 -> Price decreases (sqrt_price decreases)
-        # Formula: Δx = L * (1/sqrt(P_new) - 1/sqrt(P_current))
-
-        price_current = sqrt_price_current ** 2
-        price_target = sqrt_price_target ** 2
-
-        # Calculate maximum input to reach target price
-        amount_in_max = delta_x_vec(price_current, price_target) * liquidity
-
-        # Determine if we hit the tick boundary (vectorized)
-        hit_boundary = amount_remaining >= amount_in_max
-
-        # Compute sqrt_price_next for both cases
-        sqrt_price_boundary = sqrt_price_target
-        sqrt_price_no_boundary = np.where(
-            has_liquidity,
-            (liquidity * sqrt_price_current) / (liquidity + amount_remaining * sqrt_price_current),
-            sqrt_price_current
-        )
-
-        sqrt_price_next = np.where(hit_boundary, sqrt_price_boundary, sqrt_price_no_boundary)
-        amount_in_consumed = np.where(hit_boundary, amount_in_max, amount_remaining)
-
-        # Calculate output amount: Δy = L * (sqrt(P_current) - sqrt(P_new))
-        amount_out = liquidity * (sqrt_price_current - sqrt_price_next)
-
-    else:
-        # Buying Token 0 -> Price increases (sqrt_price increases)
-        # Formula: Δy = L * (sqrt(P_new) - sqrt(P_current))
-
-        price_current = sqrt_price_current ** 2
-        price_target = sqrt_price_target ** 2
-
-        # Calculate maximum input to reach target price
-        amount_in_max = delta_y_vec(price_target, price_current) * liquidity
-
-        # Determine if we hit the tick boundary (vectorized)
-        hit_boundary = amount_remaining >= amount_in_max
-
-        # Compute sqrt_price_next for both cases
-        sqrt_price_boundary = sqrt_price_target
-        sqrt_price_no_boundary = np.where(
-            has_liquidity,
-            sqrt_price_current + amount_remaining / liquidity,
-            sqrt_price_current
-        )
-
-        sqrt_price_next = np.where(hit_boundary, sqrt_price_boundary, sqrt_price_no_boundary)
-        amount_in_consumed = np.where(hit_boundary, amount_in_max, amount_remaining)
-
-        # Calculate output amount: Δx = L * (1/sqrt(P_current) - 1/sqrt(P_new))
-        # When price increases, Δx from pool perspective is negative (selling X)
-        # But output to user is positive, so we use (current - next) order
-        price_next = sqrt_price_next ** 2
-        amount_out = delta_x_vec(price_next, price_current) * liquidity
-
-    # Apply zero liquidity mask to all outputs
-    sqrt_price_next = np.where(has_liquidity, sqrt_price_next, sqrt_price_current)
-    amount_in_consumed = np.where(has_liquidity, amount_in_consumed, 0.0)
-    amount_out = np.where(has_liquidity, amount_out, 0.0)
-
-    # Calculate fee on the consumed amount
-    # fee = amount_in_consumed * fee_rate / (1 - fee_rate)
-    # This reverses the initial fee application: amount_after_fee = amount_before_fee * (1 - fee_rate)
-    fee = amount_in_consumed * fee_rate / (1.0 - fee_rate) if fee_rate < 1.0 else 0.0
-
-    return sqrt_price_next, amount_in_consumed, amount_out, fee
 
 
-
-def execute_swap_vec_array(
+def get_tick_boundaries(
     sqrt_price_current: np.ndarray,
-    liquidity_array: np.ndarray,
-    tick_lower: int,
-    amount_in: np.ndarray,
-    zero_for_one: bool,
-    fee_rate: float = 0.003,
-    exponential_value: float = 1.0001,
-    sqrt_price_limit: np.ndarray = None
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    exponential_value: float = 1.0001
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     """
-    Fully vectorized Uniswap v3 swap processing all trajectories in parallel.
+    Get lower and upper sqrt price boundaries for the current tick.
 
     Args:
-        sqrt_price_current: Current sqrt(price) for each trajectory, shape (num_trajectories,)
-        liquidity_array: Liquidity per tick, either:
-            - shape (num_ticks,): shared liquidity across all trajectories
-            - shape (num_trajectories, num_ticks): per-trajectory liquidity
-        tick_lower: Lower bound of tick range (offset for array indexing)
-        amount_in: Input amount for each trajectory, shape (num_trajectories,)
-        zero_for_one: True = selling Token 0, False = buying Token 0
-        fee_rate: Trading fee rate (default: 0.003 for 0.3%)
+        sqrt_price_current: Current sqrt(price) per trajectory, shape (num_trajectories,)
         exponential_value: Tick spacing base (default: 1.0001 for Uniswap v3)
-        sqrt_price_limit: Optional price limit, shape (num_trajectories,)
 
     Returns:
         tuple:
-            - sqrt_price_final: Final sqrt(price) for each trajectory, shape (num_trajectories,)
-            - amount_out: Total output amount for each trajectory, shape (num_trajectories,)
-            - fee_amount: Total fee paid for each trajectory, shape (num_trajectories,)
-            - ticks_crossed: Number of ticks crossed for each trajectory, shape (num_trajectories,)
+            - tick_lower_sqrt: sqrt(price) at lower tick boundary
+            - tick_upper_sqrt: sqrt(price) at upper tick boundary
+            - current_tick: Current tick index
     """
+    sqrt_price_current = np.atleast_1d(sqrt_price_current)
+    price_current = sqrt_price_current ** 2
 
+    # Avoid log of zero/negative
+    price_current = np.maximum(price_current, 1e-300)
+
+    current_tick = np.floor(np.log(price_current) / np.log(exponential_value)).astype(np.int64)
+
+    # Lower boundary: exponential_value^tick
+    tick_lower_sqrt = np.sqrt(exponential_value ** current_tick)
+
+    # Upper boundary: exponential_value^(tick+1)
+    tick_upper_sqrt = np.sqrt(exponential_value ** (current_tick + 1))
+
+    return tick_lower_sqrt, tick_upper_sqrt, current_tick
+
+
+def unified_swap_single_tick(
+    sqrt_price_current: np.ndarray,
+    liquidity: np.ndarray,
+    amount_in: np.ndarray,
+    tick_lower_boundary: np.ndarray,
+    tick_upper_boundary: np.ndarray,
+    fee_rate: float = 0.003,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
+    """
+    Unified single-tick swap with two-column arrivals and NO if/else branching.
+
+    This function processes swaps that cross at most one tick, using a multiplier/indexing
+    approach instead of conditional branching on swap direction.
+
+    Mathematical basis:
+    - Selling token0 (zero_for_one): price decreases, target = lower boundary
+      - delta_x = L * (1/sqrt(P_new) - 1/sqrt(P_current))  [input]
+      - delta_y = L * (sqrt(P_current) - sqrt(P_new))  [output]
+      - sqrt_p_new = (L * sqrt_p) / (L + amount * sqrt_p)
+
+    - Buying token0: price increases, target = upper boundary
+      - delta_y = L * (sqrt(P_new) - sqrt(P_current))  [input]
+      - delta_x = L * (1/sqrt(P_current) - 1/sqrt(P_new))  [output]
+      - sqrt_p_new = sqrt_p + amount / L
+
+    Args:
+        sqrt_price_current: Current sqrt(price) per trajectory, shape (num_trajectories,)
+        liquidity: Active liquidity per trajectory, shape (num_trajectories,)
+        amount_in: Two-column arrivals [sell_token0, buy_token0], shape (num_trajectories, 2)
+            - Column 0: Amount of token0 being sold (traders selling token0 to pool)
+            - Column 1: Amount of token0 being bought (traders buying token0 from pool)
+        tick_lower_boundary: sqrt(price) at lower tick boundary, shape (num_trajectories,)
+        tick_upper_boundary: sqrt(price) at upper tick boundary, shape (num_trajectories,)
+        fee_rate: Trading fee rate (default: 0.003 for 0.3%)
+
+    Returns:
+        tuple:
+            - sqrt_price_next: New sqrt(price) after swap, shape (num_trajectories,)
+            - amount_token0_net: Net token0 flow (positive = into pool), shape (num_trajectories,)
+            - amount_token1_net: Net token1 flow (positive = into pool), shape (num_trajectories,)
+            - fee_token0: Fee collected in token0, shape (num_trajectories,)
+            - fee_token1: Fee collected in token1, shape (num_trajectories,)
+            - hit_boundary: Whether tick boundary was crossed, shape (num_trajectories,)
+    """
     # Ensure inputs are arrays
     sqrt_price_current = np.atleast_1d(sqrt_price_current)
-    amount_in = np.atleast_1d(amount_in)
+    liquidity = np.atleast_1d(liquidity)
+    amount_in = np.atleast_2d(amount_in)
+    tick_lower_boundary = np.atleast_1d(tick_lower_boundary)
+    tick_upper_boundary = np.atleast_1d(tick_upper_boundary)
+
     num_trajectories = len(sqrt_price_current)
 
-    # Apply fees upfront
-    amount_after_fee = amount_in * (1.0 - fee_rate)
-    amount_remaining = amount_after_fee.copy()
+    # ==================== Step 1: Direction from Net Amount ====================
+    # Column 0 = sell_token0 (token0 into pool, price decreases)
+    # Column 1 = buy_token0 (token0 out of pool, price increases)
+    # net > 0: net selling of token0 (price decreases, zero_for_one)
+    # net < 0: net buying of token0 (price increases)
+    net_amount = amount_in[:, 0] - amount_in[:, 1]
+    direction = np.sign(net_amount)  # +1 sell, -1 buy, 0 no trade
+    abs_net_amount = np.abs(net_amount) * (1.0 - fee_rate)
+    is_sell = direction > 0
 
-    # Initialize state arrays
-    sqrt_p = sqrt_price_current.copy()
-    current_ticks = np.floor(np.log(sqrt_p ** 2) / np.log(exponential_value)).astype(np.int64)
+    # ==================== Step 2: Boundary Selection via Indexing ====================
+    # direction > 0 (sell token0): target lower boundary (index 0)
+    # direction < 0 (buy token0): target upper boundary (index 1)
+    boundaries = np.stack([tick_lower_boundary, tick_upper_boundary], axis=1)
+    # Map direction to index: +1 -> 0, -1 -> 1, 0 -> 0 (doesn't matter for no-trade)
+    boundary_idx = np.clip(((1 - direction) / 2).astype(np.int64), 0, 1)
+    sqrt_price_target = boundaries[np.arange(num_trajectories), boundary_idx]
 
-    # Initialize output accumulators
-    amount_out_total = np.zeros(num_trajectories, dtype=np.float64)
-    fee_total = np.zeros(num_trajectories, dtype=np.float64)
-    ticks_crossed = np.zeros(num_trajectories, dtype=np.int64)
+    # ==================== Step 3: Max Amount via Indexing ====================
+    price_current = sqrt_price_current ** 2
+    price_target = sqrt_price_target ** 2
+    price_high = np.maximum(price_current, price_target)
+    price_low = np.minimum(price_current, price_target)
 
-    # Active trajectory mask
-    active = amount_remaining > 1e-12
+    # Numerical safety
+    price_low = np.maximum(price_low, 1e-300)
+    price_high = np.maximum(price_high, 1e-300)
 
-    # Pre-compute tick prices for fast lookup
-    num_ticks = liquidity_array.shape[-1]
-    tick_range = np.arange(tick_lower, tick_lower + num_ticks)
-    tick_prices_sqrt = np.sqrt(exponential_value ** tick_range)
+    # Compute both deltas unconditionally
+    delta_x_abs = (1.0 / np.sqrt(price_low)) - (1.0 / np.sqrt(price_high))
+    delta_y_abs = np.sqrt(price_high) - np.sqrt(price_low)
 
-    # Determine if liquidity is shared or per-trajectory
-    shared_liquidity = liquidity_array.ndim == 1
+    # Stack and select: sell -> delta_x (idx 0), buy -> delta_y (idx 1)
+    deltas = np.stack([delta_x_abs, delta_y_abs], axis=1)
+    delta_selected = deltas[np.arange(num_trajectories), boundary_idx]
+    amount_in_max = delta_selected * liquidity
 
-    # Main iteration loop with active masking
-    MAX_ITER = 1000
-    for iteration in range(MAX_ITER):
-        # Early exit if all trajectories done
-        if not active.any():
-            break
+    # ==================== Step 4: New Price via np.where ====================
+    hit_boundary = abs_net_amount >= amount_in_max
+    has_liquidity = liquidity > 0
+    L_safe = np.where(has_liquidity, liquidity, 1.0)  # Avoid division by zero
 
-        # Vectorized liquidity lookup
-        tick_indices = current_ticks - tick_lower
+    # Sell formula: sqrt_p_new = (L * sqrt_p) / (L + amt * sqrt_p)
+    sqrt_p_new_sell = (L_safe * sqrt_price_current) / (L_safe + abs_net_amount * sqrt_price_current)
 
-        # Bounds checking - treat out-of-bounds as zero  
-        out_of_bounds = (tick_indices < 0) | (tick_indices >= num_ticks)
+    # Buy formula: sqrt_p_new = sqrt_p + amt / L
+    sqrt_p_new_buy = sqrt_price_current + abs_net_amount / L_safe
 
-        # Get liquidity for active trajectories
-        if shared_liquidity:
-            # Shared liquidity across trajectories
-            # Use safe indexing - out of bounds gets zero liquidity
-            L = np.where(out_of_bounds, 0.0, liquidity_array[np.clip(tick_indices, 0, num_ticks - 1)])
-        else:
-            # Per-trajectory liquidity
-            L = np.where(
-                out_of_bounds,
-                0.0,
-                liquidity_array[np.arange(num_trajectories), np.clip(tick_indices, 0, num_ticks - 1)]
-            )
+    # Select based on direction
+    sqrt_p_partial = np.where(is_sell, sqrt_p_new_sell, sqrt_p_new_buy)
+    sqrt_price_next = np.where(hit_boundary, sqrt_price_target, sqrt_p_partial)
 
-        # Handle zero liquidity (including out-of-bounds): skip to next tick
-        zero_liquidity = (L <= 0) & active
-        if zero_liquidity.any():
-            current_ticks = np.where(
-                zero_liquidity,
-                current_ticks + (-1 if zero_for_one else 1),
-                current_ticks
-            )
-            ticks_crossed += zero_liquidity.astype(np.int64)
-            continue
+    # Handle edge cases
+    sqrt_price_next = np.where(direction == 0, sqrt_price_current, sqrt_price_next)
+    sqrt_price_next = np.where(has_liquidity, sqrt_price_next, sqrt_price_current)
 
-        # Compute target sqrt prices (vectorized)
-        if zero_for_one:
-            # Target is lower boundary of current tick
-            sqrt_price_target = tick_prices_sqrt[tick_indices]
-        else:
-            # Target is upper boundary of current tick (next tick's lower boundary)
-            next_indices = np.clip(tick_indices + 1, 0, num_ticks - 1)
-            sqrt_price_target = tick_prices_sqrt[next_indices]
+    # ==================== Step 5: Consumed Amount ====================
+    amount_consumed = np.where(hit_boundary, amount_in_max, abs_net_amount)
+    amount_consumed = np.where(has_liquidity & (direction != 0), amount_consumed, 0.0)
 
-        # Execute vectorized swap step
-        sqrt_p_next, amt_in, amt_out, fee = swap_step_within_tick_vec(
-            sqrt_p,
-            sqrt_price_target,
-            L,
-            amount_remaining,
-            fee_rate,
-            zero_for_one
-        )
+    # ==================== Step 6: Output Amounts ====================
+    sqrt_p_high = np.maximum(sqrt_price_current, sqrt_price_next)
+    sqrt_p_low = np.minimum(sqrt_price_current, sqrt_price_next)
+    sqrt_p_low = np.maximum(sqrt_p_low, 1e-150)  # Numerical safety
 
-        # Masked updates (only modify active trajectories)
-        amount_remaining = np.where(active, amount_remaining - amt_in, amount_remaining)
-        amount_out_total += np.where(active, amt_out, 0.0)
-        fee_total += np.where(active, fee, 0.0)
-        sqrt_p = np.where(active, sqrt_p_next, sqrt_p)
+    # Token1 output (sell case): Δy = L * (sqrt_P_current - sqrt_P_next)
+    amount_out_1 = liquidity * (sqrt_p_high - sqrt_p_low)
 
-        # Check tick crossing (did we hit the boundary?)
-        tick_crossed = (np.abs(sqrt_p_next - sqrt_price_target) < 1e-10) & active
+    # Token0 output (buy case): Δx = L * (1/sqrt_P_current - 1/sqrt_P_next)
+    amount_out_0 = liquidity * (1.0 / sqrt_p_low - 1.0 / sqrt_p_high)
 
-        # Update ticks and counts
-        current_ticks = np.where(
-            tick_crossed,
-            current_ticks + (-1 if zero_for_one else 1),
-            current_ticks
-        )
-        ticks_crossed += tick_crossed.astype(np.int64)
+    # ==================== Step 7: Net Flows (Pool Perspective) ====================
+    # Positive = token flows INTO the pool
+    # Sell token0: token0 in (+), token1 out (-)
+    # Buy token0: token1 in (+), token0 out (-)
+    amount_token0_net = np.where(is_sell, amount_consumed, -amount_out_0)
+    amount_token0_net = np.where(direction == 0, 0.0, amount_token0_net)
 
-        # Update active mask
-        active = (amount_remaining > 1e-12) & active
+    amount_token1_net = np.where(is_sell, -amount_out_1, amount_consumed)
+    amount_token1_net = np.where(direction == 0, 0.0, amount_token1_net)
 
-        # Check price limit if specified
-        if sqrt_price_limit is not None:
-            if zero_for_one:
-                limit_hit = sqrt_p <= sqrt_price_limit
-            else:
-                limit_hit = sqrt_p >= sqrt_price_limit
-            active = active & ~limit_hit
+    # ==================== Step 8: Fees ====================
+    # Fee is on the input token: fee = consumed / (1 - fee_rate) * fee_rate
+    fee_amount = amount_consumed * fee_rate / (1.0 - fee_rate) if fee_rate < 1.0 else np.zeros(num_trajectories)
 
-        # Safety check for runaway swaps
-        if iteration == MAX_ITER - 1:
-            import warnings
-            n_incomplete = active.sum()
-            if n_incomplete > 0:
-                warnings.warn(
-                    f"{n_incomplete}/{num_trajectories} trajectories exceeded "
-                    f"{MAX_ITER} iterations. Consider increasing liquidity or "
-                    f"reducing swap amounts."
-                )
+    # Assign fee to correct token based on direction
+    # Sell token0: fee in token0
+    # Buy token0: fee in token1
+    fee_token0 = np.where(is_sell & (direction != 0), fee_amount, 0.0)
+    fee_token1 = np.where((~is_sell) & (direction != 0), fee_amount, 0.0)
 
-    return sqrt_p, amount_out_total, fee_total, ticks_crossed
-
-
-
-
+    return sqrt_price_next, amount_token0_net, amount_token1_net, fee_token0, fee_token1, hit_boundary
 
