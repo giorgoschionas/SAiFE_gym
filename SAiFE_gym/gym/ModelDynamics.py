@@ -75,7 +75,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 1000,             # Total ticks to track in liquidity array
-        exponential_value: float = 1.0001, # Base for exponential bucket spacing (Uniswap V3 tick spacing)
+        exponential_value: float = 1.0001, # Base for exponential tick spacing
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model,
@@ -85,15 +85,13 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
-        self.tau = tau  # Hyperparameter for active bucket window
+        self.tau = tau  # Hyperparameter for active tick window
         self.num_ticks = num_ticks  # Total number of ticks to track
         self.exponential_value = exponential_value
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
 
-        # Dynamic action space: 2*tau + 1 active buckets around current price (DEPRECATED)
-        self.num_active_buckets = 2 * tau + 1
 
     def get_action_space(self):
         """

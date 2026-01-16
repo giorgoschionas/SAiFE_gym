@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) trading in DeFi protocols, particularly Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
+SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, particularly Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
 
 **Current Status**: Active development. Core components implemented but integration is ongoing.
 
@@ -25,7 +25,6 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 **KEY FEATURE**: SAiFE_gym is built with **full vectorization** for high-performance parallel simulation of multiple trajectories.
 
 **Performance Benefits:**
-- **10-100x speedup** over sequential implementations through NumPy vectorization
 - Batch processing of thousands of trajectories simultaneously
 - Efficient memory usage with array-based state representation
 - GPU-compatible operations (via NumPy → JAX/CuPy conversion)
@@ -41,6 +40,38 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 - Price movements tracked per trajectory: `sqrt_price_current.shape = (num_trajectories,)`
 - Active trajectory masking eliminates branching in hot loops
 - Out-of-bounds ticks treated as zero liquidity (no dict lookups)
+
+### Liquidity Array Indexing
+
+**`tick_lower` - The Array Anchor:**
+
+`tick_lower` is a fixed integer that anchors the `liquidity_array` to absolute Uniswap V3 tick space. It represents the lowest absolute tick tracked by the array.
+
+**Indexing Convention:**
+```
+liquidity_array[i] = liquidity for absolute tick (tick_lower + i)
+                   = liquidity in price range [1.0001^(tick_lower+i), 1.0001^(tick_lower+i+1))
+```
+
+**Conversion between array index and absolute tick:**
+```python
+# Array index → Absolute tick
+absolute_tick = tick_lower + array_index
+
+# Absolute tick → Array index
+array_index = absolute_tick - tick_lower
+```
+
+**Example:** For prices ~100-1000 with `tick_lower = 40000` and `num_ticks = 30000`:
+- `liquidity_array[0]` → tick 40,000 → price range [1.0001^40000, 1.0001^40001) ≈ [54.6, 54.6]
+- `liquidity_array[6052]` → tick 46,052 → price range ≈ [100.0, 100.01]
+- `liquidity_array[29078]` → tick 69,078 → price range ≈ [1000.0, 1000.1]
+
+**Key Properties:**
+- `tick_lower` is set once at environment initialization and remains **fixed** throughout simulation
+- Array size `num_ticks` determines the supported price range
+- Out-of-bounds ticks (index < 0 or ≥ num_ticks) are treated as zero liquidity
+- Shape: `(num_ticks,)` for shared liquidity, `(num_trajectories, num_ticks)` for per-trajectory
 
 ### Core Data Flow
 
@@ -78,16 +109,40 @@ The environment follows a standard RL cycle with AMM-specific components:
 ### State Representation
 
 **Uniswap V3 State** (defined in `gym/index_names.py`):
-- Uses (P, L) parameterization - amounts computed via `calculate_position_amounts()`
-- State shape: `(num_trajectories, 5)` for batch processing
-- State indices:
-  - `LIQUIDITY_INDEX = 0`: Liquidity amount L
-  - `AMM_PRICE_INDEX = 1`: Current AMM **sqrt(price)** - IMPORTANT: stores √P, not P
-  - `FEES_TOKEN_A_INDEX = 2`: Accumulated fees in Token A
-  - `FEES_TOKEN_B_INDEX = 3`: Accumulated fees in Token B
-  - `TIME_INDEX = 4`: Current simulation time
 
-**Critical Note**: `AMM_PRICE_INDEX` stores the square root of price (√P), following Uniswap V3 convention. When calling helper functions that expect regular price, convert using `price = sqrt_price ** 2`.
+The state is a **dictionary** with the following keys:
+
+**Pool-level state:**
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `POOL_SQRT_PRICE_KEY` | `(num_trajectories,)` | Current pool √price (not P) |
+| `POOL_CURRENT_TICK_KEY` | `(num_trajectories,)` | Current tick index |
+| `POOL_LIQUIDITY_ARRAY_KEY` | `(num_trajectories, num_ticks)` | Liquidity per tick (see indexing below) |
+
+**Fees per tick:**
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `FEES_A_KEY` | `(num_trajectories, num_ticks)` | Fees in token A collected per tick |
+| `FEES_B_KEY` | `(num_trajectories, num_ticks)` | Fees in token B collected per tick |
+
+**LP position state:**
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `LP_LIQUIDITY_KEY` | `(num_trajectories,)` | LP's position liquidity |
+| `LP_TICK_LOWER_KEY` | `(num_trajectories,)` | LP's position lower tick bound |
+| `LP_TICK_UPPER_KEY` | `(num_trajectories,)` | LP's position upper tick bound |
+
+**Market state:**
+| Key | Shape | Description |
+|-----|-------|-------------|
+| `MARKET_MIDPRICE_KEY` | `(num_trajectories,)` | External market midprice |
+| `TIME_KEY` | `(num_trajectories,)` | Current simulation time |
+
+**Per-tick array indexing** (applies to `liquidity_array`, `fees_a`, `fees_b`):
+- Entry `[traj, i]` corresponds to tick `[tick_lower + i, tick_lower + i + 1)`
+- See "Liquidity Array Indexing" section above for conversion formulas
+
+**Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
 ### Action Space - Dynamic Active Ticks
 
@@ -114,16 +169,10 @@ The environment follows a standard RL cycle with AMM-specific components:
 **Helper functions** (`gym/helpers/AMM_utils.py`):
 - `find_tick_id(price)`: Maps price → tick ID (tick index) via `floor(log(price))`
 - `get_ticks_given_center_tick_id(center_id, tau)`: Creates 2τ+1 ticks centered around a tick
-- `create_ticks(endpoints)`: Converts tick endpoints to tick dictionaries
 - `price_to_tick(price)` / `tick_to_price(tick)`: Standard Uniswap V3 conversions
 
-**Action interpretation:**
-- If `use_mixed_strategy=True`: Action is probability distribution over 2τ+1 active ticks (must sum to 1.0)
-- Otherwise: Single discrete tick index (0 to 2τ)
 
 ### State Update Mechanism
-
-
 
 **Key Parameters**:
 - `non_arb_lambda` (default: 0.00005): Price impact per noisy trader order
@@ -251,18 +300,22 @@ When creating `UniswapV3ModelDynamics`:
 ### Agent Implementation Pattern
 
 ```python
+from SAiFE_gym.gym.index_names import POOL_SQRT_PRICE_KEY, POOL_LIQUIDITY_ARRAY_KEY
+
 class MyAgent(Agent):
     def __init__(self, env: AMMEnvironment):
         self.num_active_ticks = env.model_dynamics.num_active_ticks  # 2*tau+1
         self.tau = env.model_dynamics.tau
         self.num_trajectories = getattr(env, 'num_trajectories', 1)
 
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        # state shape: (num_trajectories, state_dim)
+    def get_action(self, state: dict) -> np.ndarray:
+        # state is a dict with keys from index_names.py
+        # Access current price: state[POOL_SQRT_PRICE_KEY] -> shape: (num_trajectories,)
         # return shape: (num_trajectories, 2*tau+1)
         # action must be valid probability distribution (sum to 1)
         # Index tau is the center tick (contains current price)
-        action = self._compute_strategy(state)
+        sqrt_price = state[POOL_SQRT_PRICE_KEY]
+        action = self._compute_strategy(sqrt_price)
         return np.repeat(action.reshape(1, -1), self.num_trajectories, axis=0)
 ```
 
@@ -273,25 +326,35 @@ class MyAgent(Agent):
 
 ### State Access Patterns
 
-Always use the index constants from `gym/index_names.py`:
+Always use the key constants from `gym/index_names.py`:
 ```python
 from SAiFE_gym.gym.index_names import (
-    AMM_PRICE_INDEX,
-    LIQUIDITY_INDEX,
-    FEES_TOKEN_A_INDEX,
-    FEES_TOKEN_B_INDEX
+    POOL_SQRT_PRICE_KEY,
+    POOL_CURRENT_TICK_KEY,
+    POOL_LIQUIDITY_ARRAY_KEY,
+    FEES_A_KEY,
+    FEES_B_KEY,
+    LP_LIQUIDITY_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    MARKET_MIDPRICE_KEY,
+    TIME_KEY
 )
 
-# Get sqrt price (remember: AMM_PRICE_INDEX stores √P, not P)
-sqrt_price = state[0, AMM_PRICE_INDEX]
+# Get current sqrt price (remember: stores √P, not P)
+sqrt_price = state[POOL_SQRT_PRICE_KEY]  # shape: (num_trajectories,)
 actual_price = sqrt_price ** 2  # Convert to regular price
 
-# Get liquidity across all trajectories
-liquidity = state[:, LIQUIDITY_INDEX]
+# Get liquidity array (per-tick liquidity)
+liquidity_array = state[POOL_LIQUIDITY_ARRAY_KEY]  # shape: (num_trajectories, num_ticks)
 
-# Get accumulated fees
-fees_token_a = state[:, FEES_TOKEN_A_INDEX]
-fees_token_b = state[:, FEES_TOKEN_B_INDEX]
+# Get fees per tick
+fees_a = state[FEES_A_KEY]  # shape: (num_trajectories, num_ticks)
+fees_b = state[FEES_B_KEY]  # shape: (num_trajectories, num_ticks)
+
+# Get LP position bounds
+lp_tick_lower = state[LP_TICK_LOWER_KEY]  # shape: (num_trajectories,)
+lp_tick_upper = state[LP_TICK_UPPER_KEY]  # shape: (num_trajectories,)
 ```
 
 ## Work in Progress
@@ -311,7 +374,7 @@ Areas under active development:
   - Comprehensive test suite with 11 array-based tests
 - ✅ `update_state()` method with 3-phase algorithm (arbitrage, noisy trades, fee collection)
 - ✅ Fee calculation functions (`transaction_fee_one_step`, `delta_x`, `delta_y`, `delta_x_vec`, `delta_y_vec`)
-- ✅ State representation with fee tracking (`FEES_TOKEN_A_INDEX`, `FEES_TOKEN_B_INDEX`)
+- ✅ Dict-based state representation with per-tick fee tracking (`FEES_A_KEY`, `FEES_B_KEY`)
 - ✅ Dynamic active tick system with tau parameter
 - ✅ Baseline agent implementations
 
