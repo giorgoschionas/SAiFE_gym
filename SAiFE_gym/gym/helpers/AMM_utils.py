@@ -143,13 +143,13 @@ def get_tick_boundaries(
 def unified_swap_single_tick(
     sqrt_price_current: np.ndarray,
     liquidity: np.ndarray,
-    amount_in: np.ndarray,
+    arrivals: np.ndarray,
     tick_lower_boundary: np.ndarray,
     tick_upper_boundary: np.ndarray,
     fee_rate: float = 0.003,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
     """
-    Unified single-tick swap with two-column arrivals and NO if/else branching.
+    Unified single-tick swap with two-column arrivals
 
     This function processes swaps that cross at most one tick, using a multiplier/indexing
     approach instead of conditional branching on swap direction.
@@ -168,7 +168,7 @@ def unified_swap_single_tick(
     Args:
         sqrt_price_current: Current sqrt(price) per trajectory, shape (num_trajectories,)
         liquidity: Active liquidity per trajectory, shape (num_trajectories,)
-        amount_in: Two-column arrivals [sell_token0, buy_token0], shape (num_trajectories, 2)
+        arrivals: Two-column arrivals [sell_token0, buy_token0], shape (num_trajectories, 2)
             - Column 0: Amount of token0 being sold (traders selling token0 to pool)
             - Column 1: Amount of token0 being bought (traders buying token0 from pool)
         tick_lower_boundary: sqrt(price) at lower tick boundary, shape (num_trajectories,)
@@ -187,7 +187,7 @@ def unified_swap_single_tick(
     # Ensure inputs are arrays
     sqrt_price_current = np.atleast_1d(sqrt_price_current)
     liquidity = np.atleast_1d(liquidity)
-    amount_in = np.atleast_2d(amount_in)
+    arrivals = np.atleast_2d(arrivals)
     tick_lower_boundary = np.atleast_1d(tick_lower_boundary)
     tick_upper_boundary = np.atleast_1d(tick_upper_boundary)
 
@@ -198,7 +198,7 @@ def unified_swap_single_tick(
     # Column 1 = buy_token0 (token0 out of pool, price increases)
     # net > 0: net selling of token0 (price decreases, zero_for_one)
     # net < 0: net buying of token0 (price increases)
-    net_amount = amount_in[:, 0] - amount_in[:, 1]
+    net_amount = arrivals[:, 0] - arrivals[:, 1]
     direction = np.sign(net_amount)  # +1 sell, -1 buy, 0 no trade
     abs_net_amount = np.abs(net_amount) * (1.0 - fee_rate)
     is_sell = direction > 0
@@ -228,10 +228,10 @@ def unified_swap_single_tick(
     # Stack and select: sell -> delta_x (idx 0), buy -> delta_y (idx 1)
     deltas = np.stack([delta_x_abs, delta_y_abs], axis=1)
     delta_selected = deltas[np.arange(num_trajectories), boundary_idx]
-    amount_in_max = delta_selected * liquidity
+    arrivals_max = delta_selected * liquidity
 
     # ==================== Step 4: New Price via np.where ====================
-    hit_boundary = abs_net_amount >= amount_in_max
+    hit_boundary = abs_net_amount >= arrivals_max
     has_liquidity = liquidity > 0
     L_safe = np.where(has_liquidity, liquidity, 1.0)  # Avoid division by zero
 
@@ -250,7 +250,7 @@ def unified_swap_single_tick(
     sqrt_price_next = np.where(has_liquidity, sqrt_price_next, sqrt_price_current)
 
     # ==================== Step 5: Consumed Amount ====================
-    amount_consumed = np.where(hit_boundary, amount_in_max, abs_net_amount)
+    amount_consumed = np.where(hit_boundary, arrivals_max, abs_net_amount)
     amount_consumed = np.where(has_liquidity & (direction != 0), amount_consumed, 0.0)
 
     # ==================== Step 6: Output Amounts ====================

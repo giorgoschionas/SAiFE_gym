@@ -7,8 +7,8 @@ POOL_SQRT_PRICE_KEY = 'sqrt_price'          # Current pool sqrt(price) - shape: 
 POOL_CURRENT_TICK_KEY = 'current_tick'      # Current tick index - shape: (num_trajectories,)
 POOL_LIQUIDITY_ARRAY_KEY = 'liquidity_array'  # Liquidity per tick - shape: (num_trajectories, num_ticks)
 
-FEES_A_KEY = 'fees_a' # Fees in token A collected per tick - shape: (num_trajectories, num_ticks)
-FEES_B_KEY = 'fees_b' # Fees in token B collected per tick - shape: (num_trajectories, num_ticks)
+FEES0_KEY = 'fees_0' # Fees in token 0 collected per tick - shape: (num_trajectories, num_ticks)
+FEES1_KEY = 'fees_1' # Fees in token 1 collected per tick - shape: (num_trajectories, num_ticks)
 
 
 # LP-specific state (agent's position)
@@ -18,6 +18,20 @@ LP_TICK_UPPER_KEY = 'lp_tick_upper'         # LP's position upper bound - shape:
 
 
 # Market state (external)
-MARKET_MIDPRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
+ASSET_PRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
 TIME_KEY = 'time'                           # Current simulation time - shape: (num_trajectories,)
+
+
+# ============================================================================
+# Legacy Array-based Indices (for backwards compatibility)
+# ============================================================================
+# These are used with legacy flat-array state representations
+# TODO: Remove these once all code is migrated to dict-based state
+
+LIQUIDITY_INDEX = 0
+AMM_PRICE_INDEX = 1
+ASSET_PRICE_INDEX = 2
+FEES_TOKEN_A_INDEX = 3
+FEES_TOKEN_B_INDEX = 4
+TIME_INDEX = 5
 

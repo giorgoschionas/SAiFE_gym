@@ -4,7 +4,7 @@ from typing import Optional
 import numpy as np
 
 from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
-from SAiFE_gym.gym.index_names import (LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX)
+from SAiFE_gym.gym.index_names import (POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, POOL_LIQUIDITY_ARRAY_KEY)
 
 
 class ArrivalModel(StochasticProcessModel):
@@ -111,11 +111,10 @@ class PoissonLinearArrivalModel(ArrivalModel):
             np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
         """
 
-        # Extract state variables (vectorized across trajectories)
-        L = state[:, LIQUIDITY_INDEX]           # (N,)
-        Z_sqrt = state[:, AMM_PRICE_INDEX]      # (N,) - SQRT price!
+        L = state[:, POOL_LIQUIDITY_ARRAY_KEY]           # (N,)
+        Z_sqrt = state[:, POOL_SQRT_PRICE_KEY]      # (N,) - SQRT price!
         Z = Z_sqrt ** 2                          # Convert sqrt to regular price
-        S = state[:, ASSET_PRICE_INDEX]         # (N,)
+        S = state[:, ASSET_PRICE_KEY]         # (N,)
 
         # Extract intensity parameters: shape (4, 2) for [SELL, BUY]
         a_0 = self.intensity[0, :]  # (2,) - minimum intensity
@@ -137,56 +136,3 @@ class PoissonLinearArrivalModel(ArrivalModel):
         return arrivals 
 
     
-
-class UnidirectionalPoissonArrivalModel(ArrivalModel):
-      """Unidirectional uninformed arrivals for path-dependent models.
-      
-      Each step has at most ONE order (either buy OR sell, not both).
-      Direction is random (50/50) since traders are uninformed.
-      """
-
-      def __init__(
-          self,
-          intensity: float = 140.0,  
-          step_size: float = 0.001,
-          num_trajectories: int = 1,
-          seed: Optional[int] = None,
-      ):
-          self.intensity = intensity
-          super().__init__(
-              min_value=np.array([[]]),
-              max_value=np.array([[]]),
-              step_size=step_size,
-              terminal_time=0.0,
-              initial_state=np.array([[]]),
-              num_trajectories=num_trajectories,
-              seed=seed,
-          )
-
-      def get_arrivals(self, state: np.ndarray = None) -> np.ndarray:
-          """Generate unidirectional arrivals (only one side per step).
-
-          Args:
-              state: Optional state (unused, for signature compatibility)
-
-          Returns:
-              np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
-          """
-          # Step 1: Sample if order arrives
-          unif_arrival = self.rng.uniform(size=(self.num_trajectories,))
-          order_arrives = unif_arrival < self.intensity * self.step_size
-
-          # Step 2: Randomly choose direction (50/50 for uninformed)
-          unif_direction = self.rng.uniform(size=(self.num_trajectories,))
-          is_buy = unif_direction < 0.5  # 50% chance buy
-          is_sell = ~is_buy              # 50% chance sell
-
-          # Step 3: Combine arrival AND direction (only one side active)
-          arrivals = np.zeros((self.num_trajectories, 2))
-          arrivals[:, 0] = order_arrives & is_sell  # Sell side
-          arrivals[:, 1] = order_arrives & is_buy   # Buy side
-
-          return arrivals
-
-      def update(self, arrivals, fills, actions, state=None):
-          pass  

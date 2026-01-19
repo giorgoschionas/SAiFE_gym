@@ -6,11 +6,11 @@ from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel, PoissonA
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
 from SAiFE_gym.agents.Agent import Agent
-from SAiFE_gym.rewards.RewardFunctions import RewardFunction
-from SAiFE_gym.gym.index_names import TIME_INDEX
-
+from SAiFE_gym.rewards.RewardFunctions import RewardFunction, PnL
 from SAiFE_gym.gym.index_names import (
-    LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX, TIME_INDEX
+    POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
+    FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    ASSET_PRICE_KEY, TIME_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
@@ -55,8 +55,8 @@ class AMMEnvironment(gym.Env):
             seed=seed
         )
 
-        # Create reward function
-        self.reward_function = reward_function if reward_function else RewardFunction()
+        # Create reward function (default to PnL which works with both array and dict states)
+        self.reward_function = reward_function if reward_function else PnL()
 
         # Define observation and action spaces
         self.observation_space = self._create_observation_space()
@@ -90,65 +90,124 @@ class AMMEnvironment(gym.Env):
 
         return gym.spaces.Dict({
             # Pool state (global liquidity)
-            'sqrt_price': gym.spaces.Box(
+            POOL_SQRT_PRICE_KEY: gym.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            'current_tick': gym.spaces.Box(
+            POOL_CURRENT_TICK_KEY: gym.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
             ),
-            'liquidity_array': gym.spaces.Box(
+            POOL_LIQUIDITY_ARRAY_KEY: gym.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories, num_ticks),
+                dtype=np.float32
+            ),
+
+            # Fee arrays (per-tick)
+            FEES0_KEY: gym.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories, num_ticks),
+                dtype=np.float32
+            ),
+            FEES1_KEY: gym.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories, num_ticks),
                 dtype=np.float32
             ),
 
             # LP state (agent's position)
-            'lp_liquidity': gym.spaces.Box(
+            LP_LIQUIDITY_KEY: gym.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            'lp_tick_lower': gym.spaces.Box(
+            LP_TICK_LOWER_KEY: gym.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
             ),
-            'lp_tick_upper': gym.spaces.Box(
+            LP_TICK_UPPER_KEY: gym.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
-            ),
-            'fees_token_a': gym.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            'fees_token_b': gym.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
             ),
 
             # Market state
-            'midprice': gym.spaces.Box(
+            ASSET_PRICE_KEY: gym.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            'time': gym.spaces.Box(
+            TIME_KEY: gym.spaces.Box(
                 low=0.0, high=self.terminal_time,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
         })
 
-    def _initialize_v3_state(self) -> np.ndarray:
-        """Initialize Uniswap v3 pool state (to be implemented in Phase 5)."""
-        pass
+    def _initialize_v3_state(self) -> dict:
+        """
+        Initialize Uniswap v3 pool state.
+
+        Sets up the initial state dictionary with:
+        - Pool state: sqrt_price, current_tick, liquidity_array
+        - Fee arrays: fees_0, fees_1 (per-tick)
+        - LP state: lp_liquidity, lp_tick_lower, lp_tick_upper
+        - Market state: midprice, time
+
+        Returns:
+            dict: Initial state dictionary with all required keys
+        """
+        # Get initial price from midprice model
+        initial_price = self.model_dynamics.initial_price
+        initial_tick = price_to_tick(initial_price)
+
+        # Set tick_lower_global to center the array around initial price
+        num_ticks = self.model_dynamics.num_ticks
+        self.model_dynamics.tick_lower_global = initial_tick - num_ticks // 2
+
+        # Initial liquidity (uniform distribution across all ticks)
+        # This can be customized based on specific requirements
+        initial_liquidity = 100000.0  # Base liquidity per tick
+
+        return {
+            # Pool state
+            POOL_SQRT_PRICE_KEY: np.full(
+                self.num_trajectories, np.sqrt(initial_price), dtype=np.float64
+            ),
+            POOL_CURRENT_TICK_KEY: np.full(
+                self.num_trajectories, initial_tick, dtype=np.int64
+            ),
+            POOL_LIQUIDITY_ARRAY_KEY: np.full(
+                (self.num_trajectories, num_ticks), initial_liquidity, dtype=np.float64
+            ),
+
+            # Fee arrays (per-tick, start at zero)
+            FEES0_KEY: np.zeros(
+                (self.num_trajectories, num_ticks), dtype=np.float64
+            ),
+            FEES1_KEY: np.zeros(
+                (self.num_trajectories, num_ticks), dtype=np.float64
+            ),
+
+            # LP state (no position initially)
+            LP_LIQUIDITY_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_TICK_LOWER_KEY: np.full(
+                self.num_trajectories, initial_tick - self.model_dynamics.tau, dtype=np.int64
+            ),
+            LP_TICK_UPPER_KEY: np.full(
+                self.num_trajectories, initial_tick + self.model_dynamics.tau, dtype=np.int64
+            ),
+
+            # Market state
+            ASSET_PRICE_KEY: np.full(
+                self.num_trajectories, initial_price, dtype=np.float64
+            ),
+            TIME_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+        }
 
     def seed(self, seed: int = None):
         """Set random seed for the environment."""
@@ -272,9 +331,10 @@ class AMMEnvironment(gym.Env):
         """Check if episode is complete."""
         # Handle both Dict and array state
         if isinstance(self.model_dynamics.state, dict):
-            done = self.model_dynamics.state['time'][0] >= self.terminal_time - self._step_size / 2
+            done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
         else:
-            done = self.model_dynamics.state[0, TIME_INDEX] >= self.terminal_time - self._step_size / 2
+            # Legacy array-based state (fallback)
+            done = self.model_dynamics.state[0, -1] >= self.terminal_time - self._step_size / 2
 
         return np.full((self.num_trajectories,), done, dtype=bool)
 
