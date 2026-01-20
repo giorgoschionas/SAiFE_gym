@@ -22,7 +22,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 
 ### Vectorized Environment Design
 
-**KEY FEATURE**: SAiFE_gym is built with **full vectorization** for high-performance parallel simulation of multiple trajectories.
+**KEY FEATURE**: SAiFE_gym is being built with **full vectorization** for high-performance parallel simulation of multiple trajectories.
 
 **Performance Benefits:**
 - Batch processing of thousands of trajectories simultaneously
@@ -90,7 +90,7 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
    - `MidpriceModel`: Price dynamics (Brownian Motion, Geometric Brownian Motion)
-   - `ArrivalModel`: Order flow (Poisson arrivals)
+   - `ArrivalModel`: Order flow (e.g. Poisson arrivals)
    - Each process has `update()` method called per timestep
    - All processes support multiple trajectories for batch simulation
 
@@ -229,131 +229,6 @@ This eliminates the need for `sqrt_p_high`/`sqrt_p_low` calculations since the d
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
 - `exponential_value` (default: 1.0001): Tick spacing base
 - `tick_factor`: Precomputed `sqrt(exponential_value) - 1`
-
-### Key Utility Functions
-
-
-**Vectorized Swap Functions** (`gym/helpers/AMM_utils.py`):
-
-**CRITICAL**: All swap functions use **array-based liquidity representation** for maximum performance.
-
-1. **`swap_step_within_tick_vec()`** - Single-tick vectorized swap
-   ```python
-   def swap_step_within_tick_vec(
-       sqrt_price_current: np.ndarray | float,
-       sqrt_price_target: np.ndarray | float,
-       liquidity: np.ndarray | float,
-       amount_remaining: np.ndarray | float,
-       fee_rate: float,
-       zero_for_one: bool
-   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-       """
-       Executes swap within a single tick range for multiple trajectories.
-
-       Returns: (sqrt_price_next, amount_in_consumed, amount_out, fee)
-       - fee: Total fee paid by swapper (NOT LP fee growth tracking)
-       - Formula: fee = amount_in_consumed * fee_rate / (1.0 - fee_rate)
-       """
-   ```
-
-   **Key Features:**
-   - Fully vectorized with `np.where()` conditionals (no Python loops)
-   - Handles both scalar and array inputs via `np.atleast_1d()`
-   - Fee output represents swapper's fee, different from Uniswap v3's `feeGrowthOutside0X128`
-
-2. **`execute_swap_vec_array()`** - Multi-tick vectorized swap execution
-   ```python
-   def execute_swap_vec_array(
-       sqrt_price_current: np.ndarray,
-       liquidity_array: np.ndarray,
-       tick_lower: int,
-       amount_in: np.ndarray,
-       zero_for_one: bool,
-       fee_rate: float = 0.003,
-       exponential_value: float = 1.0001,
-       sqrt_price_limit: np.ndarray = None
-   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-       """
-       Executes multi-tick swaps across price ranges for batched trajectories.
-
-       Args:
-           liquidity_array: NumPy array indexed by tick offset from tick_lower
-                           Shape: (num_ticks,) or (num_trajectories, num_ticks)
-           tick_lower: Starting tick index for liquidity_array
-
-       Returns: (sqrt_price_final, amount_in_consumed, amount_out, total_fee)
-
-       Performance: Iterates up to MAX_ITER=1000 ticks per swap
-       """
-   ```
-
-   **Key Features:**
-   - **Array-based liquidity**: `liquidity_array[tick_idx]` replaces dict lookups
-   - **Dynamic tick range**: Number of ticks = `liquidity_array.shape[-1]` (no hardcoded limits)
-   - **Active trajectory masking**: Uses `active = amount_remaining > 0` to skip completed swaps
-   - **Out-of-bounds handling**: Ticks outside `[0, num_ticks)` treated as zero liquidity
-   - **10-100x faster** than dict-based sequential implementation
-
-3. **`unified_swap_single_tick()`** - Simplified single-tick swap with NO branching (NEW)
-   ```python
-   def unified_swap_single_tick(
-       sqrt_price_current: np.ndarray,     # (num_trajectories,)
-       liquidity: np.ndarray,               # (num_trajectories,)
-       amount_in: np.ndarray,               # (num_trajectories, 2) [sell_token0, buy_token0]
-       tick_lower_boundary: np.ndarray,     # (num_trajectories,)
-       tick_upper_boundary: np.ndarray,     # (num_trajectories,)
-       fee_rate: float = 0.003,
-   ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-       """
-       Unified swap for single-tick execution with two-column arrivals.
-
-       Uses multiplier/indexing approach instead of if/else branching.
-       Assumes swaps cross at most one tick boundary.
-
-       Args:
-           amount_in: Two-column input [sell_token0, buy_token0]
-               - Column 0: Token0 being sold (into pool, price decreases)
-               - Column 1: Token0 being bought (out of pool, price increases)
-               - Net direction determined by difference: sell - buy
-
-       Returns:
-           - sqrt_price_next: New sqrt(price)
-           - amount_token0_net: Net token0 flow (positive = into pool)
-           - amount_token1_net: Net token1 flow (positive = into pool)
-           - fee_token0: Fee in token0
-           - fee_token1: Fee in token1
-           - hit_boundary: Whether tick boundary was crossed
-       """
-   ```
-
-   **Key Features:**
-   - **No if/else branching**: Uses `np.where()` and array indexing for direction
-   - **Two-column arrivals**: Supports simultaneous buy/sell with NET processing
-   - **Single-tick assumption**: Eliminates iteration loop for simpler swaps
-   - **Direction via sign**: `direction = np.sign(amount_in[:, 0] - amount_in[:, 1])`
-
-4. **`get_tick_boundaries()`** - Helper to compute tick boundaries
-   ```python
-   def get_tick_boundaries(
-       sqrt_price_current: np.ndarray,
-       exponential_value: float = 1.0001
-   ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-       """
-       Get lower and upper sqrt price boundaries for the current tick.
-
-       Returns: (tick_lower_sqrt, tick_upper_sqrt, current_tick)
-       """
-   ```
-
-**Fee Calculation Functions** (`gym/helpers/AMM_utils.py`):
-- `delta_x(p1, p2)`: Calculate change in Token X reserves per unit liquidity (vectorized)
-- `delta_y(p1, p2)`: Calculate change in Token Y reserves per unit liquidity (vectorized)
-- `delta_x_vec(p1, p2)`: Vectorized version supporting array inputs
-- `delta_y_vec(p1, p2)`: Vectorized version supporting array inputs
-- `transaction_fee_one_step(a, b, p1, p2, fee_rate)`: Calculate fees for price movement from p1 to p2 within range [a, b]
-  - Returns `(fee_token_a, fee_token_b)` **per unit of liquidity**
-  - Must multiply by actual liquidity to get total fees
-  - Used internally by `update_state()` for fee accumulation
 
 ## Important Implementation Details
 

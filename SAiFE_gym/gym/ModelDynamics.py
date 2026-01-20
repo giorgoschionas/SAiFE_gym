@@ -144,7 +144,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
-        Simplified vectorized state update following mbt_gym pattern.
+        Vectorized state update following mbt_gym pattern.
 
         Each arrival moves the price by exactly 1 tick:
         - Sell token0 (arrivals[:, 0] = 1): tick decreases by 1, price decreases
@@ -159,8 +159,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        num_traj = self.num_trajectories
-
         # Step 1: Store current state for fee calculation
         current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
         current_sqrt_price = self.state[POOL_SQRT_PRICE_KEY].copy()
@@ -169,7 +167,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
         tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
         active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(num_traj), tick_array_idx
+            np.arange(self.num_trajectories), tick_array_idx
         ]
 
         # Step 3: Update tick (like mbt_gym inventory update)
@@ -222,5 +220,39 @@ class UniswapV3ModelDynamics(ModelDynamics):
             # Return no arrivals if no arrival model
             return np.zeros((self.num_trajectories, 2), dtype=bool)
 
-        arrivals = self.arrival_model.get_arrivals()
+        context = self._build_arrival_context()
+        arrivals = self.arrival_model.get_arrivals(context)
         return arrivals
+
+    def _build_arrival_context(self) -> dict:
+        """
+        Pre-compute values for state-dependent arrival models.
+
+        Returns:
+            dict: Context with keys:
+                - 'active_liquidity': Liquidity at current tick, shape (num_trajectories,)
+                - 'amm_price': AMM price (sqrt_price**2), shape (num_trajectories,)
+                - 'midprice': External market midprice, shape (num_trajectories,)
+            Returns None if state is not initialized.
+        """
+        if self.state is None:
+            return None
+
+        # Get active liquidity at current tick (same pattern as update_state)
+        current_tick = self.state[POOL_CURRENT_TICK_KEY]
+        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
+        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
+        active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][
+            np.arange(self.num_trajectories), tick_array_idx
+        ]
+
+        # Get prices
+        sqrt_price = self.state[POOL_SQRT_PRICE_KEY]
+        amm_price = sqrt_price ** 2
+        midprice = self.state[ASSET_PRICE_KEY]
+
+        return {
+            'active_liquidity': active_liquidity,
+            'amm_price': amm_price,
+            'midprice': midprice,
+        }

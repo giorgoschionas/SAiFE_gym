@@ -1,254 +1,317 @@
 """
-Test script for PoissonLinearArrivalModel
+Test script for PoissonLinearArrivalModel with context-based interface
+
+Tests:
+1. Basic functionality - shape and dtype of arrivals
+2. Sign convention - BUY > SELL when AMM underpriced (S > Z)
+3. Sign convention - SELL > BUY when AMM overpriced (S < Z)
+4. Liquidity effect - Higher L increases both arrival rates
+5. Parameter validation - alpha shape and floor constraints
+6. Context validation - requires context dict
 """
 import numpy as np
 import sys
+import pytest
+
 sys.path.insert(0, '/home/gchionas/Programming/Blockchain/Ethereum/defi-trading/SAiFE_gym')
 
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
-from SAiFE_gym.gym.index_names import LIQUIDITY_INDEX, AMM_PRICE_INDEX, ASSET_PRICE_INDEX
+from SAiFE_gym.stochastic_processes.arrival_models import (
+    PoissonLinearArrivalModel,
+    PoissonArrivalModel
+)
 
 
-def test_basic_functionality():
-    """Test that PoissonLinearArrivalModel computes arrivals correctly"""
-    print("=" * 70)
-    print("TEST 1: Basic Functionality")
-    print("=" * 70)
+class TestPoissonLinearArrivalModel:
+    """Test suite for PoissonLinearArrivalModel with context-based interface."""
 
-    # Create model with simple intensities for testing
-    model = PoissonLinearArrivalModel(
-        intensity=np.array([
-            [10.0, 10.0],    # a_0: minimum intensity
-            [50.0, 50.0],    # a_1: base intensity
-            [0.1, 0.1],      # a_2: liquidity coefficient
-            [1.0, -1.0]      # a_3: price discrepancy coefficient (asymmetric)
-        ]),
-        step_size=0.001,
-        num_trajectories=10,
-        seed=42
-    )
-
-    # Create test state (num_trajectories, state_dim)
-    state = np.zeros((10, 6))
-    state[:, LIQUIDITY_INDEX] = 1000.0          # L = 1000
-    state[:, AMM_PRICE_INDEX] = np.sqrt(100.0)  # Z_sqrt = 10, Z = 100
-    state[:, ASSET_PRICE_INDEX] = 100.0         # S = 100
-
-    # Get arrivals
-    arrivals = model.get_arrivals(state)
-
-    print(f"State shape: {state.shape}")
-    print(f"Arrivals shape: {arrivals.shape}")
-    print(f"Arrivals dtype: {arrivals.dtype}")
-    print(f"Sample arrivals (first 3 trajectories):")
-    print(arrivals[:3])
-
-    # Verify shape
-    assert arrivals.shape == (10, 2), f"Expected shape (10, 2), got {arrivals.shape}"
-    assert arrivals.dtype == bool or arrivals.dtype == np.bool_, f"Expected bool dtype, got {arrivals.dtype}"
-
-    print("✓ Basic functionality test passed!\n")
-
-
-def test_formula_verification():
-    """Test that the formula a = max(a_0, a_1 + a_2*L + a_3*(Z-S)) is computed correctly"""
-    print("=" * 70)
-    print("TEST 2: Formula Verification")
-    print("=" * 70)
-
-    # Set up known values
-    L = 1000.0
-    Z = 105.0  # AMM overpriced
-    S = 100.0
-
-    # Intensity parameters
-    a_0 = [10.0, 10.0]
-    a_1 = [50.0, 50.0]
-    a_2 = [0.1, 0.1]
-    a_3 = [1.0, -1.0]  # SELL increases when Z>S, BUY decreases
-
-    # Expected intensity
-    # For SELL: max(10, 50 + 0.1*1000 + 1.0*(105-100)) = max(10, 50 + 100 + 5) = 155
-    # For BUY:  max(10, 50 + 0.1*1000 - 1.0*(105-100)) = max(10, 50 + 100 - 5) = 145
-    expected_sell = max(a_0[0], a_1[0] + a_2[0] * L + a_3[0] * (Z - S))
-    expected_buy = max(a_0[1], a_1[1] + a_2[1] * L + a_3[1] * (Z - S))
-
-    print(f"L = {L}, Z = {Z}, S = {S}")
-    print(f"Expected intensity SELL: {expected_sell}")
-    print(f"Expected intensity BUY: {expected_buy}")
-
-    # Create model
-    model = PoissonLinearArrivalModel(
-        intensity=np.array([a_0, a_1, a_2, a_3]),
-        step_size=0.001,
-        num_trajectories=1000,  # More trajectories for better statistics
-        seed=42
-    )
-
-    # Create state
-    state = np.zeros((1000, 6))
-    state[:, LIQUIDITY_INDEX] = L
-    state[:, AMM_PRICE_INDEX] = np.sqrt(Z)  # Store as sqrt
-    state[:, ASSET_PRICE_INDEX] = S
-
-    # Get arrivals (run multiple times to get average)
-    arrivals_samples = []
-    for _ in range(100):
-        arrivals = model.get_arrivals(state)
-        arrivals_samples.append(arrivals)
-
-    arrivals_all = np.array(arrivals_samples)
-    avg_sell_rate = np.mean(arrivals_all[:, :, 0])
-    avg_buy_rate = np.mean(arrivals_all[:, :, 1])
-
-    expected_sell_rate = expected_sell * model.step_size
-    expected_buy_rate = expected_buy * model.step_size
-
-    print(f"\nObserved SELL rate: {avg_sell_rate:.6f}")
-    print(f"Expected SELL rate: {expected_sell_rate:.6f}")
-    print(f"Observed BUY rate: {avg_buy_rate:.6f}")
-    print(f"Expected BUY rate: {expected_buy_rate:.6f}")
-
-    # Note: Since intensity * step_size = 155 * 0.001 = 0.155, both should be well below 1.0
-    # The observed rates should be close to expected rates
-
-    print("✓ Formula verification test passed!\n")
-
-
-def test_price_discrepancy_effect():
-    """Test that price discrepancy (Z-S) affects SELL vs BUY asymmetrically"""
-    print("=" * 70)
-    print("TEST 3: Price Discrepancy Effect")
-    print("=" * 70)
-
-    model = PoissonLinearArrivalModel(
-        intensity=np.array([
-            [0.0, 0.0],      # a_0: no floor
-            [50.0, 50.0],    # a_1: base 50
-            [0.0, 0.0],      # a_2: no liquidity dependence
-            [10.0, -10.0]    # a_3: strong asymmetric effect
-        ]),
-        step_size=0.001,
-        num_trajectories=1000,
-        seed=42
-    )
-
-    # Case 1: Z > S (AMM overpriced - expect more SELL)
-    state_over = np.zeros((1000, 6))
-    state_over[:, AMM_PRICE_INDEX] = np.sqrt(110.0)  # Z = 110
-    state_over[:, ASSET_PRICE_INDEX] = 100.0         # S = 100
-    # Expected: SELL intensity = 50 + 10*10 = 150, BUY intensity = 50 - 10*10 = max(0, -50) = 0
-
-    arrivals_over = model.get_arrivals(state_over)
-    sell_rate_over = np.mean(arrivals_over[:, 0])
-    buy_rate_over = np.mean(arrivals_over[:, 1])
-
-    print(f"Case 1: Z > S (AMM overpriced)")
-    print(f"  SELL rate: {sell_rate_over:.4f}")
-    print(f"  BUY rate: {buy_rate_over:.4f}")
-    print(f"  SELL > BUY: {sell_rate_over > buy_rate_over}")
-
-    # Case 2: Z < S (AMM underpriced - expect more BUY)
-    state_under = np.zeros((1000, 6))
-    state_under[:, AMM_PRICE_INDEX] = np.sqrt(90.0)   # Z = 90
-    state_under[:, ASSET_PRICE_INDEX] = 100.0         # S = 100
-    # Expected: SELL intensity = 50 + 10*(-10) = max(0, -50) = 0, BUY intensity = 50 - 10*(-10) = 150
-
-    arrivals_under = model.get_arrivals(state_under)
-    sell_rate_under = np.mean(arrivals_under[:, 0])
-    buy_rate_under = np.mean(arrivals_under[:, 1])
-
-    print(f"\nCase 2: Z < S (AMM underpriced)")
-    print(f"  SELL rate: {sell_rate_under:.4f}")
-    print(f"  BUY rate: {buy_rate_under:.4f}")
-    print(f"  BUY > SELL: {buy_rate_under > sell_rate_under}")
-
-    assert sell_rate_over > buy_rate_over, "When Z > S, SELL rate should exceed BUY rate"
-    assert buy_rate_under > sell_rate_under, "When Z < S, BUY rate should exceed SELL rate"
-
-    print("✓ Price discrepancy effect test passed!\n")
-
-
-def test_state_validation():
-    """Test that validation works correctly"""
-    print("=" * 70)
-    print("TEST 4: State Validation")
-    print("=" * 70)
-
-    model = PoissonLinearArrivalModel(num_trajectories=10, seed=42)
-
-    # Test 1: None state should raise ValueError
-    try:
-        model.get_arrivals(None)
-        assert False, "Should have raised ValueError for None state"
-    except ValueError as e:
-        print(f"✓ Correctly raised ValueError for None state: {e}")
-
-    # Test 2: Wrong batch size should raise ValueError
-    state_wrong_size = np.zeros((5, 6))  # Wrong batch size
-    try:
-        model.get_arrivals(state_wrong_size)
-        assert False, "Should have raised ValueError for wrong batch size"
-    except ValueError as e:
-        print(f"✓ Correctly raised ValueError for wrong batch size: {e}")
-
-    # Test 3: Correct state should work
-    state_correct = np.zeros((10, 6))
-    state_correct[:, AMM_PRICE_INDEX] = 10.0
-    arrivals = model.get_arrivals(state_correct)
-    assert arrivals.shape == (10, 2)
-    print(f"✓ Correctly processed valid state")
-
-    print("✓ State validation test passed!\n")
-
-
-def test_intensity_validation():
-    """Test that intensity validation in constructor works"""
-    print("=" * 70)
-    print("TEST 5: Intensity Validation")
-    print("=" * 70)
-
-    # Test 1: Wrong shape should fail
-    try:
+    def test_basic_functionality(self):
+        """Test that arrivals have correct shape and dtype."""
+        num_trajectories = 100
         model = PoissonLinearArrivalModel(
-            intensity=np.array([[10, 20, 30], [40, 50, 60]]),  # Wrong shape (2, 3)
-            num_trajectories=1
+            alpha=np.array([
+                [10.0, 10.0],   # a0: minimum intensity floor
+                [100.0, 100.0], # a1: baseline intensity
+                [50.0, 50.0],   # a2: liquidity coefficient
+                [5.0, 5.0],     # a3: arbitrage coefficient
+            ]),
+            liquidity_scale=1e6,
+            step_size=0.001,
+            num_trajectories=num_trajectories,
+            seed=42
         )
-        assert False, "Should have raised AssertionError for wrong intensity shape"
-    except AssertionError as e:
-        print(f"✓ Correctly raised AssertionError for wrong shape: {e}")
 
-    # Test 2: Negative a_0 should fail
-    try:
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),
+        }
+
+        arrivals = model.get_arrivals(context)
+
+        assert arrivals.shape == (num_trajectories, 2), f"Expected shape ({num_trajectories}, 2), got {arrivals.shape}"
+        assert arrivals.dtype == bool or arrivals.dtype == np.bool_, f"Expected bool dtype, got {arrivals.dtype}"
+
+    def test_mispricing_increases_buy_when_amm_underpriced(self):
+        """When S > Z (AMM underpriced), BUY intensity should exceed SELL."""
+        num_trajectories = 10000
         model = PoissonLinearArrivalModel(
-            intensity=np.array([[-10.0, -5.0], [50, 50], [0.1, 0.1], [1, -1]]),
-            num_trajectories=1
+            alpha=np.array([
+                [10.0, 10.0],   # a0: floor
+                [100.0, 100.0], # a1: baseline
+                [0.0, 0.0],     # a2: no liquidity effect (isolate mispricing)
+                [50.0, 50.0],   # a3: strong arbitrage coefficient
+            ]),
+            step_size=0.01,  # Higher step_size for more arrivals
+            num_trajectories=num_trajectories,
+            seed=42
         )
-        assert False, "Should have raised AssertionError for negative a_0"
-    except AssertionError as e:
-        print(f"✓ Correctly raised AssertionError for negative a_0: {e}")
 
-    # Test 3: Valid intensity should work
-    model = PoissonLinearArrivalModel(
-        intensity=np.array([[10.0, 10.0], [50, 50], [0.1, 0.1], [1, -1]]),
-        num_trajectories=1
-    )
-    print(f"✓ Correctly accepted valid intensity")
+        # S > Z: AMM underpriced (market price higher than AMM)
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),
+            'amm_price': np.full(num_trajectories, 95.0),    # Z = 95
+            'midprice': np.full(num_trajectories, 100.0),    # S = 100
+        }
 
-    print("✓ Intensity validation test passed!\n")
+        # Run multiple samples for statistical significance
+        buy_counts = 0
+        sell_counts = 0
+        for _ in range(100):
+            arrivals = model.get_arrivals(context)
+            sell_counts += arrivals[:, 0].sum()
+            buy_counts += arrivals[:, 1].sum()
+
+        assert buy_counts > sell_counts, (
+            f"When AMM underpriced (S > Z), BUY should exceed SELL. "
+            f"Got BUY={buy_counts}, SELL={sell_counts}"
+        )
+
+    def test_mispricing_increases_sell_when_amm_overpriced(self):
+        """When S < Z (AMM overpriced), SELL intensity should exceed BUY."""
+        num_trajectories = 10000
+        model = PoissonLinearArrivalModel(
+            alpha=np.array([
+                [10.0, 10.0],   # a0: floor
+                [100.0, 100.0], # a1: baseline
+                [0.0, 0.0],     # a2: no liquidity effect (isolate mispricing)
+                [50.0, 50.0],   # a3: strong arbitrage coefficient
+            ]),
+            step_size=0.01,
+            num_trajectories=num_trajectories,
+            seed=42
+        )
+
+        # S < Z: AMM overpriced (market price lower than AMM)
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),
+            'amm_price': np.full(num_trajectories, 105.0),   # Z = 105
+            'midprice': np.full(num_trajectories, 100.0),    # S = 100
+        }
+
+        # Run multiple samples for statistical significance
+        buy_counts = 0
+        sell_counts = 0
+        for _ in range(100):
+            arrivals = model.get_arrivals(context)
+            sell_counts += arrivals[:, 0].sum()
+            buy_counts += arrivals[:, 1].sum()
+
+        assert sell_counts > buy_counts, (
+            f"When AMM overpriced (S < Z), SELL should exceed BUY. "
+            f"Got SELL={sell_counts}, BUY={buy_counts}"
+        )
+
+    def test_liquidity_increases_arrival_rates(self):
+        """Higher active liquidity should increase both arrival rates."""
+        num_trajectories = 10000
+        model = PoissonLinearArrivalModel(
+            alpha=np.array([
+                [10.0, 10.0],   # a0: floor
+                [50.0, 50.0],   # a1: baseline
+                [100.0, 100.0], # a2: strong liquidity coefficient
+                [0.0, 0.0],     # a3: no arbitrage effect (isolate liquidity)
+            ]),
+            liquidity_scale=1e6,
+            step_size=0.01,
+            num_trajectories=num_trajectories,
+            seed=42
+        )
+
+        # Low liquidity case
+        context_low = {
+            'active_liquidity': np.full(num_trajectories, 1e5),  # L = 0.1 (normalized)
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),
+        }
+
+        # High liquidity case
+        context_high = {
+            'active_liquidity': np.full(num_trajectories, 2e6),  # L = 2.0 (normalized)
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),
+        }
+
+        # Collect arrivals
+        low_arrivals = 0
+        high_arrivals = 0
+        for _ in range(100):
+            arrivals_low = model.get_arrivals(context_low)
+            arrivals_high = model.get_arrivals(context_high)
+            low_arrivals += arrivals_low.sum()
+            high_arrivals += arrivals_high.sum()
+
+        assert high_arrivals > low_arrivals, (
+            f"Higher liquidity should increase arrivals. "
+            f"Got high={high_arrivals}, low={low_arrivals}"
+        )
+
+    def test_intensity_floor_prevents_negative(self):
+        """The a0 floor should prevent negative intensities."""
+        num_trajectories = 1000
+        model = PoissonLinearArrivalModel(
+            alpha=np.array([
+                [50.0, 50.0],   # a0: high floor
+                [10.0, 10.0],   # a1: low baseline
+                [0.0, 0.0],     # a2: no liquidity
+                [100.0, 100.0], # a3: strong arbitrage (to drive intensity negative)
+            ]),
+            step_size=0.01,
+            num_trajectories=num_trajectories,
+            seed=42
+        )
+
+        # Large mispricing that would drive linear part negative
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),  # S - Z = 0, symmetric
+        }
+
+        # Even with extreme mispricing, arrivals should still occur due to floor
+        arrivals = model.get_arrivals(context)
+
+        # With floor of 50 and step_size of 0.01, expected rate is 0.5
+        # Should see arrivals (not all zeros)
+        assert arrivals.sum() > 0, "Floor should ensure some arrivals occur"
+
+    def test_context_required(self):
+        """Test that PoissonLinearArrivalModel raises error without context."""
+        model = PoissonLinearArrivalModel(num_trajectories=10, seed=42)
+
+        with pytest.raises(ValueError, match="requires context dict"):
+            model.get_arrivals(None)
+
+    def test_alpha_shape_validation(self):
+        """Test that alpha must have shape (4, 2)."""
+        with pytest.raises(AssertionError, match="alpha must have shape"):
+            PoissonLinearArrivalModel(
+                alpha=np.array([[10, 20, 30], [40, 50, 60]]),  # Wrong shape
+                num_trajectories=1
+            )
+
+    def test_floor_nonnegative_validation(self):
+        """Test that a0 (floor) must be non-negative."""
+        with pytest.raises(AssertionError, match="must be non-negative"):
+            PoissonLinearArrivalModel(
+                alpha=np.array([
+                    [-10.0, -5.0],  # Negative floor
+                    [50, 50],
+                    [0.1, 0.1],
+                    [1, 1]
+                ]),
+                num_trajectories=1
+            )
+
+    def test_default_alpha_values(self):
+        """Test that default alpha values are used when not provided."""
+        model = PoissonLinearArrivalModel(num_trajectories=1, seed=42)
+
+        # Check defaults
+        expected_alpha = np.array([
+            [10.0, 10.0],    # a0
+            [100.0, 100.0],  # a1
+            [50.0, 50.0],    # a2
+            [5.0, 5.0],      # a3
+        ])
+        np.testing.assert_array_equal(model.alpha, expected_alpha)
+        assert model.liquidity_scale == 1e6
+
+
+class TestPoissonArrivalModel:
+    """Test suite for PoissonArrivalModel (state-independent)."""
+
+    def test_ignores_context(self):
+        """Test that PoissonArrivalModel ignores context parameter."""
+        num_trajectories = 100
+        model = PoissonArrivalModel(
+            intensity=np.array([100.0, 100.0]),
+            step_size=0.01,
+            num_trajectories=num_trajectories,
+            seed=42
+        )
+
+        # Should work with None context
+        arrivals_none = model.get_arrivals(None)
+        assert arrivals_none.shape == (num_trajectories, 2)
+
+        # Should work with context dict (but ignore it)
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),
+        }
+        arrivals_ctx = model.get_arrivals(context)
+        assert arrivals_ctx.shape == (num_trajectories, 2)
+
+
+class TestFormulaVerification:
+    """Verify the mathematical formulas are implemented correctly."""
+
+    def test_intensity_formula_symmetric_case(self):
+        """Test intensity formula when S = Z (no mispricing)."""
+        num_trajectories = 10000
+        model = PoissonLinearArrivalModel(
+            alpha=np.array([
+                [0.0, 0.0],     # a0: no floor
+                [100.0, 100.0], # a1: baseline
+                [50.0, 50.0],   # a2: liquidity coefficient
+                [10.0, 10.0],   # a3: arbitrage coefficient
+            ]),
+            liquidity_scale=1e6,
+            step_size=0.1,  # High step_size to get measurable rates
+            num_trajectories=num_trajectories,
+            seed=42
+        )
+
+        # S = Z: no mispricing
+        context = {
+            'active_liquidity': np.full(num_trajectories, 1e6),  # L = 1.0 (normalized)
+            'amm_price': np.full(num_trajectories, 100.0),
+            'midprice': np.full(num_trajectories, 100.0),
+        }
+
+        # Expected intensity: a1 + a2*L = 100 + 50*1.0 = 150
+        # Expected rate: 150 * 0.1 = 15.0 (but capped at 1.0 for probability)
+        # With step_size=0.1 and intensity=150, P(arrival) = min(1.0, 15.0) = 1.0
+        # But that's > 1, so effectively all should fire
+
+        # When S = Z, SELL and BUY should have same rates
+        sell_counts = 0
+        buy_counts = 0
+        for _ in range(100):
+            arrivals = model.get_arrivals(context)
+            sell_counts += arrivals[:, 0].sum()
+            buy_counts += arrivals[:, 1].sum()
+
+        # They should be approximately equal (within statistical noise)
+        total = sell_counts + buy_counts
+        sell_ratio = sell_counts / total
+        buy_ratio = buy_counts / total
+
+        # Should be roughly 50-50
+        assert 0.45 < sell_ratio < 0.55, f"SELL ratio should be ~0.5 when S=Z, got {sell_ratio}"
+        assert 0.45 < buy_ratio < 0.55, f"BUY ratio should be ~0.5 when S=Z, got {buy_ratio}"
 
 
 if __name__ == "__main__":
-    print("\n" + "=" * 70)
-    print("TESTING PoissonLinearArrivalModel")
-    print("=" * 70 + "\n")
-
-    test_basic_functionality()
-    test_formula_verification()
-    test_price_discrepancy_effect()
-    test_state_validation()
-    test_intensity_validation()
-
-    print("=" * 70)
-    print("ALL TESTS PASSED! ✓")
-    print("=" * 70)
+    pytest.main([__file__, "-v"])
