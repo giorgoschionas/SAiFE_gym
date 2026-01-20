@@ -7,8 +7,8 @@ POOL_SQRT_PRICE_KEY = 'sqrt_price'          # Current pool sqrt(price) - shape: 
 POOL_CURRENT_TICK_KEY = 'current_tick'      # Current tick index - shape: (num_trajectories,)
 POOL_LIQUIDITY_ARRAY_KEY = 'liquidity_array'  # Liquidity per tick - shape: (num_trajectories, num_ticks)
 
-FEES0_KEY = 'fees_0' # Fees in token 0 collected per tick - shape: (num_trajectories, num_ticks)
-FEES1_KEY = 'fees_1' # Fees in token 1 collected per tick - shape: (num_trajectories, num_ticks)
+FEES0_KEY = 'fees_0'  # Total fees collected in token 0 - shape: (num_trajectories,)
+FEES1_KEY = 'fees_1'  # Total fees collected in token 1 - shape: (num_trajectories,)
 
 
 # LP-specific state (agent's position)

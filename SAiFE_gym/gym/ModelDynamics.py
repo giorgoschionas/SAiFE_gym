@@ -12,9 +12,6 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     ASSET_PRICE_KEY, TIME_KEY
 )
-from SAiFE_gym.gym.helpers.AMM_utils import (
-    unified_swap_single_tick, get_tick_boundaries, price_to_tick
-)
 
 
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
@@ -77,6 +74,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 1000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
+    
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model,
@@ -89,6 +87,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.tau = tau  # Hyperparameter for active tick window
         self.num_ticks = num_ticks  # Total number of ticks to track
         self.exponential_value = exponential_value
+        self.tick_factor = np.sqrt(exponential_value) - 1.0
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
@@ -145,21 +144,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
-        Update pool state using unified single-tick swap.
+        Simplified vectorized state update following mbt_gym pattern.
 
-        Implements the core AMM dynamics:
-        1. Convert boolean arrivals to numeric amounts
-        2. Extract current state variables
-        3. Get active liquidity at current tick
-        4. Get tick boundaries
-        5. Execute swap (clamped to boundary automatically)
-        6. Update state (sqrt_price, current_tick)
-        7. Accumulate fees at the tick where swap occurred
+        Each arrival moves the price by exactly 1 tick:
+        - Sell token0 (arrivals[:, 0] = 1): tick decreases by 1, price decreases
+        - Buy token0 (arrivals[:, 1] = 1): tick increases by 1, price increases
 
         Args:
-            arrivals: Boolean arrivals array, shape (num_trajectories, 2)
-                      Column 0: sell_token0 arrivals
-                      Column 1: buy_token0 arrivals
+            arrivals: Binary array of shape (num_trajectories, 2)
+                      Column 0: sell_token0 arrivals (token0 into pool)
+                      Column 1: buy_token0 arrivals (token0 out of pool)
             action: Agent action array (for LP positioning, not used in swap)
         """
         if self.state is None:
@@ -167,64 +161,53 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         num_traj = self.num_trajectories
 
-        # Step 1: Convert boolean arrivals to numeric amounts
-        # Pass large amount when arrival=True - unified_swap_single_tick will clamp to arrivals_max
-        LARGE_AMOUNT = 1e18
-        numeric_arrivals = arrivals.astype(np.float64) * LARGE_AMOUNT
-
-        # Step 2: Extract current state
-        sqrt_price_current = self.state[POOL_SQRT_PRICE_KEY].copy()
+        # Step 1: Store current state for fee calculation
         current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
+        current_sqrt_price = self.state[POOL_SQRT_PRICE_KEY].copy()
 
-        # Step 3: Get active liquidity at current tick
+        # Step 2: Get active liquidity at current tick
         tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
         tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
         active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][
             np.arange(num_traj), tick_array_idx
         ]
 
-        # Step 4: Get tick boundaries
-        tick_lower_sqrt, tick_upper_sqrt, _ = get_tick_boundaries(
-            sqrt_price_current, self.exponential_value
+        # Step 3: Update tick (like mbt_gym inventory update)
+        # sell (col 0) → tick -1, buy (col 1) → tick +1
+        tick_change = arrivals[:, 1].astype(np.int64) - arrivals[:, 0].astype(np.int64)
+        self.state[POOL_CURRENT_TICK_KEY] = current_tick + tick_change
+
+        # Step 4: Update sqrt_price from new tick
+        new_tick = self.state[POOL_CURRENT_TICK_KEY]
+        self.state[POOL_SQRT_PRICE_KEY] = np.sqrt(self.exponential_value ** new_tick)
+
+        # Step 5: Calculate fees using tick_factor (simplified 1-tick formula)
+        # fee = fee_rate / (1 - fee_rate) * L * delta
+        # delta_x = tick_factor / sqrt_price (for sell)
+        # delta_y = sqrt_price * tick_factor (for buy)
+        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
+
+        is_sell = arrivals[:, 0].astype(bool)
+        is_buy = arrivals[:, 1].astype(bool)
+
+        fee_token0 = np.where(
+            is_sell,
+            fee_multiplier * active_liquidity * self.tick_factor / current_sqrt_price,
+            0.0
         )
 
-        # Step 5: Execute swap (will clamp to boundary automatically)
-        (sqrt_price_next, token0_net, token1_net,
-         fee_token0, fee_token1, hit_boundary) = unified_swap_single_tick(
-            sqrt_price_current=sqrt_price_current,
-            liquidity=active_liquidity,
-            arrivals=numeric_arrivals,
-            tick_lower_boundary=tick_lower_sqrt,
-            tick_upper_boundary=tick_upper_sqrt,
-            fee_rate=self.fee_tier
+        fee_token1 = np.where(
+            is_buy,
+            fee_multiplier * active_liquidity * current_sqrt_price * self.tick_factor,
+            0.0
         )
 
-        # Step 6: Update state (sqrt_price, current_tick)
-        self.state[POOL_SQRT_PRICE_KEY] = sqrt_price_next
+        self.state[FEES0_KEY] += fee_token0
+        self.state[FEES1_KEY] += fee_token1
 
-        # Compute new tick from new sqrt price
-        price_next = sqrt_price_next ** 2
-        price_next = np.maximum(price_next, 1e-300)  # Numerical safety
-        new_tick = np.floor(
-            np.log(price_next) / np.log(self.exponential_value)
-        ).astype(np.int64)
-        self.state[POOL_CURRENT_TICK_KEY] = new_tick
-
-        # Step 7: Accumulate fees at the tick where swap occurred
-        np.add.at(
-            self.state[FEES0_KEY],
-            (np.arange(num_traj), tick_array_idx),
-            fee_token0
-        )
-        np.add.at(
-            self.state[FEES1_KEY],
-            (np.arange(num_traj), tick_array_idx),
-            fee_token1
-        )
-
-        # Update time
+        # Step 6: Update time
         step_size = self.midprice_model.step_size if self.midprice_model else 0.005
-        self.state[TIME_KEY] = self.state[TIME_KEY] + step_size
+        self.state[TIME_KEY] += step_size
 
     def get_arrivals(self) -> np.ndarray:
         """

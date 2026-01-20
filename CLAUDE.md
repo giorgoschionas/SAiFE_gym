@@ -119,11 +119,11 @@ The state is a **dictionary** with the following keys:
 | `POOL_CURRENT_TICK_KEY` | `(num_trajectories,)` | Current tick index |
 | `POOL_LIQUIDITY_ARRAY_KEY` | `(num_trajectories, num_ticks)` | Liquidity per tick (see indexing below) |
 
-**Fees per tick:**
+**Fees (accumulated totals):**
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `FEES_A_KEY` | `(num_trajectories, num_ticks)` | Fees in token A collected per tick |
-| `FEES_B_KEY` | `(num_trajectories, num_ticks)` | Fees in token B collected per tick |
+| `FEES0_KEY` | `(num_trajectories,)` | Total fees collected in token0 |
+| `FEES1_KEY` | `(num_trajectories,)` | Total fees collected in token1 |
 
 **LP position state:**
 | Key | Shape | Description |
@@ -138,7 +138,7 @@ The state is a **dictionary** with the following keys:
 | `MARKET_MIDPRICE_KEY` | `(num_trajectories,)` | External market midprice |
 | `TIME_KEY` | `(num_trajectories,)` | Current simulation time |
 
-**Per-tick array indexing** (applies to `liquidity_array`, `fees_a`, `fees_b`):
+**Per-tick array indexing** (applies to `liquidity_array`):
 - Entry `[traj, i]` corresponds to tick `[tick_lower + i, tick_lower + i + 1)`
 - See "Liquidity Array Indexing" section above for conversion formulas
 
@@ -174,10 +174,61 @@ The state is a **dictionary** with the following keys:
 
 ### State Update Mechanism
 
+The `update_state()` method in `UniswapV3ModelDynamics` follows the **mbt_gym pattern** for simplicity and vectorization.
+
+**Core Principle**: Each arrival moves the price by exactly **1 tick**.
+- Sell token0 arrival (column 0): tick decreases by 1, price decreases
+- Buy token0 arrival (column 1): tick increases by 1, price increases
+
+**Implementation** (6 steps):
+```python
+def update_state(self, arrivals: np.ndarray, action: np.ndarray):
+    # Step 1: Store current state for fee calculation
+    current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
+    current_sqrt_price = self.state[POOL_SQRT_PRICE_KEY].copy()
+
+    # Step 2: Get active liquidity at current tick
+    tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
+    active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][np.arange(num_traj), tick_array_idx]
+
+    # Step 3: Update tick (like mbt_gym inventory update)
+    tick_change = arrivals[:, 1].astype(np.int64) - arrivals[:, 0].astype(np.int64)
+    self.state[POOL_CURRENT_TICK_KEY] = current_tick + tick_change
+
+    # Step 4: Update sqrt_price from new tick
+    self.state[POOL_SQRT_PRICE_KEY] = np.sqrt(exponential_value ** new_tick)
+
+    # Step 5: Calculate fees using tick_factor
+    # tick_factor = sqrt(1.0001) - 1 ≈ 0.00005 (precomputed constant)
+    fee_token0 = fee_multiplier * L * tick_factor / sqrt_price  # for sell
+    fee_token1 = fee_multiplier * L * sqrt_price * tick_factor  # for buy
+
+    # Step 6: Update time
+    self.state[TIME_KEY] += step_size
+```
+
+**Key Simplification - tick_factor**:
+Since each trade moves exactly 1 tick, the price change formulas simplify:
+```python
+tick_factor = np.sqrt(1.0001) - 1  # ≈ 0.00004999875
+
+# For sell (tick decreases): delta_x = tick_factor / sqrt_price
+# For buy (tick increases):  delta_y = sqrt_price * tick_factor
+```
+
+This eliminates the need for `sqrt_p_high`/`sqrt_p_low` calculations since the direction is known from the arrival column.
+
+**Comparison with mbt_gym**:
+| mbt_gym (Limit Order Book) | SAiFE_gym (AMM) |
+|---------------------------|-----------------|
+| `inventory += arrivals * -fill_multiplier` | `tick += arrivals[:, 1] - arrivals[:, 0]` |
+| `cash += arrivals * fills * price` | `fees += L * tick_factor * price_factor` |
+| Each fill changes inventory by ±1 | Each arrival changes tick by ±1 |
+
 **Key Parameters**:
-- `non_arb_lambda` (default: 0.00005): Price impact per noisy trader order
-- `initial_capital` (default: 10000.0): Total capital for liquidity provision
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
+- `exponential_value` (default: 1.0001): Tick spacing base
+- `tick_factor`: Precomputed `sqrt(exponential_value) - 1`
 
 ### Key Utility Functions
 
@@ -383,12 +434,12 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
-    FEES_A_KEY,
-    FEES_B_KEY,
+    FEES0_KEY,
+    FEES1_KEY,
     LP_LIQUIDITY_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
-    MARKET_MIDPRICE_KEY,
+    ASSET_PRICE_KEY,
     TIME_KEY
 )
 
@@ -399,9 +450,9 @@ actual_price = sqrt_price ** 2  # Convert to regular price
 # Get liquidity array (per-tick liquidity)
 liquidity_array = state[POOL_LIQUIDITY_ARRAY_KEY]  # shape: (num_trajectories, num_ticks)
 
-# Get fees per tick
-fees_a = state[FEES_A_KEY]  # shape: (num_trajectories, num_ticks)
-fees_b = state[FEES_B_KEY]  # shape: (num_trajectories, num_ticks)
+# Get accumulated fees (total per trajectory)
+fees_token0 = state[FEES0_KEY]  # shape: (num_trajectories,)
+fees_token1 = state[FEES1_KEY]  # shape: (num_trajectories,)
 
 # Get LP position bounds
 lp_tick_lower = state[LP_TICK_LOWER_KEY]  # shape: (num_trajectories,)
@@ -417,21 +468,23 @@ Areas under active development:
 
 ## Recently Completed
 
-- ✅ **Unified single-tick swap with NO branching** (NEW)
-  - `unified_swap_single_tick()`: Single function replacing `swap_step_within_tick_vec` for simple swaps
+- ✅ **Simplified `update_state()` following mbt_gym pattern** (LATEST)
+  - Each arrival moves price by exactly 1 tick (like mbt_gym inventory changes by 1)
+  - Uses `tick_factor = sqrt(1.0001) - 1` constant for simplified fee calculation
+  - No complex swap functions needed - direct tick arithmetic
+  - Dict-based state with scalar fee accumulation
+  - Fully vectorized across trajectories
+- ✅ **Unified single-tick swap with NO branching**
+  - `unified_swap_single_tick()`: Single function for complex swaps (multi-tick support)
   - Two-column arrivals: `[sell_token0, buy_token0]` with NET amount processing
-  - Multiplier/indexing approach eliminates `if zero_for_one` branching
   - Uses `np.where()` and array indexing for direction-dependent logic
   - `get_tick_boundaries()`: Helper to compute tick boundaries from current price
-  - Comprehensive test suite (14 new tests, 25 total)
 - ✅ **Fully vectorized swap implementation** with 10-100x performance improvement
   - `swap_step_within_tick_vec()`: Single-tick vectorized swap with `np.where()` conditionals
   - `execute_swap_vec_array()`: Multi-tick vectorized swap with active trajectory masking
   - Array-based liquidity representation (replaced dict-based approach)
-  - Dynamic tick ranges with no hardcoded limits
-- ✅ `update_state()` method with 3-phase algorithm (arbitrage, noisy trades, fee collection)
-- ✅ Fee calculation functions (`transaction_fee_one_step`, `delta_x`, `delta_y`, `delta_x_vec`, `delta_y_vec`)
-- ✅ Dict-based state representation with per-tick fee tracking (`FEES_A_KEY`, `FEES_B_KEY`)
+- ✅ Fee calculation functions (`delta_x_vec`, `delta_y_vec`)
+- ✅ Dict-based state representation with keys from `index_names.py`
 - ✅ Dynamic active tick system with tau parameter
 - ✅ Baseline agent implementations
 
