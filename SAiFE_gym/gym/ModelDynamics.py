@@ -15,20 +15,17 @@ from SAiFE_gym.gym.index_names import (
 
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
-from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel
 
 class ModelDynamics(metaclass=abc.ABCMeta):
     def __init__(
         self,
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
-        price_impact_model: PriceImpactModel = None,
         num_trajectories: int = 1,
         seed: int = None,
     ):
         self.midprice_model = midprice_model
         self.arrival_model = arrival_model
-        self.price_impact_model = price_impact_model
         self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
         self.seed = seed
