@@ -9,8 +9,7 @@ from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
-    FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    ASSET_PRICE_KEY, TIME_KEY
+    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY
 )
 
 
@@ -32,7 +31,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self.price_impact_model = price_impact_model
         self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
-        self.seed_ = seed
+        self.seed = seed
 
         self.state = None 
 
@@ -209,7 +208,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def get_arrivals(self) -> np.ndarray:
         """
-        Get arrivals from arrival model.
+        Get arrivals from arrival model (uses model's internal state).
 
         Returns:
             np.ndarray: Boolean arrivals array, shape (num_trajectories, 2)
@@ -220,9 +219,26 @@ class UniswapV3ModelDynamics(ModelDynamics):
             # Return no arrivals if no arrival model
             return np.zeros((self.num_trajectories, 2), dtype=bool)
 
-        context = self._build_arrival_context()
-        arrivals = self.arrival_model.get_arrivals(context)
-        return arrivals
+        # No arguments! Uses arrival model's internal state
+        return self.arrival_model.get_arrivals()
+
+    def _update_arrival_model(self, arrivals: np.ndarray, action: np.ndarray):
+        """
+        Update arrival model's internal state after processing arrivals.
+
+        Following mbt_gym pattern, this is called after state updates to prepare
+        the arrival model for the next timestep.
+
+        Args:
+            arrivals: Binary array of shape (num_trajectories, 2)
+            action: Agent action array
+        """
+        if self.arrival_model is None:
+            return
+
+        # Build state dict for arrival model
+        state_for_arrival = self._build_arrival_context()
+        self.arrival_model.update(arrivals, None, action, state_for_arrival)
 
     def _build_arrival_context(self) -> dict:
         """

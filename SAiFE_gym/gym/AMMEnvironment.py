@@ -301,20 +301,30 @@ class AMMEnvironment(gym.Env):
         """
         Update environment state by one timestep.
 
+        Following mbt_gym pattern:
+        1. Update midprice model
+        2. Update arrival model's internal state (based on current AMM state)
+        3. Generate arrivals (using updated internal state)
+        4. Update pool state
+
         Args:
             action: (num_trajectories, 3) action array
 
         Returns:
             Updated state (Dict or array depending on model dynamics)
         """
-        # Update stochastic processes (midprice, arrivals)
+        # Step 1: Update midprice model
         if self.model_dynamics.midprice_model:
             self.model_dynamics.midprice_model.update(None, None, None)
 
-        # Get arrivals from arrival model
+        # Step 2: Update arrival model's internal state BEFORE generating arrivals
+        # This updates intensity based on current liquidity, prices, and mispricing
+        self.model_dynamics._update_arrival_model(None, action)
+
+        # Step 3: Get arrivals (uses updated internal state)
         arrivals = self.model_dynamics.get_arrivals()
 
-        # Update pool state through model dynamics
+        # Step 4: Update pool state through model dynamics
         self.model_dynamics.update_state(arrivals, action)
 
         return self.model_dynamics.state

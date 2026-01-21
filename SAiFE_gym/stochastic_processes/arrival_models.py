@@ -10,6 +10,9 @@ class ArrivalModel(StochasticProcessModel):
     """ArrivalModel models the arrival of orders to the AMM. The first entry of arrivals represents an arrival
     of an exogenous SELL order (selling the risky asset) and the second entry represents an arrival of an
     exogenous BUY order (buying the risky asset).
+
+    Following the mbt_gym pattern, arrival models OWN their internal state (intensity) which is updated
+    via the update() method based on external AMM state.
     """
 
     def __init__(
@@ -25,16 +28,8 @@ class ArrivalModel(StochasticProcessModel):
         super().__init__(min_value, max_value, step_size, terminal_time, initial_state, num_trajectories, seed)
 
     @abc.abstractmethod
-    def get_arrivals(self, context: dict = None) -> np.ndarray:
-        """Generate arrival events.
-
-        Args:
-            context: Optional context dict with pre-computed values for state-dependent models.
-                     Keys may include:
-                     - 'active_liquidity': Liquidity at current tick, shape (num_trajectories,)
-                     - 'amm_price': AMM price (sqrt_price**2), shape (num_trajectories,)
-                     - 'midprice': External market midprice, shape (num_trajectories,)
-                     Required for state-dependent models like PoissonLinearArrivalModel.
+    def get_arrivals(self) -> np.ndarray:
+        """Generate arrival events using internal state (no arguments).
 
         Returns:
             np.ndarray: Arrival indicators of shape (num_trajectories, 2) for [SELL, BUY]
@@ -43,6 +38,11 @@ class ArrivalModel(StochasticProcessModel):
 
 
 class PoissonArrivalModel(ArrivalModel):
+    """Poisson arrival model with constant intensity.
+
+    This model owns its internal state (intensity) but it's constant and not affected by update().
+    """
+
     def __init__(
         self,
         intensity: np.ndarray = np.array([140.0, 140.0]),
@@ -51,35 +51,48 @@ class PoissonArrivalModel(ArrivalModel):
         seed: Optional[int] = None,
     ):
         self.intensity = np.array(intensity)
+        # Internal state is just the constant intensity (for interface consistency)
+        self.current_state = np.ones((num_trajectories, 2)) * self.intensity
+
         super().__init__(
-            min_value=np.array([[]]),
-            max_value=np.array([[]]),
+            min_value=np.array([[0, 0]]),
+            max_value=np.array([[1, 1]]) * self.intensity * 10,
             step_size=step_size,
             terminal_time=0.0,
-            initial_state=np.array([[]]),
+            initial_state=self.intensity.reshape(1, 2),
             num_trajectories=num_trajectories,
             seed=seed,
         )
 
-    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
-        pass
+    def update(self, arrivals: np.ndarray, actions: np.ndarray,
+               state: dict = None) -> np.ndarray:
+        """Update is a no-op for constant intensity model.
 
-    def get_arrivals(self, context: dict = None) -> np.ndarray:
-        """Generate arrivals using Poisson process (state-independent).
+        Returns:
+            np.ndarray: Current intensity state (unchanged)
+        """
+        return self.current_state
 
-        Args:
-            context: Optional context dict (unused, for signature compatibility)
+    def get_arrivals(self) -> np.ndarray:
+        """Generate arrivals using Poisson process (uses internal state).
 
         Returns:
             np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
         """
         unif = self.rng.uniform(size=(self.num_trajectories, 2))
         return unif < self.intensity * self.step_size
+
+    def reset(self):
+        """Reset internal state to constant intensity."""
+        self.current_state = np.ones((self.num_trajectories, 2)) * self.intensity
     
 
 class PoissonLinearArrivalModel(ArrivalModel):
     """
     State-dependent Poisson arrival model with linear intensity.
+
+    Following the mbt_gym pattern, this model OWNS its internal intensity state which is
+    updated via update() based on external AMM state.
 
     Formula:
         intensity_sell = max(α₀, α₁ + α₂*L - α₃*(S-Z))
@@ -126,43 +139,50 @@ class PoissonLinearArrivalModel(ArrivalModel):
         assert self.alpha.shape == (4, 2), f"alpha must have shape (4, 2), got {self.alpha.shape}"
         assert np.all(self.alpha[0] >= 0), "α₀ (floor) must be non-negative"
 
+        # INTERNAL STATE: Initialize intensity to baseline (α₁)
+        self.current_state = np.ones((num_trajectories, 2)) * self.alpha[1]
+
         super().__init__(
-            min_value=np.array([[]]),
-            max_value=np.array([[]]),
+            min_value=np.array([[0, 0]]),
+            max_value=np.array([[1, 1]]) * self._get_max_intensity(),
             step_size=step_size,
             terminal_time=0.0,
-            initial_state=np.array([[]]),
+            initial_state=self.alpha[1].reshape(1, 2),  # baseline as initial
             num_trajectories=num_trajectories,
             seed=seed,
         )
 
-    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None):
-        pass
+    def _get_max_intensity(self):
+        """Compute maximum possible intensity for bounds (similar to HawkesArrivalModel)."""
+        return self.alpha[1] * 10
 
-    def get_arrivals(self, context: dict) -> np.ndarray:
-        """Generate arrivals with state-dependent linear intensity.
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray,
+               state: dict = None) -> np.ndarray:
+        """Update internal intensity state based on AMM state.
 
         Formula:
             intensity_sell = max(α₀, α₁ + α₂*L - α₃*(S-Z))
             intensity_buy  = max(α₀, α₁ + α₂*L + α₃*(S-Z))
 
         Args:
-            context: Dict with keys:
+            arrivals: Not used (for interface compatibility)
+            fills: Not used (for interface compatibility)
+            actions: Not used (for interface compatibility)
+            state: Dict with keys:
                 - 'active_liquidity': Liquidity at current tick, shape (num_trajectories,)
                 - 'amm_price': AMM price (sqrt_price**2), shape (num_trajectories,)
                 - 'midprice': External market midprice, shape (num_trajectories,)
 
         Returns:
-            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+            np.ndarray: Updated internal intensity state
         """
-        if context is None:
-            raise ValueError("PoissonLinearArrivalModel requires context dict with "
-                           "'active_liquidity', 'amm_price', and 'midprice' keys")
+        if state is None:
+            return self.current_state
 
         # Extract and normalize liquidity
-        L = context['active_liquidity'] / self.liquidity_scale  # (N,)
-        Z = context['amm_price']                                 # (N,) - AMM price
-        S = context['midprice']                                  # (N,) - external midprice
+        L = state['active_liquidity'] / self.liquidity_scale  # (N,)
+        Z = state['amm_price']                                 # (N,) - AMM price
+        S = state['midprice']                                  # (N,) - external midprice
 
         # Compute mispricing term (S - Z)
         # When S > Z (AMM underpriced): positive → increases BUY, decreases SELL
@@ -170,27 +190,31 @@ class PoissonLinearArrivalModel(ArrivalModel):
         mispricing = (S - Z)[:, None]  # (N, 1)
         L_expanded = L[:, None]         # (N, 1)
 
-        # Extract coefficients
-        a0 = self.alpha[0]  # (2,) - minimum intensity floor
-        a1 = self.alpha[1]  # (2,) - baseline intensity
-        a2 = self.alpha[2]  # (2,) - liquidity coefficient
-        a3 = self.alpha[3]  # (2,) - arbitrage coefficient
-
         # Sign multiplier: [-1, +1] for [sell, buy]
         # SELL: -a3*(S-Z) -> when S>Z, reduces sell intensity
         # BUY:  +a3*(S-Z) -> when S>Z, increases buy intensity
         sign_multiplier = np.array([-1.0, 1.0])
 
         # Compute linear part: a1 + a2*L +/- a3*(S-Z)
-        linear_part = a1 + a2 * L_expanded + a3 * sign_multiplier * mispricing  # (N, 2)
+        linear_part = (self.alpha[1] + self.alpha[2] * L_expanded
+                       + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
 
         # Apply floor at minimum intensity
-        intensity = np.maximum(a0, linear_part)  # (N, 2)
+        self.current_state = np.maximum(self.alpha[0], linear_part)  # (N, 2)
 
-        # Sample Bernoulli trials for arrivals
+        return self.current_state
+
+    def get_arrivals(self) -> np.ndarray:
+        """Generate arrivals using internal intensity state (no arguments).
+
+        Returns:
+            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+        """
         unif = self.rng.uniform(size=(self.num_trajectories, 2))
-        arrivals = unif < intensity * self.step_size  # (N, 2)
+        return unif < self.current_state * self.step_size
 
-        return arrivals
+    def reset(self):
+        """Reset internal state to baseline intensity (α₁)."""
+        self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
 
 
