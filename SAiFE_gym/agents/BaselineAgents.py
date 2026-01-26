@@ -1,5 +1,4 @@
 import gym
-from copy import deepcopy
 import numpy as np
 from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
@@ -14,13 +13,27 @@ from SAiFE_gym.gym.index_names import (
 
 
 class RandomAgent(Agent):
-    def __init__(self, env: gym.Env, seed: int = None):
-        self.action_space = deepcopy(env.action_space)
-        self.action_space.seed(seed)
-        self.num_trajectories = env.num_trajectories
+    """
+    Randomly samples LP position bounds uniformly from [-tau, tau].
 
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        return np.repeat(self.action_space.sample().reshape(1, -1), self.num_trajectories, axis=0)
+    Uses order statistics: samples two points, sorts them to ensure lower < upper.
+    This guarantees valid actions where lower_offset < upper_offset.
+    """
+    def __init__(self, env: gym.Env, seed: int = None):
+        self.tau = env.model_dynamics.tau
+        self.num_trajectories = env.num_trajectories
+        self.rng = np.random.default_rng(seed)
+
+    def get_action(self, state: dict) -> np.ndarray:
+        # Sample two points uniformly from [-tau, tau] for each trajectory
+        # Shape: (num_trajectories, 2)
+        samples = self.rng.uniform(-self.tau, self.tau, size=(self.num_trajectories, 2))
+
+        # Sort along axis=1 so that [:, 0] < [:, 1]
+        # This ensures lower_offset < upper_offset
+        actions = np.sort(samples, axis=1)
+
+        return actions.astype(np.float32)
     
 
 class UniformAllocationAgent(Agent):
