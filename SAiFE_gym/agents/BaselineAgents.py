@@ -25,10 +25,12 @@ class RandomAgent(Agent):
 
 class UniformAllocationAgent(Agent):
     """
-    Allocates capital uniformly across all active buckets (2*tau+1 buckets around current price).
-    Returns a uniform probability distribution where each active bucket receives equal weight.
+    Allocates capital across the full active tick range around the current price.
 
-    Only rebalances when price moves outside the current active bucket range.
+    Action format: [lower_offset, upper_offset] = [-tau, +tau]
+    This covers 2*tau+1 ticks centered on the current price.
+
+    Only rebalances when price moves outside the current LP position range.
     When price stays in range, returns the cached previous action.
     """
     def __init__(self, env: AMMEnvironment):
@@ -40,8 +42,8 @@ class UniformAllocationAgent(Agent):
         self._initialized = False
         self._last_action = None
 
-        # Pre-compute uniform action: [-tau, +tau, 1.0]
-        self._uniform_action = np.array([-self.tau, self.tau, 1.0], dtype=np.float32)
+        # Pre-compute uniform action: [-tau, +tau] (full width around current tick)
+        self._uniform_action = np.array([-self.tau, self.tau], dtype=np.float32)
 
     def reset(self):
         """Reset agent internal state. Call when environment resets."""
@@ -82,12 +84,8 @@ class UniformAllocationAgent(Agent):
         return action
 
 
-class ActiveLPAgent(Agent):
-    """
-    Active LP agent that implements a more sophisticated rebalancing strategy.
-    Only rebalances when price moves outside the current active bucket range.
-    When price stays in range, returns the cached previous action.
-    """
+class PassiveAgent(Agent):
+
     def __init__(self, env: AMMEnvironment, seed: int = None):
         pass
 
@@ -95,8 +93,3 @@ class ActiveLPAgent(Agent):
         pass
 
 
-class MovingAverageLPAgent(Agent):
-    def __init__(self, env: AMMEnvironment, window_size: int = 5, seed: int = None):
-        pass
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        pass

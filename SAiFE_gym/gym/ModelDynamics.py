@@ -93,50 +93,20 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Return the action space for the agent.
 
-        Action format: [lower_offset, upper_offset, liquidity_fraction]
+        Action format: [lower_offset, upper_offset]
         - lower_offset: Tick offset from current tick (range: -tau to tau-1)
         - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
-        - liquidity_fraction: Fraction of available capital (range: 0.0 to 1.0)
 
         Constraint: lower_offset < upper_offset (enforced by validate_action)
+        Capital is always fully deployed (no liquidity_fraction parameter).
         """
 
         return gym.spaces.Box(
-            low=np.array([-self.tau, -self.tau + 1, 0.0], dtype=np.float32),
-            high=np.array([self.tau - 1, self.tau, 1.0], dtype=np.float32),
-            shape=(3,),
+            low=np.array([-self.tau, -self.tau + 1], dtype=np.float32),
+            high=np.array([self.tau - 1, self.tau], dtype=np.float32),
+            shape=(2,),
             dtype=np.float32
         )
-
-    def validate_action(self, action: np.ndarray) -> np.ndarray:
-        """
-        Validate and clip action to ensure constraints.
-
-        Args:
-            action: (num_trajectories, 3) array of actions
-
-        Returns:
-            Validated action with same shape
-
-        Ensures:
-        - All values are within box bounds
-        - lower_offset < upper_offset (minimum width of 1 tick)
-        """
-        action = action.copy()
-
-        # Clip to box bounds
-        action[:, 0] = np.clip(action[:, 0], -self.tau, self.tau - 1)
-        action[:, 1] = np.clip(action[:, 1], -self.tau + 1, self.tau)
-        action[:, 2] = np.clip(action[:, 2], 0.0, 1.0)
-
-        # Ensure lower < upper (add minimum width of 1 tick if violated)
-        invalid = action[:, 0] >= action[:, 1]
-        action[invalid, 1] = action[invalid, 0] + 1
-
-        # Re-clip upper after adjustment
-        action[:, 1] = np.clip(action[:, 1], -self.tau + 1, self.tau)
-
-        return action
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """

@@ -96,10 +96,10 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 4. **Agents** (`agents/`) - Trading strategies
    - All inherit from `Agent` base class with `get_action(state) -> action` interface
-   - **Action format**: Probability distribution over **active ticks only** (shape: `num_trajectories × (2*tau+1)`)
+   - **Action format**: 2D offset `[lower_offset, upper_offset]` (shape: `num_trajectories × 2`)
    - **Baseline agents**:
      - `RandomAgent`: Samples from action space
-     - `UniformAllocationAgent`: Equal allocation across 2τ+1 active tick
+     - `UniformAllocationAgent`: Full range allocation `[-tau, +tau]`
 
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
@@ -144,32 +144,41 @@ The state is a **dictionary** with the following keys:
 
 **Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
-### Action Space - Dynamic Active Ticks
+### Action Space - 2D Offset Format
 
-**IMPORTANT**: The action space is DYNAMIC - agents allocate only to "active ticks" around the current price.
+**Action format**: `[lower_offset, upper_offset]` - tick offsets relative to current tick.
+
+**Action space shape**: `Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))`
 
 **Key Concept:**
-- **Tau (τ)**: Hyperparameter defining the active tick window
-- **Active ticks**: 2τ+1 consecutive price ticks centered on the current price
-  - τ ticks below current price
-  - 1 tick containing current price (center tick at index τ)
-  - τ ticks above current price
-- **Action space shape**: `Box(low=0, high=1, shape=(2*tau+1,))`
+- **Tau (τ)**: Hyperparameter defining the maximum tick offset from current price
+- **lower_offset**: Lower bound of LP position relative to current tick (range: -τ to τ-1)
+- **upper_offset**: Upper bound of LP position relative to current tick (range: -τ+1 to τ)
+- **Constraint**: lower_offset < upper_offset (lower bound must be strictly below upper bound)
+- **Capital**: Always fully deployed (no liquidity_fraction parameter)
 
-**Why dynamic?**
-- Focuses liquidity provision around the current trading range
-- Reduces action space dimensionality
-- Moves the active window as price evolves and LPs gets out of range
+**Example with τ=5:**
+```python
+# Action space bounds
+low = [-5, -4]   # minimum: narrow range just below current tick
+high = [4, 5]    # maximum: narrow range just above current tick
 
-**tick Structure:**
-- Each tick: `{'p_low': lower_price, 'p_high': upper_price}`
-- tick endpoints use exponential spacing: `base^tick_id` (default base=1.0001, matching Uniswap V3)
-- ticks are created on-demand based on current price using helper functions
+# Uniform allocation (full range)
+action = [-5, 5]  # Covers 11 ticks: current tick ± 5
+
+# Concentrated around current tick
+action = [-1, 1]  # Covers 3 ticks: just around current price
+```
+
+**Why 2D offsets?**
+- Follows mbt_gym patterns for simplicity
+- LP specifies position bounds relative to current tick
+- Position moves with price (active window shifts as price evolves)
+- Reduces action space from probability distributions to 2 integers
 
 **Helper functions** (`gym/helpers/AMM_utils.py`):
-- `find_tick_id(price)`: Maps price → tick ID (tick index) via `floor(log(price))`
-- `get_ticks_given_center_tick_id(center_id, tau)`: Creates 2τ+1 ticks centered around a tick
 - `price_to_tick(price)` / `tick_to_price(tick)`: Standard Uniswap V3 conversions
+- `find_tick_id(price)`: Maps price → tick ID via `floor(log(price))`
 
 
 ### State Update Mechanism
@@ -271,35 +280,35 @@ price = np.where(active, update_price(price, amount), price)
 When creating `UniswapV3ModelDynamics`:
 - **Must provide `tau`** parameter (number of ticks on each side of current price)
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
-- The action space is automatically set to `Box(shape=(2*tau+1,))`
-- Example: `tau=5` creates action space over 11 active ticks (5 left + 1 center + 5 right)
+- The action space is automatically set to `Box(shape=(2,))` with bounds `[-tau, tau]`
+- Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
 
 ### Agent Implementation Pattern
 
 ```python
-from SAiFE_gym.gym.index_names import POOL_SQRT_PRICE_KEY, POOL_LIQUIDITY_ARRAY_KEY
+from SAiFE_gym.gym.index_names import POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY
 
 class MyAgent(Agent):
     def __init__(self, env: AMMEnvironment):
-        self.num_active_ticks = env.model_dynamics.num_active_ticks  # 2*tau+1
         self.tau = env.model_dynamics.tau
         self.num_trajectories = getattr(env, 'num_trajectories', 1)
 
     def get_action(self, state: dict) -> np.ndarray:
         # state is a dict with keys from index_names.py
         # Access current price: state[POOL_SQRT_PRICE_KEY] -> shape: (num_trajectories,)
-        # return shape: (num_trajectories, 2*tau+1)
-        # action must be valid probability distribution (sum to 1)
-        # Index tau is the center tick (contains current price)
+        # return shape: (num_trajectories, 2) -> [lower_offset, upper_offset]
+        # Offsets are relative to current tick, range: [-tau, tau]
         sqrt_price = state[POOL_SQRT_PRICE_KEY]
-        action = self._compute_strategy(sqrt_price)
-        return np.repeat(action.reshape(1, -1), self.num_trajectories, axis=0)
+        # Example: full range allocation
+        action = np.array([-self.tau, self.tau], dtype=np.float32)
+        return np.tile(action, (self.num_trajectories, 1))
 ```
 
 **Important Notes:**
-- Agents return distributions over **active ticks only**, not all possible ticks
-- The center tick (index `tau`) always contains the current price
-- No need to track tick boundaries - handled by ModelDynamics
+- Agents return 2D offset actions: `[lower_offset, upper_offset]`
+- Offsets are relative to current tick (0 = current tick)
+- Constraint: lower_offset < upper_offset (enforced by action space bounds)
+- Capital is always fully deployed to the specified range
 
 ### State Access Patterns
 
@@ -406,8 +415,8 @@ env = AMMEnvironment(
     n_steps=200
 )
 
-# Action space will be Box(shape=(11,)) for probability distribution over 11 active ticks
-print(f"Action space: {env.action_space}")  # Box(0.0, 1.0, (11,), float32)
+# Action space will be Box(shape=(2,)) for [lower_offset, upper_offset]
+print(f"Action space: {env.action_space}")  # Box([-5, -4], [4, 5], (2,), float32)
 ```
 
 ### Testing Baseline Agents
