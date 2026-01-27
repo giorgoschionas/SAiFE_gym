@@ -174,61 +174,104 @@ The state is a **dictionary** with the following keys:
 
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` follows the **mbt_gym pattern** for simplicity and vectorization.
+The `update_state()` method in `UniswapV3ModelDynamics` implements **liquidity-dependent price impact** where trade size and crossing behavior depend on pool liquidity depth.
 
-**Core Principle**: Each arrival moves the price by exactly **1 tick**.
-- Sell token0 arrival (column 0): tick decreases by 1, price decreases
-- Buy token0 arrival (column 1): tick increases by 1, price increases
+**Core Principle**: Price impact is inversely proportional to liquidity.
+- Trade size (xi) is computed as the minimum trade that crosses at most one tick
+- Trades may or may not cross tick boundaries depending on liquidity depth
+- Higher liquidity → smaller price change within tick
+- Lower liquidity → price crosses tick boundary
 
-**Implementation** (6 steps):
+**Trade Size (xi) Computation**:
+```python
+# xi is computed lazily and cached (recompute when liquidity changes)
+# For SELL (token0 into pool): xi_sell = min_i { L_i * tick_factor / sqrt(p_i) }
+# For BUY (token1 into pool):  xi_buy  = min_i { L_i * tick_factor * sqrt(p_i) }
+
+def _compute_xi(self):
+    # Compute sqrt prices for all ticks
+    sqrt_prices = np.sqrt(1.0001 ** (tick_lower_global + np.arange(num_ticks)))
+
+    # Compute capacity per tick
+    x_capacity = liquidity_array * tick_factor / sqrt_prices  # sell capacity
+    y_capacity = liquidity_array * tick_factor * sqrt_prices  # buy capacity
+
+    # Take global minimum (ignore zero-liquidity ticks)
+    self.xi_sell = np.min(np.where(L > 0, x_capacity, np.inf), axis=1)
+    self.xi_buy = np.min(np.where(L > 0, y_capacity, np.inf), axis=1)
+```
+
+**Price Update Logic**:
+```python
+# SELL (price decreases):
+#   No crossing: 1/sqrt_p_new = 1/sqrt_p_c + xi_sell/L_current
+#   Crossing:    1/sqrt_p_new = 1/sqrt_p_low + xi_remaining/L_prev, tick -= 1
+
+# BUY (price increases):
+#   No crossing: sqrt_p_new = sqrt_p_c + xi_buy/L_current
+#   Crossing:    sqrt_p_new = sqrt_p_high + yi_remaining/L_next, tick += 1
+```
+
+**Implementation** (11 steps):
 ```python
 def update_state(self, arrivals: np.ndarray, action: np.ndarray):
-    # Step 1: Store current state for fee calculation
+    # Step 0: Compute xi if stale
+    if self._xi_stale:
+        self._compute_xi()
+
+    # Step 1: Extract current state
     current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
-    current_sqrt_price = self.state[POOL_SQRT_PRICE_KEY].copy()
+    sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
 
-    # Step 2: Get active liquidity at current tick
-    tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-    active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][np.arange(num_traj), tick_array_idx]
+    # Step 2: Compute tick boundaries
+    sqrt_p_low = np.sqrt(1.0001 ** current_tick)
+    sqrt_p_high = np.sqrt(1.0001 ** (current_tick + 1))
 
-    # Step 3: Update tick (like mbt_gym inventory update)
-    tick_change = arrivals[:, 1].astype(np.int64) - arrivals[:, 0].astype(np.int64)
-    self.state[POOL_CURRENT_TICK_KEY] = current_tick + tick_change
+    # Step 3: Get liquidity at current, previous, and next ticks
+    L_current = liquidity_array[current_tick_idx]
+    L_prev = liquidity_array[prev_tick_idx]
+    L_next = liquidity_array[next_tick_idx]
 
-    # Step 4: Update sqrt_price from new tick
-    self.state[POOL_SQRT_PRICE_KEY] = np.sqrt(exponential_value ** new_tick)
+    # Step 4: Compute capacity to boundary
+    x_to_boundary = L_current * (1/sqrt_p_low - 1/sqrt_p_c)  # sell capacity
+    y_to_boundary = L_current * (sqrt_p_high - sqrt_p_c)     # buy capacity
 
-    # Step 5: Calculate fees using tick_factor
-    # tick_factor = sqrt(1.0001) - 1 ≈ 0.00005 (precomputed constant)
-    fee_token0 = fee_multiplier * L * tick_factor / sqrt_price  # for sell
-    fee_token1 = fee_multiplier * L * sqrt_price * tick_factor  # for buy
+    # Step 5: Determine arrival types
+    is_sell = arrivals[:, 0].astype(bool)
+    is_buy = arrivals[:, 1].astype(bool)
 
-    # Step 6: Update time
-    self.state[TIME_KEY] += step_size
+    # Step 6: Determine tick crossings
+    sell_crosses = is_sell & (xi_sell > x_to_boundary)
+    buy_crosses = is_buy & (xi_buy > y_to_boundary)
+
+    # Step 7: Compute new sqrt_price for all 4 cases (vectorized)
+    # Step 8: Combine results using np.where (no branching)
+    # Step 9: Update tick based on crossing
+    # Step 10: Calculate fees proportional to xi
+    # Step 11: Update time
 ```
 
-**Key Simplification - tick_factor**:
-Since each trade moves exactly 1 tick, the price change formulas simplify:
-```python
-tick_factor = np.sqrt(1.0001) - 1  # ≈ 0.00004999875
+**Key Behavior with Uniform vs Non-Uniform Liquidity**:
 
-# For sell (tick decreases): delta_x = tick_factor / sqrt_price
-# For buy (tick increases):  delta_y = sqrt_price * tick_factor
-```
+| Liquidity Distribution | Crossing Behavior | Use Case |
+|----------------------|-------------------|----------|
+| Uniform high liquidity | Always crosses (xi ~2x boundary capacity) | Constant depth model |
+| Non-uniform (low at edges) | No crossing (small xi from edge ticks) | Concentrated liquidity |
+| Zero at current tick | Always crosses (zero capacity) | Out-of-range positions |
 
-This eliminates the need for `sqrt_p_high`/`sqrt_p_low` calculations since the direction is known from the arrival column.
-
-**Comparison with mbt_gym**:
-| mbt_gym (Limit Order Book) | SAiFE_gym (AMM) |
-|---------------------------|-----------------|
-| `inventory += arrivals * -fill_multiplier` | `tick += arrivals[:, 1] - arrivals[:, 0]` |
-| `cash += arrivals * fills * price` | `fees += L * tick_factor * price_factor` |
-| Each fill changes inventory by ±1 | Each arrival changes tick by ±1 |
+**Important**: With **uniform liquidity**, xi is determined by the tick with highest/lowest price (depending on direction), which has the lowest capacity per unit liquidity. This means crossing occurs when starting mid-tick. To get no-crossing behavior, use non-uniform liquidity where the xi-determining tick has low liquidity.
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
 - `exponential_value` (default: 1.0001): Tick spacing base
 - `tick_factor`: Precomputed `sqrt(exponential_value) - 1`
+- `xi_sell`, `xi_buy`: Cached trade sizes (mark stale via `mark_xi_stale()` after liquidity changes)
+
+**Staleness Management**:
+```python
+# After modifying liquidity_array, call:
+model.mark_xi_stale()  # Next update_state() will recompute xi
+```
 
 ## Important Implementation Details
 
@@ -343,7 +386,14 @@ Areas under active development:
 
 ## Recently Completed
 
-- ✅ **Simplified `update_state()` following mbt_gym pattern** (LATEST)
+- ✅ **Liquidity-dependent price impact in `update_state()`** (LATEST)
+  - Trade size (xi) computed as minimum capacity across all ticks
+  - Price impact inversely proportional to liquidity depth
+  - Crossing behavior depends on xi vs. boundary capacity
+  - Fees proportional to xi (actual trade size)
+  - Staleness mechanism for xi caching (`mark_xi_stale()`)
+  - Comprehensive test suite (19 tests covering xi computation, crossing, vectorization)
+- ✅ **Simplified `update_state()` following mbt_gym pattern** (PREVIOUS)
   - Each arrival moves price by exactly 1 tick (like mbt_gym inventory changes by 1)
   - Uses `tick_factor = sqrt(1.0001) - 1` constant for simplified fee calculation
   - No complex swap functions needed - direct tick arithmetic
