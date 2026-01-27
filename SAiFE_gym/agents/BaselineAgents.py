@@ -58,17 +58,7 @@ class UniformAllocationAgent(Agent):
         # Pre-compute uniform action: [-tau, +tau] (full width around current tick)
         self._uniform_action = np.array([-self.tau, self.tau], dtype=np.float32)
 
-    def reset(self):
-        """Reset agent internal state. Call when environment resets."""
-        self._initialized = False
-        self._last_action = None
-
     def get_action(self, state: dict) -> np.ndarray:
-        # Auto-reset detection: if time is 0, reset agent state
-        if TIME_KEY in state and np.all(state[TIME_KEY] == 0):
-            if self._initialized:
-                self.reset()
-
         # Extract state components
         current_tick = state[POOL_CURRENT_TICK_KEY]
         lp_tick_lower = state[LP_TICK_LOWER_KEY]
@@ -83,16 +73,9 @@ class UniformAllocationAgent(Agent):
         # Rebalance when price is OUTSIDE the LP position range
         needs_rebalance = (current_tick < lp_tick_lower) | (current_tick > lp_tick_upper)
 
-        # Early exit: no rebalancing needed
-        if not np.any(needs_rebalance):
-            return self._last_action.copy()
-
         # Selective update: only rebalance out-of-range trajectories
         action = self._last_action.copy()
         action[needs_rebalance, :] = self._uniform_action
-
-        # Update cache
-        self._last_action = action.copy()
 
         return action
 
