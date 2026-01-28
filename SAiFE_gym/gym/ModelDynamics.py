@@ -191,15 +191,154 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """Mark xi values as needing recomputation (call after liquidity changes)."""
         self._xi_stale = True
 
+    def _process_sell(self, is_sell: np.ndarray) -> None:
+        """
+        Process sell arrivals and update state in place.
+
+        Args:
+            is_sell: Boolean array of shape (num_trajectories,) indicating sell arrivals.
+        """
+        if not np.any(is_sell):
+            return
+
+        num_traj = self.num_trajectories
+        current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
+        sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
+        liquidity_array = self.state[POOL_LIQUIDITY_ARRAY_KEY]
+
+        # Compute tick boundaries
+        sqrt_p_low = np.sqrt(self.exponential_value ** current_tick)
+
+        # Get liquidity at current and previous ticks
+        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
+        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
+        L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
+
+        prev_tick_idx = np.clip(tick_array_idx - 1, 0, self.num_ticks - 1)
+        L_prev = liquidity_array[np.arange(num_traj), prev_tick_idx]
+
+        # Handle zero liquidity: treat as zero capacity (will always cross)
+        L_current_safe = np.where(L_current > 0, L_current, 1.0)
+
+        # Capacity to reach lower boundary (for sell)
+        x_to_boundary = np.where(
+            L_current > 0,
+            L_current * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c),
+            0.0  # Zero liquidity → zero capacity → always crosses
+        )
+
+        # Determine tick crossings
+        sell_crosses = is_sell & (self.xi_sell > x_to_boundary)
+
+        # Case 1: Sell, no crossing
+        inv_sqrt_p_sell_no_cross = np.where(
+            L_current > 0,
+            1.0 / sqrt_p_c + self.xi_sell / L_current_safe,
+            1.0 / sqrt_p_low  # Zero liquidity: jump to boundary
+        )
+        sqrt_p_sell_no_cross = 1.0 / inv_sqrt_p_sell_no_cross
+
+        # Case 2: Sell, crossing
+        xi_remaining_sell = np.maximum(self.xi_sell - x_to_boundary, 0)
+        L_prev_safe = np.where(L_prev > 0, L_prev, 1.0)
+
+        sqrt_p_prev_tick_low = np.sqrt(self.exponential_value ** (current_tick - 1))
+        inv_sqrt_p_sell_cross = np.where(
+            L_prev > 0,
+            1.0 / sqrt_p_low + xi_remaining_sell / L_prev_safe,
+            1.0 / sqrt_p_prev_tick_low  # Zero liquidity in prev: jump to its boundary
+        )
+        sqrt_p_sell_cross = 1.0 / inv_sqrt_p_sell_cross
+
+        # Combine results: crossing takes priority over no crossing
+        new_sqrt_p = np.where(sell_crosses, sqrt_p_sell_cross, sqrt_p_sell_no_cross)
+
+        # Update state only where is_sell is True
+        self.state[POOL_SQRT_PRICE_KEY] = np.where(is_sell, new_sqrt_p, sqrt_p_c)
+        self.state[POOL_CURRENT_TICK_KEY] = np.where(
+            sell_crosses, current_tick - 1,
+            np.where(is_sell, current_tick, self.state[POOL_CURRENT_TICK_KEY])
+        )
+
+        # Collect sell fees
+        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
+        self.state[FEES0_KEY] += np.where(is_sell, fee_multiplier * self.xi_sell, 0.0)
+
+    def _process_buy(self, is_buy: np.ndarray) -> None:
+        """
+        Process buy arrivals and update state in place.
+
+        Reads from CURRENT state (may have been updated by _process_sell).
+
+        Args:
+            is_buy: Boolean array of shape (num_trajectories,) indicating buy arrivals.
+        """
+        if not np.any(is_buy):
+            return
+
+        num_traj = self.num_trajectories
+        current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
+        sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
+        liquidity_array = self.state[POOL_LIQUIDITY_ARRAY_KEY]
+
+        # Compute tick boundaries from CURRENT tick (may be updated by sell)
+        sqrt_p_high = np.sqrt(self.exponential_value ** (current_tick + 1))
+
+        # Get liquidity at CURRENT and next ticks
+        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
+        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
+        L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
+
+        next_tick_idx = np.clip(tick_array_idx + 1, 0, self.num_ticks - 1)
+        L_next = liquidity_array[np.arange(num_traj), next_tick_idx]
+
+        # Handle zero liquidity
+        L_current_safe = np.where(L_current > 0, L_current, 1.0)
+
+        # Capacity to reach upper boundary (for buy)
+        y_to_boundary = np.where(
+            L_current > 0,
+            L_current * (sqrt_p_high - sqrt_p_c),
+            0.0  # Zero liquidity → zero capacity → always crosses
+        )
+
+        # Determine tick crossings
+        buy_crosses = is_buy & (self.xi_buy > y_to_boundary)
+
+        # Case 1: Buy, no crossing
+        sqrt_p_buy_no_cross = np.where(
+            L_current > 0,
+            sqrt_p_c + self.xi_buy / L_current_safe,
+            sqrt_p_high  # Zero liquidity: jump to boundary
+        )
+
+        # Case 2: Buy, crossing
+        yi_remaining_buy = np.maximum(self.xi_buy - y_to_boundary, 0)
+        L_next_safe = np.where(L_next > 0, L_next, 1.0)
+
+        sqrt_p_next_tick_high = np.sqrt(self.exponential_value ** (current_tick + 2))
+        sqrt_p_buy_cross = np.where(
+            L_next > 0,
+            sqrt_p_high + yi_remaining_buy / L_next_safe,
+            sqrt_p_next_tick_high  # Zero liquidity in next: jump to its boundary
+        )
+
+        # Combine results: crossing takes priority over no crossing
+        new_sqrt_p = np.where(buy_crosses, sqrt_p_buy_cross, sqrt_p_buy_no_cross)
+
+        # Update state only where is_buy is True
+        self.state[POOL_SQRT_PRICE_KEY] = np.where(is_buy, new_sqrt_p, sqrt_p_c)
+        self.state[POOL_CURRENT_TICK_KEY] = np.where(
+            buy_crosses, current_tick + 1,
+            np.where(is_buy, current_tick, self.state[POOL_CURRENT_TICK_KEY])
+        )
+
+        # Collect buy fees
+        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
+        self.state[FEES1_KEY] += np.where(is_buy, fee_multiplier * self.xi_buy, 0.0)
+
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
-        Liquidity-dependent state update with price impact inversely proportional to depth.
-
-        Trade size (xi) is computed as the minimum trade that crosses at most one tick.
-        Price impact depends on liquidity:
-        - High liquidity → small price change within tick
-        - Low liquidity → price crosses tick boundary
-
         Args:
             arrivals: Binary array of shape (num_trajectories, 2)
                       Column 0: sell_token0 arrivals (token0 into pool, price decreases)
@@ -218,150 +357,21 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        # Step 0: Compute xi if stale
+        # Compute xi if stale
         if self._xi_stale:
             self._compute_xi()
 
-        num_traj = self.num_trajectories
-
-        # Step 1: Extract current state
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
-        sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
-        liquidity_array = self.state[POOL_LIQUIDITY_ARRAY_KEY]
-
-        # Step 2: Compute tick boundaries
-        sqrt_p_low = np.sqrt(self.exponential_value ** current_tick)
-        sqrt_p_high = np.sqrt(self.exponential_value ** (current_tick + 1))
-
-        # Step 3: Get liquidity at current, previous, and next ticks
-        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
-
-        # Current tick liquidity
-        L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
-
-        # Previous tick liquidity (for sell crossing)
-        prev_tick_idx = np.clip(tick_array_idx - 1, 0, self.num_ticks - 1)
-        L_prev = liquidity_array[np.arange(num_traj), prev_tick_idx]
-
-        # Next tick liquidity (for buy crossing)
-        next_tick_idx = np.clip(tick_array_idx + 1, 0, self.num_ticks - 1)
-        L_next = liquidity_array[np.arange(num_traj), next_tick_idx]
-
-        # Step 4: Compute capacity to boundary
-        # Handle zero liquidity: treat as zero capacity (will always cross)
-        L_current_safe = np.where(L_current > 0, L_current, 1.0)  # Avoid division by zero
-
-        # Capacity to reach lower boundary (for sell)
-        # x_to_boundary = L * (1/sqrt_p_low - 1/sqrt_p_c)
-        x_to_boundary = np.where(
-            L_current > 0,
-            L_current * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c),
-            0.0  # Zero liquidity → zero capacity → always crosses
-        )
-
-        # Capacity to reach upper boundary (for buy)
-        # y_to_boundary = L * (sqrt_p_high - sqrt_p_c)
-        y_to_boundary = np.where(
-            L_current > 0,
-            L_current * (sqrt_p_high - sqrt_p_c),
-            0.0  # Zero liquidity → zero capacity → always crosses
-        )
-
-        # Step 5: Determine arrival types
+        # Determine arrival types
         is_sell = arrivals[:, 0].astype(bool)
         is_buy = arrivals[:, 1].astype(bool)
 
-        # Step 6: Determine tick crossings (vectorized)
-        # Sell crosses if xi_sell > x_to_boundary
-        sell_crosses = is_sell & (self.xi_sell > x_to_boundary)
+        # Phase 1: Process sells (updates state in place)
+        self._process_sell(is_sell)
 
-        # Buy crosses if xi_buy > y_to_boundary
-        buy_crosses = is_buy & (self.xi_buy > y_to_boundary)
+        # Phase 2: Process buys from updated state
+        self._process_buy(is_buy)
 
-        # Step 7: Compute new sqrt_price for all 4 cases
-
-        # Case 1: Sell, no crossing
-        # 1/sqrt_p_new = 1/sqrt_p_c + xi_sell/L_current
-        inv_sqrt_p_sell_no_cross = np.where(
-            L_current > 0,
-            1.0 / sqrt_p_c + self.xi_sell / L_current_safe,
-            1.0 / sqrt_p_low  # Zero liquidity: jump to boundary
-        )
-        sqrt_p_sell_no_cross = 1.0 / inv_sqrt_p_sell_no_cross
-
-        # Case 2: Sell, crossing
-        # Remaining amount after crossing: xi_remaining = xi_sell - x_to_boundary
-        xi_remaining_sell = np.maximum(self.xi_sell - x_to_boundary, 0)
-        L_prev_safe = np.where(L_prev > 0, L_prev, 1.0)
-
-        # 1/sqrt_p_new = 1/sqrt_p_low + xi_remaining/L_prev
-        # Note: sqrt_p_low of current tick becomes sqrt_p_high of prev tick
-        sqrt_p_prev_tick_low = np.sqrt(self.exponential_value ** (current_tick - 1))
-        inv_sqrt_p_sell_cross = np.where(
-            L_prev > 0,
-            1.0 / sqrt_p_low + xi_remaining_sell / L_prev_safe,
-            1.0 / sqrt_p_prev_tick_low  # Zero liquidity in prev: jump to its boundary
-        )
-        sqrt_p_sell_cross = 1.0 / inv_sqrt_p_sell_cross
-
-        # Case 3: Buy, no crossing
-        # sqrt_p_new = sqrt_p_c + xi_buy/L_current
-        sqrt_p_buy_no_cross = np.where(
-            L_current > 0,
-            sqrt_p_c + self.xi_buy / L_current_safe,
-            sqrt_p_high  # Zero liquidity: jump to boundary
-        )
-
-        # Case 4: Buy, crossing
-        # Remaining amount after crossing: yi_remaining = xi_buy - y_to_boundary
-        yi_remaining_buy = np.maximum(self.xi_buy - y_to_boundary, 0)
-        L_next_safe = np.where(L_next > 0, L_next, 1.0)
-
-        # sqrt_p_new = sqrt_p_high + yi_remaining/L_next
-        sqrt_p_next_tick_high = np.sqrt(self.exponential_value ** (current_tick + 2))
-        sqrt_p_buy_cross = np.where(
-            L_next > 0,
-            sqrt_p_high + yi_remaining_buy / L_next_safe,
-            sqrt_p_next_tick_high  # Zero liquidity in next: jump to its boundary
-        )
-
-        # Step 8: Combine results using np.where (no branching)
-        # Priority: sell_cross > sell_no_cross > buy_cross > buy_no_cross > no_change
-        new_sqrt_price = sqrt_p_c.copy()
-
-        # Apply buy no crossing
-        new_sqrt_price = np.where(is_buy & ~buy_crosses, sqrt_p_buy_no_cross, new_sqrt_price)
-
-        # Apply buy crossing
-        new_sqrt_price = np.where(buy_crosses, sqrt_p_buy_cross, new_sqrt_price)
-
-        # Apply sell no crossing (overwrites buy if both, but arrivals should be mutually exclusive)
-        new_sqrt_price = np.where(is_sell & ~sell_crosses, sqrt_p_sell_no_cross, new_sqrt_price)
-
-        # Apply sell crossing
-        new_sqrt_price = np.where(sell_crosses, sqrt_p_sell_cross, new_sqrt_price)
-
-        # Step 9: Update tick based on crossing
-        # tick -= 1 for sell crossing, tick += 1 for buy crossing
-        tick_change = np.zeros(num_traj, dtype=np.int64)
-        tick_change = np.where(sell_crosses, -1, tick_change)
-        tick_change = np.where(buy_crosses, 1, tick_change)
-
-        self.state[POOL_CURRENT_TICK_KEY] = current_tick + tick_change
-        self.state[POOL_SQRT_PRICE_KEY] = new_sqrt_price
-
-        # Step 10: Calculate fees proportional to xi
-        # fee = fee_rate / (1 - fee_rate) * xi
-        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
-
-        fee_token0 = np.where(is_sell, fee_multiplier * self.xi_sell, 0.0)
-        fee_token1 = np.where(is_buy, fee_multiplier * self.xi_buy, 0.0)
-
-        self.state[FEES0_KEY] += fee_token0
-        self.state[FEES1_KEY] += fee_token1
-
-        # Step 11: Update time
+        # Update time
         step_size = self.midprice_model.step_size if self.midprice_model else 0.005
         self.state[TIME_KEY] += step_size
 

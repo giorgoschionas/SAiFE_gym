@@ -348,7 +348,6 @@ class TestVectorization:
         model = create_test_model(num_trajectories=num_traj, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        initial_ticks = model.state[POOL_CURRENT_TICK_KEY].copy()
         initial_sqrt_prices = model.state[POOL_SQRT_PRICE_KEY].copy()
 
         # Different arrivals for each trajectory:
@@ -584,6 +583,158 @@ class TestPriceImpactMagnitude:
 
         # Larger xi should cause larger price impact
         assert impact_large > impact_small
+
+
+class TestSequentialProcessing:
+    """Test that sell and buy are processed sequentially."""
+
+    def test_both_arrivals_collect_both_fees(self):
+        """When [1,1] arrives, fees collected for BOTH trades."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        initial_fees0 = model.state[FEES0_KEY][0]
+        initial_fees1 = model.state[FEES1_KEY][0]
+
+        arrivals = np.array([[1, 1]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        assert model.state[FEES0_KEY][0] > initial_fees0, "Sell fee not collected"
+        assert model.state[FEES1_KEY][0] > initial_fees1, "Buy fee not collected"
+
+    def test_both_arrivals_fee_amounts_correct(self):
+        """When [1,1] arrives, fee amounts match expected values."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        # Force xi computation
+        model._compute_xi()
+        xi_sell = model.xi_sell[0]
+        xi_buy = model.xi_buy[0]
+
+        arrivals = np.array([[1, 1]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
+        expected_fee0 = fee_multiplier * xi_sell
+        expected_fee1 = fee_multiplier * xi_buy
+
+        assert np.isclose(model.state[FEES0_KEY][0], expected_fee0, rtol=1e-10)
+        assert np.isclose(model.state[FEES1_KEY][0], expected_fee1, rtol=1e-10)
+
+    def test_buy_uses_updated_state_after_sell(self):
+        """Buy phase uses state updated by sell phase."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        # With uniform liquidity and mid_tick, sell will cross (tick -= 1)
+        # Then buy should start from the new (lower) price
+
+        arrivals = np.array([[1, 1]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        final_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
+
+        # Sequential processing: sell decreases price, then buy increases from new state
+        # The result should be different from just applying sell OR buy individually
+
+        # Compare to sell-only to ensure buy also had an effect
+        model_sell_only = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_sell_only, liquidity_value=1e8, mid_tick=True)
+        model_sell_only.update_state(np.array([[1, 0]], dtype=np.int64), None)
+        sell_only_sqrt_price = model_sell_only.state[POOL_SQRT_PRICE_KEY][0]
+
+        # Final price should be higher than sell-only (buy increased it)
+        assert final_sqrt_price > sell_only_sqrt_price, \
+            "Buy did not increase price after sell"
+
+    def test_sequential_vs_individual_arrivals(self):
+        """Test that [1,1] processes both, not just one."""
+        # Scenario: simultaneous arrivals
+        model_both = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_both, liquidity_value=1e8, mid_tick=True)
+
+        arrivals_both = np.array([[1, 1]], dtype=np.int64)
+        model_both.update_state(arrivals_both, None)
+
+        fees0_both = model_both.state[FEES0_KEY][0]
+        fees1_both = model_both.state[FEES1_KEY][0]
+
+        # Scenario: sell only
+        model_sell = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_sell, liquidity_value=1e8, mid_tick=True)
+
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+        model_sell.update_state(arrivals_sell, None)
+
+        fees0_sell = model_sell.state[FEES0_KEY][0]
+        fees1_sell = model_sell.state[FEES1_KEY][0]
+
+        # Scenario: buy only
+        model_buy = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_buy, liquidity_value=1e8, mid_tick=True)
+
+        arrivals_buy = np.array([[0, 1]], dtype=np.int64)
+        model_buy.update_state(arrivals_buy, None)
+
+        fees0_buy = model_buy.state[FEES0_KEY][0]
+        fees1_buy = model_buy.state[FEES1_KEY][0]
+
+        # Both arrivals should collect both fees
+        assert fees0_both > 0, "Sell fee not collected in [1,1]"
+        assert fees1_both > 0, "Buy fee not collected in [1,1]"
+
+        # Sell-only should only collect token0 fee
+        assert fees0_sell > 0
+        assert fees1_sell == 0
+
+        # Buy-only should only collect token1 fee
+        assert fees0_buy == 0
+        assert fees1_buy > 0
+
+        # Both should collect approximately the sum (not exactly due to sequential state changes)
+        assert fees0_both == fees0_sell, "Sell fee should match"
+        # Note: fees1_both may differ from fees1_buy because buy starts from post-sell state
+
+    def test_vectorized_mixed_arrivals(self):
+        """Test vectorized handling with mixed arrival patterns."""
+        num_traj = 4
+        model = create_test_model(num_trajectories=num_traj, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        initial_sqrt_prices = model.state[POOL_SQRT_PRICE_KEY].copy()
+
+        # Different arrival patterns
+        arrivals = np.array([
+            [1, 0],  # sell only
+            [0, 1],  # buy only
+            [1, 1],  # both
+            [0, 0],  # no trade
+        ], dtype=np.int64)
+
+        model.update_state(arrivals, None)
+
+        # Trajectory 0 (sell only): price decreased, only fee0 collected
+        assert model.state[POOL_SQRT_PRICE_KEY][0] < initial_sqrt_prices[0]
+        assert model.state[FEES0_KEY][0] > 0
+        assert model.state[FEES1_KEY][0] == 0
+
+        # Trajectory 1 (buy only): price increased, only fee1 collected
+        assert model.state[POOL_SQRT_PRICE_KEY][1] > initial_sqrt_prices[1]
+        assert model.state[FEES0_KEY][1] == 0
+        assert model.state[FEES1_KEY][1] > 0
+
+        # Trajectory 2 (both): both fees collected
+        assert model.state[FEES0_KEY][2] > 0
+        assert model.state[FEES1_KEY][2] > 0
+
+        # Trajectory 3 (no trade): no change, no fees
+        assert model.state[POOL_SQRT_PRICE_KEY][3] == initial_sqrt_prices[3]
+        assert model.state[FEES0_KEY][3] == 0
+        assert model.state[FEES1_KEY][3] == 0
 
 
 if __name__ == "__main__":
