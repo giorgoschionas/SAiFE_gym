@@ -233,15 +233,6 @@ When creating `UniswapV3ModelDynamics`:
 - The action space is automatically set to `Box(shape=(2,))` with bounds `[-tau, tau]`
 - Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
 
-### Agent Implementation Pattern
-
-
-## Work in Progress
-
-Areas under active development:
-- Reward function implementations (ImpermanentLoss, LVR) - 🚧 Currently stubs
-- Full integration of state updates in `AMMEnvironment.step()`
-- Comprehensive testing and validation framework
 
 
 

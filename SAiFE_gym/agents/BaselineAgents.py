@@ -79,13 +79,7 @@ class UniformAllocationAgent(Agent):
 
         return action
 
-
-class PassiveAgent(Agent):
-
-    def __init__(self, env: AMMEnvironment, seed: int = None):
-        pass
-
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        pass
+class CarteaPLAgent(Agent):
+    pass
 
 
