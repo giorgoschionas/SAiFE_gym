@@ -30,8 +30,15 @@ class RandomAgent(Agent):
         samples = self.rng.uniform(-self.tau, self.tau, size=(self.num_trajectories, 2))
 
         # Sort along axis=1 so that [:, 0] < [:, 1]
-        # This ensures lower_offset < upper_offset
         actions = np.sort(samples, axis=1)
+
+        # Clip to valid action space bounds: lower ∈ [-tau, tau-1], upper ∈ [-tau+1, tau]
+        actions[:, 0] = np.clip(actions[:, 0], -self.tau, self.tau - 1)
+        actions[:, 1] = np.clip(actions[:, 1], -self.tau + 1, self.tau)
+
+        # Ensure minimum width of 1 tick (lower < upper)
+        too_close = actions[:, 1] <= actions[:, 0]
+        actions[too_close, 1] = actions[too_close, 0] + 1
 
         return actions.astype(np.float32)
     
@@ -42,42 +49,16 @@ class UniformAllocationAgent(Agent):
 
     Action format: [lower_offset, upper_offset] = [-tau, +tau]
     This covers 2*tau+1 ticks centered on the current price.
-
-    Only rebalances when price moves outside the current LP position range.
-    When price stays in range, returns the cached previous action.
     """
     def __init__(self, env: AMMEnvironment):
         self.env = env
-        self.num_trajectories = env.num_trajectories
         self.tau = env.model_dynamics.tau
 
-        # Internal state tracking
-        self._initialized = False
-        self._last_action = None
-
-        # Pre-compute uniform action: [-tau, +tau] (full width around current tick)
-        self._uniform_action = np.array([-self.tau, self.tau], dtype=np.float32)
 
     def get_action(self, state: dict) -> np.ndarray:
-        # Extract state components
-        current_tick = state[POOL_CURRENT_TICK_KEY]
-        lp_tick_lower = state[LP_TICK_LOWER_KEY]
-        lp_tick_upper = state[LP_TICK_UPPER_KEY]
 
-        # First call: always rebalance
-        if not self._initialized:
-            self._initialized = True
-            self._last_action = np.tile(self._uniform_action, (self.num_trajectories, 1))
-            return self._last_action.copy()
-
-        # Rebalance when price is OUTSIDE the LP position range
-        needs_rebalance = (current_tick < lp_tick_lower) | (current_tick > lp_tick_upper)
-
-        # Selective update: only rebalance out-of-range trajectories
-        action = self._last_action.copy()
-        action[needs_rebalance, :] = self._uniform_action
-
-        return action
+        action = np.array([[-self.tau, self.tau]])
+        return np.repeat(action, self.env.num_trajectories, axis=0)
 
 class CarteaPLAgent(Agent):
     pass
