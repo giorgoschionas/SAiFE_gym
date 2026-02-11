@@ -16,7 +16,9 @@ import pytest
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
-    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY
+    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
 )
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
@@ -90,8 +92,13 @@ def initialize_state(model, liquidity_value=1e6, initial_sqrt_price=None, mid_ti
         POOL_SQRT_PRICE_KEY: np.full(num_traj, initial_sqrt_price, dtype=np.float64),
         POOL_CURRENT_TICK_KEY: np.full(num_traj, initial_tick, dtype=np.float64),
         POOL_LIQUIDITY_ARRAY_KEY: liquidity_array,
-        FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
-        FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        FEES0_KEY: np.zeros((num_traj, num_ticks), dtype=np.float64),
+        FEES1_KEY: np.zeros((num_traj, num_ticks), dtype=np.float64),
+        LP_LIQUIDITY_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_TICK_LOWER_KEY: np.full(num_traj, initial_tick - model.tau, dtype=np.float64),
+        LP_TICK_UPPER_KEY: np.full(num_traj, initial_tick + model.tau, dtype=np.float64),
+        LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
@@ -417,13 +424,13 @@ class TestFeeCalculation:
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        initial_fees0 = model.state[FEES0_KEY][0].copy()
+        initial_fees0 = model.state[FEES0_KEY][0].sum()
 
         # Sell arrival
         arrivals = np.array([[1, 0]], dtype=np.int64)
         model.update_state(arrivals, None)
 
-        new_fees0 = model.state[FEES0_KEY][0]
+        new_fees0 = model.state[FEES0_KEY][0].sum()
 
         # Fees should increase
         assert new_fees0 > initial_fees0
@@ -437,13 +444,13 @@ class TestFeeCalculation:
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        initial_fees1 = model.state[FEES1_KEY][0].copy()
+        initial_fees1 = model.state[FEES1_KEY][0].sum()
 
         # Buy arrival
         arrivals = np.array([[0, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
-        new_fees1 = model.state[FEES1_KEY][0]
+        new_fees1 = model.state[FEES1_KEY][0].sum()
 
         # Fees should increase
         assert new_fees1 > initial_fees1
@@ -460,14 +467,14 @@ class TestFeeCalculation:
 
         arrivals = np.array([[1, 0]], dtype=np.int64)
         model_high.update_state(arrivals, None)
-        fees_high = model_high.state[FEES0_KEY][0]
+        fees_high = model_high.state[FEES0_KEY][0].sum()
 
         # Low liquidity case
         model_low = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_low, liquidity_value=1e4)
 
         model_low.update_state(arrivals, None)
-        fees_low = model_low.state[FEES0_KEY][0]
+        fees_low = model_low.state[FEES0_KEY][0].sum()
 
         # Lower liquidity → smaller xi → smaller fees
         assert fees_low < fees_high
@@ -593,14 +600,14 @@ class TestSequentialProcessing:
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        initial_fees0 = model.state[FEES0_KEY][0]
-        initial_fees1 = model.state[FEES1_KEY][0]
+        initial_fees0 = model.state[FEES0_KEY][0].sum()
+        initial_fees1 = model.state[FEES1_KEY][0].sum()
 
         arrivals = np.array([[1, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
-        assert model.state[FEES0_KEY][0] > initial_fees0, "Sell fee not collected"
-        assert model.state[FEES1_KEY][0] > initial_fees1, "Buy fee not collected"
+        assert model.state[FEES0_KEY][0].sum() > initial_fees0, "Sell fee not collected"
+        assert model.state[FEES1_KEY][0].sum() > initial_fees1, "Buy fee not collected"
 
     def test_both_arrivals_fee_amounts_correct(self):
         """When [1,1] arrives, fee amounts match expected values."""
@@ -619,8 +626,8 @@ class TestSequentialProcessing:
         expected_fee0 = fee_multiplier * xi_sell
         expected_fee1 = fee_multiplier * xi_buy
 
-        assert np.isclose(model.state[FEES0_KEY][0], expected_fee0, rtol=1e-10)
-        assert np.isclose(model.state[FEES1_KEY][0], expected_fee1, rtol=1e-10)
+        assert np.isclose(model.state[FEES0_KEY][0].sum(), expected_fee0, rtol=1e-10)
+        assert np.isclose(model.state[FEES1_KEY][0].sum(), expected_fee1, rtol=1e-10)
 
     def test_buy_uses_updated_state_after_sell(self):
         """Buy phase uses state updated by sell phase."""
@@ -660,8 +667,8 @@ class TestSequentialProcessing:
         arrivals_both = np.array([[1, 1]], dtype=np.int64)
         model_both.update_state(arrivals_both, None)
 
-        fees0_both = model_both.state[FEES0_KEY][0]
-        fees1_both = model_both.state[FEES1_KEY][0]
+        fees0_both = model_both.state[FEES0_KEY][0].sum()
+        fees1_both = model_both.state[FEES1_KEY][0].sum()
 
         # Scenario: sell only
         model_sell = create_test_model(num_trajectories=1, num_ticks=100)
@@ -670,8 +677,8 @@ class TestSequentialProcessing:
         arrivals_sell = np.array([[1, 0]], dtype=np.int64)
         model_sell.update_state(arrivals_sell, None)
 
-        fees0_sell = model_sell.state[FEES0_KEY][0]
-        fees1_sell = model_sell.state[FEES1_KEY][0]
+        fees0_sell = model_sell.state[FEES0_KEY][0].sum()
+        fees1_sell = model_sell.state[FEES1_KEY][0].sum()
 
         # Scenario: buy only
         model_buy = create_test_model(num_trajectories=1, num_ticks=100)
@@ -680,8 +687,8 @@ class TestSequentialProcessing:
         arrivals_buy = np.array([[0, 1]], dtype=np.int64)
         model_buy.update_state(arrivals_buy, None)
 
-        fees0_buy = model_buy.state[FEES0_KEY][0]
-        fees1_buy = model_buy.state[FEES1_KEY][0]
+        fees0_buy = model_buy.state[FEES0_KEY][0].sum()
+        fees1_buy = model_buy.state[FEES1_KEY][0].sum()
 
         # Both arrivals should collect both fees
         assert fees0_both > 0, "Sell fee not collected in [1,1]"
@@ -719,22 +726,22 @@ class TestSequentialProcessing:
 
         # Trajectory 0 (sell only): price decreased, only fee0 collected
         assert model.state[POOL_SQRT_PRICE_KEY][0] < initial_sqrt_prices[0]
-        assert model.state[FEES0_KEY][0] > 0
-        assert model.state[FEES1_KEY][0] == 0
+        assert model.state[FEES0_KEY][0].sum() > 0
+        assert model.state[FEES1_KEY][0].sum() == 0
 
         # Trajectory 1 (buy only): price increased, only fee1 collected
         assert model.state[POOL_SQRT_PRICE_KEY][1] > initial_sqrt_prices[1]
-        assert model.state[FEES0_KEY][1] == 0
-        assert model.state[FEES1_KEY][1] > 0
+        assert model.state[FEES0_KEY][1].sum() == 0
+        assert model.state[FEES1_KEY][1].sum() > 0
 
         # Trajectory 2 (both): both fees collected
-        assert model.state[FEES0_KEY][2] > 0
-        assert model.state[FEES1_KEY][2] > 0
+        assert model.state[FEES0_KEY][2].sum() > 0
+        assert model.state[FEES1_KEY][2].sum() > 0
 
         # Trajectory 3 (no trade): no change, no fees
         assert model.state[POOL_SQRT_PRICE_KEY][3] == initial_sqrt_prices[3]
-        assert model.state[FEES0_KEY][3] == 0
-        assert model.state[FEES1_KEY][3] == 0
+        assert model.state[FEES0_KEY][3].sum() == 0
+        assert model.state[FEES1_KEY][3].sum() == 0
 
 
 if __name__ == "__main__":

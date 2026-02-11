@@ -7,14 +7,18 @@ POOL_SQRT_PRICE_KEY = 'sqrt_price'          # Current pool sqrt(price) - shape: 
 POOL_CURRENT_TICK_KEY = 'current_tick'      # Current tick index - shape: (num_trajectories,)
 POOL_LIQUIDITY_ARRAY_KEY = 'liquidity_array'  # Liquidity per tick - shape: (num_trajectories, num_ticks)
 
-FEES0_KEY = 'fees_0'  # Total fees collected in token 0 - shape: (num_trajectories,)
-FEES1_KEY = 'fees_1'  # Total fees collected in token 1 - shape: (num_trajectories,)
+FEES0_KEY = 'fees_0'  # Pool fees collected in token 0 per tick - shape: (num_trajectories, num_ticks)
+FEES1_KEY = 'fees_1'  # Pool fees collected in token 1 per tick - shape: (num_trajectories, num_ticks)
 
 
 # LP-specific state (agent's position)
 LP_LIQUIDITY_KEY = 'lp_liquidity'           # LP's position liquidity - shape: (num_trajectories,)
 LP_TICK_LOWER_KEY = 'lp_tick_lower'         # LP's position lower bound - shape: (num_trajectories,)
 LP_TICK_UPPER_KEY = 'lp_tick_upper'         # LP's position upper bound - shape: (num_trajectories,)
+
+# LP cumulative fee tracking (across all rebalances, for reward function reference)
+LP_COLLECTED_FEES0_KEY = 'lp_collected_fees_0'  # Cumulative fees collected by LP in token 0 - shape: (num_trajectories,)
+LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees collected by LP in token 1 - shape: (num_trajectories,)
 
 
 # Market state (external)
