@@ -263,10 +263,23 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(is_sell, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect sell fees at the specific tick where the trade happened
+        # Collect sell fees, split between ticks on crossing
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
+
+        # Fee at current tick: full xi for non-crossing, x_to_boundary for crossing
+        fee_at_current = np.where(
+            sell_crosses,
+            fee_multiplier * x_to_boundary,
+            fee_multiplier * self.xi_sell
+        )
         self.state[FEES0_KEY][np.arange(num_traj), tick_array_idx] += np.where(
-            is_sell, fee_multiplier * self.xi_sell, 0.0
+            is_sell, fee_at_current, 0.0
+        )
+
+        # Fee at prev tick: only for crossing sells
+        fee_at_prev = fee_multiplier * xi_remaining_sell
+        self.state[FEES0_KEY][np.arange(num_traj), prev_tick_idx] += np.where(
+            sell_crosses, fee_at_prev, 0.0
         )
 
     def _process_buy(self, is_buy: np.ndarray) -> None:
@@ -338,10 +351,23 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(is_buy, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect buy fees at the specific tick where the trade happened
+        # Collect buy fees, split between ticks on crossing
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
+
+        # Fee at current tick: full xi for non-crossing, y_to_boundary for crossing
+        fee_at_current = np.where(
+            buy_crosses,
+            fee_multiplier * y_to_boundary,
+            fee_multiplier * self.xi_buy
+        )
         self.state[FEES1_KEY][np.arange(num_traj), tick_array_idx] += np.where(
-            is_buy, fee_multiplier * self.xi_buy, 0.0
+            is_buy, fee_at_current, 0.0
+        )
+
+        # Fee at next tick: only for crossing buys
+        fee_at_next = fee_multiplier * yi_remaining_buy
+        self.state[FEES1_KEY][np.arange(num_traj), next_tick_idx] += np.where(
+            buy_crosses, fee_at_next, 0.0
         )
 
     def _collect_lp_fees(self):
@@ -485,6 +511,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
+
+        # Sync external price from midprice model (updated by AMMEnvironment before this call)
+        if self.midprice_model is not None:
+            self.state[ASSET_PRICE_KEY] = self.midprice_model.current_state[:, 0].copy()
 
         # Phase 0: Rebalance LP position (before xi computation and swaps)
         if action is not None:

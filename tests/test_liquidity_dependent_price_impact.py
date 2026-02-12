@@ -480,6 +480,129 @@ class TestFeeCalculation:
         assert fees_low < fees_high
 
 
+class TestFeeSplitOnCrossing:
+    """Test that fees are split between ticks when a trade crosses a tick boundary."""
+
+    def test_sell_crossing_fees_split_between_ticks(self):
+        """On a sell crossing, fees should be deposited at both current and prev tick."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        # With uniform liquidity and mid-tick, sell will cross
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        tick_idx = current_tick - model.tick_lower_global
+        prev_tick_idx = tick_idx - 1
+
+        arrivals = np.array([[1, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        # Verify crossing happened
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick - 1
+
+        # Fees should be at BOTH ticks
+        fee_at_current = model.state[FEES0_KEY][0, tick_idx]
+        fee_at_prev = model.state[FEES0_KEY][0, prev_tick_idx]
+
+        assert fee_at_current > 0, "No fee at current tick"
+        assert fee_at_prev > 0, "No fee at prev tick (crossing portion)"
+
+        # Total should still equal fee_multiplier * xi_sell
+        fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
+        expected_total = fee_multiplier * model.xi_sell[0]
+        assert np.isclose(fee_at_current + fee_at_prev, expected_total, rtol=1e-10)
+
+    def test_buy_crossing_fees_split_between_ticks(self):
+        """On a buy crossing, fees should be deposited at both current and next tick."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        tick_idx = current_tick - model.tick_lower_global
+        next_tick_idx = tick_idx + 1
+
+        arrivals = np.array([[0, 1]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        # Verify crossing happened
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick + 1
+
+        # Fees should be at BOTH ticks
+        fee_at_current = model.state[FEES1_KEY][0, tick_idx]
+        fee_at_next = model.state[FEES1_KEY][0, next_tick_idx]
+
+        assert fee_at_current > 0, "No fee at current tick"
+        assert fee_at_next > 0, "No fee at next tick (crossing portion)"
+
+        # Total should still equal fee_multiplier * xi_buy
+        fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
+        expected_total = fee_multiplier * model.xi_buy[0]
+        assert np.isclose(fee_at_current + fee_at_next, expected_total, rtol=1e-10)
+
+    def test_no_crossing_fees_at_single_tick(self):
+        """When no crossing, all fees should be at the current tick only."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e8)
+
+        # Non-uniform: low liq at tick 99 makes xi small → no crossing
+        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e4
+        model._xi_stale = True
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        tick_idx = current_tick - model.tick_lower_global
+        prev_tick_idx = tick_idx - 1
+
+        arrivals = np.array([[1, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        # Verify no crossing
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick
+
+        # Fee only at current tick
+        fee_at_current = model.state[FEES0_KEY][0, tick_idx]
+        fee_at_prev = model.state[FEES0_KEY][0, prev_tick_idx]
+
+        assert fee_at_current > 0
+        assert fee_at_prev == 0, "Fee leaked to prev tick without crossing"
+
+
+class TestAssetPriceSync:
+    """Test that ASSET_PRICE_KEY syncs from midprice model."""
+
+    def test_asset_price_updates_from_midprice_model(self):
+        """ASSET_PRICE_KEY should reflect midprice model's current state."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6)
+
+        initial_price = model.state[ASSET_PRICE_KEY][0]
+
+        # Manually update midprice model's internal state (simulating a price move)
+        new_price = initial_price * 1.05
+        model.midprice_model.current_state[0, 0] = new_price
+
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        # ASSET_PRICE_KEY should have synced
+        assert np.isclose(model.state[ASSET_PRICE_KEY][0], new_price, rtol=1e-10)
+
+    def test_asset_price_updates_each_step(self):
+        """ASSET_PRICE_KEY should update on every call to update_state."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6)
+
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # Step 1: price moves up
+        model.midprice_model.current_state[0, 0] = 105.0
+        model.update_state(arrivals, None)
+        assert np.isclose(model.state[ASSET_PRICE_KEY][0], 105.0)
+
+        # Step 2: price moves down
+        model.midprice_model.current_state[0, 0] = 95.0
+        model.update_state(arrivals, None)
+        assert np.isclose(model.state[ASSET_PRICE_KEY][0], 95.0)
+
+
 class TestMarkXiStale:
     """Test the xi staleness mechanism."""
 
