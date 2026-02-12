@@ -356,7 +356,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Returns:
             (fee0_per_traj, fee1_per_traj): Arrays of shape (num_trajectories,)
         """
-        num_traj = self.num_trajectories
         lp_liq = self.state[LP_LIQUIDITY_KEY]
         lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
         lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
@@ -397,6 +396,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         num_traj = self.num_trajectories
         sqrt_p = self.state[POOL_SQRT_PRICE_KEY]
+        external_price = self.state[ASSET_PRICE_KEY]
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         lp_liq = self.state[LP_LIQUIDITY_KEY]
 
@@ -412,7 +412,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             sqrt_p_lower = np.sqrt(self.exponential_value ** lp_lower.astype(np.float64))
             sqrt_p_upper = np.sqrt(self.exponential_value ** lp_upper.astype(np.float64))
 
-            pos_value = get_position_value_vec(lp_liq, sqrt_p, sqrt_p_lower, sqrt_p_upper)
+            pos_value = get_position_value_vec(lp_liq, external_price, sqrt_p, sqrt_p_lower, sqrt_p_upper)
 
             # Collect LP's share of fees
             fee0, fee1 = self._collect_lp_fees()
@@ -421,9 +421,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
             self.state[LP_COLLECTED_FEES0_KEY] += fee0
             self.state[LP_COLLECTED_FEES1_KEY] += fee1
 
-            # Convert fee0 (token0) to token1 value using current price
-            price = sqrt_p ** 2
-            fee_value = fee0 * price + fee1
+            # Convert fee0 (token0) to token1 value using external price
+            fee_value = fee0 * external_price + fee1
 
             wealth_with_pos = pos_value + fee_value
             wealth = np.where(has_position, wealth_with_pos, wealth)
@@ -446,7 +445,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # Value per unit liquidity at new range
         value_per_L = get_position_value_vec(
-            np.ones(num_traj), sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper
+            np.ones(num_traj), external_price, sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper
         )
 
         # Compute new liquidity (handle zero value_per_L)

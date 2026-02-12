@@ -143,8 +143,9 @@ class TestFirstRebalance:
         sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
         sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
 
+        ext_price = model.state[ASSET_PRICE_KEY][0]
         pos_value = get_position_value_vec(
-            np.array([lp_liq]), np.array([sqrt_p]),
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
             np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
         )[0]
 
@@ -243,8 +244,9 @@ class TestSubsequentRebalance:
         lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
         sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
         sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
         value_before = get_position_value_vec(
-            np.array([lp_liq]), np.array([sqrt_p]),
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
             np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
         )[0]
 
@@ -253,6 +255,7 @@ class TestSubsequentRebalance:
         model.update_state(arrivals, action2)
 
         # Get position value after second rebalance
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
         sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
         lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
         lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
@@ -260,7 +263,7 @@ class TestSubsequentRebalance:
         sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
         sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
         value_after = get_position_value_vec(
-            np.array([lp_liq2]), np.array([sqrt_p2]),
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
             np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
         )[0]
 
@@ -466,52 +469,71 @@ class TestPositionValueVec:
     def test_price_above_range(self):
         """When price is above range, position is 100% token1."""
         L = np.array([1000.0])
-        sqrt_p = np.array([12.0])    # price = 144
+        ext_p = np.array([144.0])    # external price
+        sqrt_p = np.array([12.0])    # pool sqrt price
         sqrt_p_l = np.array([9.0])   # lower bound
         sqrt_p_u = np.array([10.0])  # upper bound (price above this)
 
-        value = get_position_value_vec(L, sqrt_p, sqrt_p_l, sqrt_p_u)
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
         expected = L * (sqrt_p_u - sqrt_p_l)
         assert np.isclose(value[0], expected[0])
 
     def test_price_below_range(self):
         """When price is below range, position is 100% token0."""
         L = np.array([1000.0])
-        sqrt_p = np.array([8.0])     # price = 64
+        ext_p = np.array([64.0])     # external price
+        sqrt_p = np.array([8.0])     # pool sqrt price
         sqrt_p_l = np.array([9.0])   # lower bound (price below this)
         sqrt_p_u = np.array([10.0])  # upper bound
 
-        value = get_position_value_vec(L, sqrt_p, sqrt_p_l, sqrt_p_u)
-        P = sqrt_p ** 2
-        expected = P * L * (sqrt_p_u - sqrt_p_l) / (sqrt_p_l * sqrt_p_u)
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+        expected = ext_p * L * (sqrt_p_u - sqrt_p_l) / (sqrt_p_l * sqrt_p_u)
         assert np.isclose(value[0], expected[0])
 
     def test_price_in_range(self):
         """When price is in range, position is mix of tokens."""
         L = np.array([1000.0])
+        ext_p = np.array([90.25])    # external price (= 9.5^2, same as pool)
         sqrt_p = np.array([9.5])     # in range
         sqrt_p_l = np.array([9.0])   # lower bound
         sqrt_p_u = np.array([10.0])  # upper bound
 
-        value = get_position_value_vec(L, sqrt_p, sqrt_p_l, sqrt_p_u)
-        P = sqrt_p ** 2
-        expected = L * (2 * sqrt_p - sqrt_p_l - (P / sqrt_p_u))
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+        # V = L * (P_ext/sqrt_p + sqrt_p - sqrt_p_l - P_ext/sqrt_p_u)
+        expected = L * (ext_p / sqrt_p + sqrt_p - sqrt_p_l - ext_p / sqrt_p_u)
         assert np.isclose(value[0], expected[0])
+
+    def test_price_in_range_external_differs(self):
+        """When external price differs from pool price, valuation reflects it."""
+        L = np.array([1000.0])
+        sqrt_p = np.array([9.5])     # pool sqrt price
+        sqrt_p_l = np.array([9.0])
+        sqrt_p_u = np.array([10.0])
+
+        # External price higher than pool → token0 worth more → higher value
+        ext_high = np.array([100.0])
+        ext_low = np.array([80.0])
+
+        value_high = get_position_value_vec(L, ext_high, sqrt_p, sqrt_p_l, sqrt_p_u)
+        value_low = get_position_value_vec(L, ext_low, sqrt_p, sqrt_p_l, sqrt_p_u)
+
+        assert value_high[0] > value_low[0]
 
     def test_vectorized_mixed_cases(self):
         """Test with multiple trajectories in different cases."""
         L = np.array([1000.0, 1000.0, 1000.0])
-        sqrt_p = np.array([12.0, 8.0, 9.5])    # above, below, in range
+        ext_p = np.array([144.0, 64.0, 90.25])  # external prices
+        sqrt_p = np.array([12.0, 8.0, 9.5])     # above, below, in range
         sqrt_p_l = np.array([9.0, 9.0, 9.0])
         sqrt_p_u = np.array([10.0, 10.0, 10.0])
 
-        values = get_position_value_vec(L, sqrt_p, sqrt_p_l, sqrt_p_u)
+        values = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
 
         assert values[0] > 0  # above range
         assert values[1] > 0  # below range
         assert values[2] > 0  # in range
 
-        # Above range value: L * (sqrt_p_u - sqrt_p_l)
+        # Above range value: L * (sqrt_p_u - sqrt_p_l) (external price irrelevant)
         assert np.isclose(values[0], 1000.0 * (10.0 - 9.0))
 
 
@@ -631,8 +653,9 @@ class TestEdgeCases:
         lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
         sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
         sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
         initial_value = get_position_value_vec(
-            np.array([lp_liq]), np.array([sqrt_p]),
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
             np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
         )[0]
 
@@ -644,6 +667,7 @@ class TestEdgeCases:
         model.update_state(arrivals_none, action)
 
         # New position should include collected fees
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
         sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
         lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
         lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
@@ -651,7 +675,7 @@ class TestEdgeCases:
         sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
         sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
         new_value = get_position_value_vec(
-            np.array([lp_liq2]), np.array([sqrt_p2]),
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
             np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
         )[0]
 
