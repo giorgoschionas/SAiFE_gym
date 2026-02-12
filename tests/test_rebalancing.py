@@ -683,5 +683,141 @@ class TestEdgeCases:
         assert model.state[LP_COLLECTED_FEES0_KEY][0] > 0
 
 
+class TestRebalancingCost:
+    """Test proportional rebalancing cost."""
+
+    def test_zero_cost_preserves_wealth(self):
+        """With rebalance_cost_coeff=0, wealth is fully preserved."""
+        model = create_test_model(initial_wealth=1e6)
+        # Default rebalance_cost_coeff=0.0
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance
+        model.update_state(arrivals, action)
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value_after_first = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Second rebalance (same range, no fees)
+        model.update_state(arrivals, action)
+        sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper2 = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
+        value_after_second = get_position_value_vec(
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
+            np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
+        )[0]
+
+        assert np.isclose(value_after_first, value_after_second, rtol=1e-6)
+
+    def test_cost_reduces_wealth_on_rebalance(self):
+        """Rebalancing cost should reduce deployed wealth."""
+        cost_coeff = 0.01  # 1%
+        model = create_test_model(initial_wealth=1e6)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance: no cost (deploying from cash)
+        model.update_state(arrivals, action)
+        value_after_first = 1e6  # initial_wealth deployed fully
+
+        # Second rebalance: 1% cost applied
+        model.update_state(arrivals, action)
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value_after_second = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        expected = value_after_first * (1.0 - cost_coeff)
+        assert np.isclose(value_after_second, expected, rtol=1e-6)
+
+    def test_cost_compounds_over_multiple_rebalances(self):
+        """Cost should compound: after N rebalances, wealth = initial * (1-c)^N."""
+        cost_coeff = 0.02  # 2%
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance (no cost — initial deployment)
+        model.update_state(arrivals, action)
+
+        # 3 more rebalances (each incurs cost)
+        n_rebalances = 3
+        for _ in range(n_rebalances):
+            model.update_state(arrivals, action)
+
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        final_value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        expected = initial_wealth * (1.0 - cost_coeff) ** n_rebalances
+        assert np.isclose(final_value, expected, rtol=1e-6)
+
+    def test_first_rebalance_no_cost(self):
+        """First rebalance (from cash) should not incur cost."""
+        cost_coeff = 0.05  # 5% — large to make effect obvious
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        model.update_state(arrivals, action)
+
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Full initial_wealth deployed — no cost on first deployment
+        assert np.isclose(value, initial_wealth, rtol=1e-6)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

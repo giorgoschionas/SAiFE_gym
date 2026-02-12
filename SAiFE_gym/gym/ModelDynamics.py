@@ -74,6 +74,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         num_ticks: int = 1000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
         initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
+        rebalance_cost_coeff: float = 0.0, # Proportional cost per rebalance (e.g. 0.01 = 1%)
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model,
@@ -88,6 +89,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.exponential_value = exponential_value
         self.tick_factor = np.sqrt(exponential_value) - 1.0
         self.initial_wealth = initial_wealth
+        self.rebalance_cost_coeff = rebalance_cost_coeff
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
@@ -451,6 +453,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
             fee_value = fee0 * external_price + fee1
 
             wealth_with_pos = pos_value + fee_value
+
+            # Apply rebalancing cost (proportional to total position value)
+            wealth_with_pos *= (1.0 - self.rebalance_cost_coeff)
+
             wealth = np.where(has_position, wealth_with_pos, wealth)
 
             # Remove LP's liquidity from pool at old range
