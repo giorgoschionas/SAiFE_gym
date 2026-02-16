@@ -36,7 +36,41 @@ def calculate_liquidity_amounts(
     
     return liquidity
 
-def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper):
+def get_position_value_vec(L, external_p_current, sqrt_p_current, sqrt_p_lower, sqrt_p_upper):
+    """
+    Vectorized mark-to-market value of a Uniswap v3 position in terms of quote asset (token1).
+
+    Handles arrays where each element may be above, below, or in range independently.
+
+    Args:
+        L: Liquidity amount, array-like shape (num_trajectories,)
+        sqrt_p_current: Current sqrt(price), array-like shape (num_trajectories,)
+        sqrt_p_lower: Lower bound sqrt(price), array-like shape (num_trajectories,)
+        sqrt_p_upper: Upper bound sqrt(price), array-like shape (num_trajectories,)
+
+    Returns:
+        np.ndarray: Total value in terms of token1, shape (num_trajectories,)
+    """
+    L = np.atleast_1d(np.asarray(L, dtype=np.float64))
+    sqrt_p_current = np.atleast_1d(np.asarray(sqrt_p_current, dtype=np.float64))
+    sqrt_p_lower = np.atleast_1d(np.asarray(sqrt_p_lower, dtype=np.float64))
+    sqrt_p_upper = np.atleast_1d(np.asarray(sqrt_p_upper, dtype=np.float64))
+
+
+    above = sqrt_p_current >= sqrt_p_upper
+    below = sqrt_p_current <= sqrt_p_lower
+
+    # Case 1: price above range → 100% token1
+    v_above = L * (sqrt_p_upper - sqrt_p_lower)
+    # Case 2: price below range → 100% token0, valued at current price
+    v_below = external_p_current * L * (sqrt_p_upper - sqrt_p_lower) / (sqrt_p_lower * sqrt_p_upper)
+    # Case 3: price in range → mix: V = x * P_ext + y
+    v_in = L * (external_p_current / sqrt_p_current + sqrt_p_current - sqrt_p_lower - external_p_current / sqrt_p_upper)
+
+    return np.where(above, v_above, np.where(below, v_below, v_in))
+
+
+def get_position_value(L, external_price_current, sqrt_price_current, sqrt_price_lower, sqrt_price_upper):
     """
     Calculates the Mark-to-Market value of a Uniswap v3 position
     in terms of the Quote Asset (Asset Y).
@@ -50,7 +84,6 @@ def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
     Returns:
         float: Total value in terms of Asset Y
     """
-    P = sqrt_price_current ** 2
 
     # Case 1: Current price is ABOVE the range (Position is 100% Asset Y)
     if sqrt_price_current >= sqrt_price_upper:
@@ -60,12 +93,12 @@ def get_position_value(L, sqrt_price_current, sqrt_price_lower, sqrt_price_upper
     elif sqrt_price_current <= sqrt_price_lower:
         # We hold max X, valued at current price P
         # x_max = L * (upper - lower) / (lower * upper)
-        return P * L * (sqrt_price_upper - sqrt_price_lower) / (sqrt_price_lower * sqrt_price_upper)
+        return external_price_current * L * (sqrt_price_upper - sqrt_price_lower) / (sqrt_price_lower * sqrt_price_upper)
 
     # Case 3: Current price is IN RANGE (Mix of X and Y)
     else:
-        # Derived from V = y + x*P
-        return L * (2 * sqrt_price_current - sqrt_price_lower - (P / sqrt_price_upper))
+        # Derived from V = y + x*P_ext
+        return L * (external_price_current / sqrt_price_current + sqrt_price_current - sqrt_price_lower - external_price_current / sqrt_price_upper)
 
 
 # Functions for collecting fees

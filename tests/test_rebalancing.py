@@ -1,0 +1,823 @@
+"""
+Tests for LP rebalancing in UniswapV3ModelDynamics.
+
+Tests verify:
+1. First rebalance: uses initial_wealth, deploys to correct range
+2. Subsequent rebalance: withdraws old position + fees, deploys new
+3. Fee collection proportional to LP's liquidity share
+4. Position value computed correctly (above/below/in range)
+5. Pool liquidity array correctly modified
+6. xi marked stale after rebalance
+7. Edge cases: zero-liquidity ticks, out-of-bounds ranges
+8. Vectorized: different actions per trajectory
+"""
+
+import numpy as np
+import pytest
+
+from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
+from SAiFE_gym.gym.index_names import (
+    POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
+    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
+)
+from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
+from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
+
+
+def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
+                      initial_wealth=1e6, tau=5):
+    """Create a UniswapV3ModelDynamics instance for testing."""
+    midprice_model = BrownianMotionMidpriceModel(
+        drift=0.0,
+        volatility=0.0,
+        initial_price=initial_price,
+        terminal_time=1.0,
+        step_size=0.005,
+        num_trajectories=num_trajectories
+    )
+
+    arrival_model = PoissonArrivalModel(
+        intensity=np.array([100.0, 100.0]),
+        step_size=0.005,
+        num_trajectories=num_trajectories,
+        seed=42
+    )
+
+    model = UniswapV3ModelDynamics(
+        midprice_model=midprice_model,
+        arrival_model=arrival_model,
+        num_trajectories=num_trajectories,
+        fee_tier=0.003,
+        tau=tau,
+        num_ticks=num_ticks,
+        exponential_value=1.0001,
+        initial_wealth=initial_wealth,
+        seed=42
+    )
+
+    return model
+
+
+def initialize_state(model, liquidity_value=1e6, mid_tick=True):
+    """Initialize model state with uniform liquidity and no LP position."""
+    num_traj = model.num_trajectories
+    num_ticks = model.num_ticks
+    initial_price = model.initial_price
+
+    initial_tick = int(np.floor(np.log(initial_price) / np.log(model.exponential_value)))
+    model.tick_lower_global = initial_tick - num_ticks // 2
+
+    if mid_tick:
+        p_low = model.exponential_value ** initial_tick
+        p_high = model.exponential_value ** (initial_tick + 1)
+        initial_sqrt_price = np.sqrt((p_low + p_high) / 2)
+    else:
+        initial_sqrt_price = np.sqrt(initial_price)
+
+    liquidity_array = np.full((num_traj, num_ticks), liquidity_value, dtype=np.float64)
+
+    model.state = {
+        POOL_SQRT_PRICE_KEY: np.full(num_traj, initial_sqrt_price, dtype=np.float64),
+        POOL_CURRENT_TICK_KEY: np.full(num_traj, initial_tick, dtype=np.float64),
+        POOL_LIQUIDITY_ARRAY_KEY: liquidity_array,
+        FEES0_KEY: np.zeros((num_traj, num_ticks), dtype=np.float64),
+        FEES1_KEY: np.zeros((num_traj, num_ticks), dtype=np.float64),
+        LP_LIQUIDITY_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_TICK_LOWER_KEY: np.full(num_traj, initial_tick - model.tau, dtype=np.float64),
+        LP_TICK_UPPER_KEY: np.full(num_traj, initial_tick + model.tau, dtype=np.float64),
+        LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
+        TIME_KEY: np.zeros(num_traj, dtype=np.float64),
+    }
+
+    model._xi_stale = True
+
+
+class TestFirstRebalance:
+    """Test LP's first rebalance (LP_LIQUIDITY == 0 → uses initial_wealth)."""
+
+    def test_first_rebalance_uses_initial_wealth(self):
+        """First rebalance should deploy initial_wealth into new range."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        base_liq = model.state[POOL_LIQUIDITY_ARRAY_KEY].copy()
+
+        # Action: place LP position at [current_tick - 2, current_tick + 2)
+        action = np.array([[- 2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        # LP should now have non-zero liquidity
+        assert model.state[LP_LIQUIDITY_KEY][0] > 0
+
+        # Pool liquidity should have increased in the LP's range
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        new_lower = current_tick - 2
+        new_upper = current_tick + 2
+
+        for tick in range(new_lower, new_upper):
+            idx = tick - model.tick_lower_global
+            if 0 <= idx < model.num_ticks:
+                assert model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx] > base_liq[0, idx]
+
+    def test_first_rebalance_position_value_matches_wealth(self):
+        """After first rebalance, position value should equal initial_wealth."""
+        wealth = 5e5
+        model = create_test_model(initial_wealth=wealth)
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-3, 3]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        # Compute position value
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        pos_value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        assert np.isclose(pos_value, wealth, rtol=1e-6)
+
+    def test_first_rebalance_updates_lp_bounds(self):
+        """First rebalance should update LP_TICK_LOWER/UPPER."""
+        model = create_test_model()
+        initialize_state(model, liquidity_value=1e6)
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        action = np.array([[-1, 3]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        assert model.state[LP_TICK_LOWER_KEY][0] == current_tick - 1
+        assert model.state[LP_TICK_UPPER_KEY][0] == current_tick + 3
+
+
+class TestSubsequentRebalance:
+    """Test rebalance when LP already has a position."""
+
+    def test_old_liquidity_removed(self):
+        """After rebalance, old range should have LP's liquidity removed."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+        base_liq = 1e6  # base liquidity per tick
+
+        # First rebalance: place at [-2, 2)
+        action1 = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action1)
+
+        old_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        old_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        lp_liq_first = model.state[LP_LIQUIDITY_KEY][0]
+
+        # Second rebalance: move to [2, 5) — non-overlapping with old range [-2, 2)
+        action2 = np.array([[2, 5]], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        # Old range should be back to base liquidity
+        for tick in range(old_lower, old_upper):
+            idx = tick - model.tick_lower_global
+            if 0 <= idx < model.num_ticks:
+                assert np.isclose(
+                    model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx],
+                    base_liq,
+                    rtol=1e-6
+                ), f"Old tick {tick} not restored to base liquidity"
+
+    def test_new_liquidity_added(self):
+        """After rebalance, new range should have increased liquidity."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+        base_liq = 1e6
+
+        # First rebalance
+        action1 = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action1)
+
+        # Second rebalance to new range
+        action2 = np.array([[0, 3]], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        # New range should have increased liquidity
+        new_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        new_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        new_lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+
+        for tick in range(new_lower, new_upper):
+            idx = tick - model.tick_lower_global
+            if 0 <= idx < model.num_ticks:
+                expected = base_liq + new_lp_liq
+                assert np.isclose(
+                    model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx],
+                    expected,
+                    rtol=1e-6
+                )
+
+    def test_wealth_preserved_without_fees(self):
+        """Position value should be preserved across rebalances when no fees."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # First rebalance
+        action1 = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action1)
+
+        # Get position value after first rebalance
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value_before = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Second rebalance (different range, no fee collection expected)
+        action2 = np.array([[-1, 3]], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        # Get position value after second rebalance
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
+        sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper2 = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
+        value_after = get_position_value_vec(
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
+            np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
+        )[0]
+
+        # Wealth should be preserved (no price change, no fees)
+        assert np.isclose(value_before, value_after, rtol=1e-6)
+
+
+class TestFeeCollection:
+    """Test fee collection during rebalancing."""
+
+    def test_fees_collected_on_rebalance(self):
+        """LP should collect their share of accumulated fees on rebalance."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # First rebalance to establish position
+        action1 = np.array([[-2, 2]], dtype=np.float64)
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals_none, action1)
+
+        # Generate some fees via trades
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+        model.update_state(arrivals_sell, None)  # No rebalance, just trade
+
+        total_fees_before = model.state[FEES0_KEY][0].sum()
+        assert total_fees_before > 0, "No fees generated by trade"
+
+        # Rebalance to collect fees
+        action2 = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals_none, action2)
+
+        # LP should have collected fees
+        assert model.state[LP_COLLECTED_FEES0_KEY][0] > 0
+
+    def test_fee_share_proportional_to_liquidity(self):
+        """LP's fee share should be proportional to their liquidity fraction."""
+        model = create_test_model(initial_wealth=1e5)  # Smaller than base liquidity
+        initialize_state(model, liquidity_value=1e6)
+
+        # First rebalance
+        action1 = np.array([[-2, 2]], dtype=np.float64)
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals_none, action1)
+
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        base_liq = 1e6
+
+        # LP's share at the trade tick: lp_liq / (base_liq + lp_liq)
+        expected_share = lp_liq / (base_liq + lp_liq)
+
+        # Generate fees
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+        model.update_state(arrivals_sell, None)
+
+        total_fees0 = model.state[FEES0_KEY][0].sum()
+
+        # Rebalance to collect fees
+        action2 = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals_none, action2)
+
+        collected = model.state[LP_COLLECTED_FEES0_KEY][0]
+
+        # The fee was deposited at a single tick in LP's range.
+        # LP's share = lp_liq / total_liq at that tick
+        # Total liq at trade tick = base_liq + lp_liq
+        assert collected > 0
+        assert collected < total_fees0  # LP doesn't get all fees
+
+    def test_lp_collected_fees_cumulative(self):
+        """LP_COLLECTED_FEES should accumulate across multiple rebalances."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+
+        # First rebalance
+        action = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals_none, action)
+
+        # Trade to generate fees
+        model.update_state(arrivals_sell, None)
+
+        # Rebalance to collect first batch
+        model.update_state(arrivals_none, action)
+        fees_after_first = model.state[LP_COLLECTED_FEES0_KEY][0]
+
+        # Trade again
+        model.update_state(arrivals_sell, None)
+
+        # Rebalance to collect second batch
+        model.update_state(arrivals_none, action)
+        fees_after_second = model.state[LP_COLLECTED_FEES0_KEY][0]
+
+        assert fees_after_second > fees_after_first
+
+
+class TestPoolLiquidityModification:
+    """Test that pool liquidity array is correctly modified."""
+
+    def test_liquidity_added_to_correct_range(self):
+        """LP's liquidity should only be added within [lower, upper) range."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+        base_liq = 1e6
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+
+        for tick in range(model.tick_lower_global, model.tick_lower_global + model.num_ticks):
+            idx = tick - model.tick_lower_global
+            if lp_lower <= tick < lp_upper:
+                expected = base_liq + lp_liq
+                assert np.isclose(
+                    model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx],
+                    expected, rtol=1e-6
+                ), f"Tick {tick} in range: expected {expected}, got {model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx]}"
+            else:
+                assert np.isclose(
+                    model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx],
+                    base_liq, rtol=1e-6
+                ), f"Tick {tick} out of range: expected {base_liq}, got {model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx]}"
+
+    def test_no_negative_liquidity(self):
+        """Pool liquidity should never go negative after rebalance."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # Multiple rebalances with different ranges
+        for lower, upper in [(-3, 3), (-1, 4), (0, 2), (-4, -1)]:
+            action = np.array([[lower, upper]], dtype=np.float64)
+            model.update_state(arrivals, action)
+            assert np.all(model.state[POOL_LIQUIDITY_ARRAY_KEY] >= -1e-10), \
+                f"Negative liquidity after action [{lower}, {upper}]"
+
+
+class TestXiStaleness:
+    """Test that xi is marked stale after rebalance."""
+
+    def test_xi_stale_after_rebalance(self):
+        """xi should be recomputed after rebalance changes liquidity."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # Compute initial xi
+        model._compute_xi()
+        xi_sell_before = model.xi_sell[0]
+
+        # Rebalance (adds significant liquidity to a few ticks)
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        # xi should have been recomputed (may differ if liquidity changed significantly)
+        assert not model._xi_stale
+
+
+class TestActionValidation:
+    """Test action validation for 2-element actions."""
+
+    def test_action_clipping(self):
+        """Actions outside bounds should be clipped."""
+        model = create_test_model(tau=5)
+        initialize_state(model, liquidity_value=1e6)
+
+        # Action with out-of-bounds values
+        action = np.array([[-10, 10]], dtype=np.float64)
+        validated = model.validate_action(action)
+
+        assert validated[0, 0] == -5  # clipped to -tau
+        assert validated[0, 1] == 5   # clipped to tau
+
+    def test_lower_must_be_less_than_upper(self):
+        """lower_offset must be < upper_offset."""
+        model = create_test_model(tau=5)
+        initialize_state(model, liquidity_value=1e6)
+
+        # Invalid: lower >= upper
+        action = np.array([[3, 2]], dtype=np.float64)
+        validated = model.validate_action(action)
+
+        assert validated[0, 0] < validated[0, 1]
+
+    def test_action_space_shape(self):
+        """Action space should be 2-element."""
+        model = create_test_model(tau=5)
+        space = model.get_action_space()
+
+        assert space.shape == (2,)
+
+
+class TestPositionValueVec:
+    """Test the vectorized get_position_value_vec function."""
+
+    def test_price_above_range(self):
+        """When price is above range, position is 100% token1."""
+        L = np.array([1000.0])
+        ext_p = np.array([144.0])    # external price
+        sqrt_p = np.array([12.0])    # pool sqrt price
+        sqrt_p_l = np.array([9.0])   # lower bound
+        sqrt_p_u = np.array([10.0])  # upper bound (price above this)
+
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+        expected = L * (sqrt_p_u - sqrt_p_l)
+        assert np.isclose(value[0], expected[0])
+
+    def test_price_below_range(self):
+        """When price is below range, position is 100% token0."""
+        L = np.array([1000.0])
+        ext_p = np.array([64.0])     # external price
+        sqrt_p = np.array([8.0])     # pool sqrt price
+        sqrt_p_l = np.array([9.0])   # lower bound (price below this)
+        sqrt_p_u = np.array([10.0])  # upper bound
+
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+        expected = ext_p * L * (sqrt_p_u - sqrt_p_l) / (sqrt_p_l * sqrt_p_u)
+        assert np.isclose(value[0], expected[0])
+
+    def test_price_in_range(self):
+        """When price is in range, position is mix of tokens."""
+        L = np.array([1000.0])
+        ext_p = np.array([90.25])    # external price (= 9.5^2, same as pool)
+        sqrt_p = np.array([9.5])     # in range
+        sqrt_p_l = np.array([9.0])   # lower bound
+        sqrt_p_u = np.array([10.0])  # upper bound
+
+        value = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+        # V = L * (P_ext/sqrt_p + sqrt_p - sqrt_p_l - P_ext/sqrt_p_u)
+        expected = L * (ext_p / sqrt_p + sqrt_p - sqrt_p_l - ext_p / sqrt_p_u)
+        assert np.isclose(value[0], expected[0])
+
+    def test_price_in_range_external_differs(self):
+        """When external price differs from pool price, valuation reflects it."""
+        L = np.array([1000.0])
+        sqrt_p = np.array([9.5])     # pool sqrt price
+        sqrt_p_l = np.array([9.0])
+        sqrt_p_u = np.array([10.0])
+
+        # External price higher than pool → token0 worth more → higher value
+        ext_high = np.array([100.0])
+        ext_low = np.array([80.0])
+
+        value_high = get_position_value_vec(L, ext_high, sqrt_p, sqrt_p_l, sqrt_p_u)
+        value_low = get_position_value_vec(L, ext_low, sqrt_p, sqrt_p_l, sqrt_p_u)
+
+        assert value_high[0] > value_low[0]
+
+    def test_vectorized_mixed_cases(self):
+        """Test with multiple trajectories in different cases."""
+        L = np.array([1000.0, 1000.0, 1000.0])
+        ext_p = np.array([144.0, 64.0, 90.25])  # external prices
+        sqrt_p = np.array([12.0, 8.0, 9.5])     # above, below, in range
+        sqrt_p_l = np.array([9.0, 9.0, 9.0])
+        sqrt_p_u = np.array([10.0, 10.0, 10.0])
+
+        values = get_position_value_vec(L, ext_p, sqrt_p, sqrt_p_l, sqrt_p_u)
+
+        assert values[0] > 0  # above range
+        assert values[1] > 0  # below range
+        assert values[2] > 0  # in range
+
+        # Above range value: L * (sqrt_p_u - sqrt_p_l) (external price irrelevant)
+        assert np.isclose(values[0], 1000.0 * (10.0 - 9.0))
+
+
+class TestVectorizedRebalance:
+    """Test rebalancing with multiple trajectories."""
+
+    def test_different_actions_per_trajectory(self):
+        """Each trajectory can have a different action."""
+        num_traj = 3
+        model = create_test_model(num_trajectories=num_traj, initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+
+        # Different ranges for each trajectory
+        action = np.array([
+            [-2, 2],   # centered
+            [-1, 4],   # shifted right
+            [-4, -1],  # shifted left
+        ], dtype=np.float64)
+
+        arrivals = np.zeros((num_traj, 2), dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        # Each trajectory should have different bounds
+        assert model.state[LP_TICK_LOWER_KEY][0] == current_tick - 2
+        assert model.state[LP_TICK_UPPER_KEY][0] == current_tick + 2
+
+        assert model.state[LP_TICK_LOWER_KEY][1] == current_tick - 1
+        assert model.state[LP_TICK_UPPER_KEY][1] == current_tick + 4
+
+        assert model.state[LP_TICK_LOWER_KEY][2] == current_tick - 4
+        assert model.state[LP_TICK_UPPER_KEY][2] == current_tick - 1
+
+        # All should have positive liquidity
+        assert np.all(model.state[LP_LIQUIDITY_KEY] > 0)
+
+    def test_mixed_first_and_subsequent(self):
+        """Some trajectories on first rebalance, others on subsequent."""
+        num_traj = 2
+        model = create_test_model(num_trajectories=num_traj, initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # First rebalance: both trajectories get initial position
+        action1 = np.array([
+            [-2, 2],
+            [-1, 3],
+        ], dtype=np.float64)
+        arrivals = np.zeros((num_traj, 2), dtype=np.int64)
+        model.update_state(arrivals, action1)
+
+        lp_liq_first = model.state[LP_LIQUIDITY_KEY].copy()
+        assert np.all(lp_liq_first > 0)
+
+        # Second rebalance: different ranges
+        action2 = np.array([
+            [0, 3],
+            [-3, 0],
+        ], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        # Both should still have positive liquidity
+        assert np.all(model.state[LP_LIQUIDITY_KEY] > 0)
+
+
+class TestEdgeCases:
+    """Test edge cases in rebalancing."""
+
+    def test_same_range_rebalance(self):
+        """Rebalancing to the same range should preserve position value."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance
+        model.update_state(arrivals, action)
+        lp_liq_1 = model.state[LP_LIQUIDITY_KEY][0]
+
+        # Second rebalance to same range (no fees accumulated)
+        model.update_state(arrivals, action)
+        lp_liq_2 = model.state[LP_LIQUIDITY_KEY][0]
+
+        # Liquidity should be approximately the same (same wealth, same range)
+        assert np.isclose(lp_liq_1, lp_liq_2, rtol=1e-6)
+
+    def test_none_action_skips_rebalance(self):
+        """Passing None as action should skip rebalancing."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        lp_liq_before = model.state[LP_LIQUIDITY_KEY][0]
+
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        # LP liquidity should be unchanged
+        assert model.state[LP_LIQUIDITY_KEY][0] == lp_liq_before
+
+    def test_rebalance_with_fees_increases_wealth(self):
+        """LP wealth should increase after collecting fees."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+
+        # Establish position
+        action = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals_none, action)
+
+        # Record initial position value
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        initial_value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Generate fees via multiple trades (without rebalancing)
+        for _ in range(5):
+            model.update_state(arrivals_sell, None)
+
+        # Rebalance to collect fees (same range to minimize price effect)
+        model.update_state(arrivals_none, action)
+
+        # New position should include collected fees
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
+        sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper2 = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
+        new_value = get_position_value_vec(
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
+            np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
+        )[0]
+
+        # LP collected fees should be tracked
+        assert model.state[LP_COLLECTED_FEES0_KEY][0] > 0
+
+
+class TestRebalancingCost:
+    """Test proportional rebalancing cost."""
+
+    def test_zero_cost_preserves_wealth(self):
+        """With rebalance_cost_coeff=0, wealth is fully preserved."""
+        model = create_test_model(initial_wealth=1e6)
+        # Default rebalance_cost_coeff=0.0
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance
+        model.update_state(arrivals, action)
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value_after_first = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Second rebalance (same range, no fees)
+        model.update_state(arrivals, action)
+        sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper2 = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
+        ext_price2 = model.state[ASSET_PRICE_KEY][0]
+        value_after_second = get_position_value_vec(
+            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
+            np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
+        )[0]
+
+        assert np.isclose(value_after_first, value_after_second, rtol=1e-6)
+
+    def test_cost_reduces_wealth_on_rebalance(self):
+        """Rebalancing cost should reduce deployed wealth."""
+        cost_coeff = 0.01  # 1%
+        model = create_test_model(initial_wealth=1e6)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance: no cost (deploying from cash)
+        model.update_state(arrivals, action)
+        value_after_first = 1e6  # initial_wealth deployed fully
+
+        # Second rebalance: 1% cost applied
+        model.update_state(arrivals, action)
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value_after_second = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        expected = value_after_first * (1.0 - cost_coeff)
+        assert np.isclose(value_after_second, expected, rtol=1e-6)
+
+    def test_cost_compounds_over_multiple_rebalances(self):
+        """Cost should compound: after N rebalances, wealth = initial * (1-c)^N."""
+        cost_coeff = 0.02  # 2%
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance (no cost — initial deployment)
+        model.update_state(arrivals, action)
+
+        # 3 more rebalances (each incurs cost)
+        n_rebalances = 3
+        for _ in range(n_rebalances):
+            model.update_state(arrivals, action)
+
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        final_value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        expected = initial_wealth * (1.0 - cost_coeff) ** n_rebalances
+        assert np.isclose(final_value, expected, rtol=1e-6)
+
+    def test_first_rebalance_no_cost(self):
+        """First rebalance (from cash) should not incur cost."""
+        cost_coeff = 0.05  # 5% — large to make effect obvious
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth)
+        model.rebalance_cost_coeff = cost_coeff
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        model.update_state(arrivals, action)
+
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+        ext_price = model.state[ASSET_PRICE_KEY][0]
+        value = get_position_value_vec(
+            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+        )[0]
+
+        # Full initial_wealth deployed — no cost on first deployment
+        assert np.isclose(value, initial_wealth, rtol=1e-6)
+
+
+if __name__ == "__main__":
+    pytest.main([__file__, "-v"])

@@ -9,8 +9,11 @@ from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
-    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY
+    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
 )
+from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
 
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
@@ -70,7 +73,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 1000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
-    
+        initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
+        rebalance_cost_coeff: float = 0.0, # Proportional cost per rebalance (e.g. 0.01 = 1%)
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model,
@@ -84,6 +88,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.num_ticks = num_ticks  # Total number of ticks to track
         self.exponential_value = exponential_value
         self.tick_factor = np.sqrt(exponential_value) - 1.0
+        self.initial_wealth = initial_wealth
+        self.rebalance_cost_coeff = rebalance_cost_coeff
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
@@ -103,7 +109,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
 
         Constraint: lower_offset < upper_offset (enforced by validate_action)
+<<<<<<< HEAD
         Capital is always fully deployed (no liquidity_fraction parameter).
+=======
+        The LP always deploys all available wealth into the specified range.
+>>>>>>> main
         """
 
         return gym.spaces.Box(
@@ -118,7 +128,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Validate and clip action to ensure constraints.
 
         Args:
+<<<<<<< HEAD
             action: (num_trajectories, 2) array of actions
+=======
+            action: (num_trajectories, 2) array of [lower_offset, upper_offset]
+>>>>>>> main
 
         Returns:
             Validated action with same shape
@@ -259,9 +273,24 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(is_sell, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect sell fees
+        # Collect sell fees, split between ticks on crossing
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
-        self.state[FEES0_KEY] += np.where(is_sell, fee_multiplier * self.xi_sell, 0.0)
+
+        # Fee at current tick: full xi for non-crossing, x_to_boundary for crossing
+        fee_at_current = np.where(
+            sell_crosses,
+            fee_multiplier * x_to_boundary,
+            fee_multiplier * self.xi_sell
+        )
+        self.state[FEES0_KEY][np.arange(num_traj), tick_array_idx] += np.where(
+            is_sell, fee_at_current, 0.0
+        )
+
+        # Fee at prev tick: only for crossing sells
+        fee_at_prev = fee_multiplier * xi_remaining_sell
+        self.state[FEES0_KEY][np.arange(num_traj), prev_tick_idx] += np.where(
+            sell_crosses, fee_at_prev, 0.0
+        )
 
     def _process_buy(self, is_buy: np.ndarray) -> None:
         """
@@ -332,9 +361,150 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(is_buy, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect buy fees
+        # Collect buy fees, split between ticks on crossing
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
-        self.state[FEES1_KEY] += np.where(is_buy, fee_multiplier * self.xi_buy, 0.0)
+
+        # Fee at current tick: full xi for non-crossing, y_to_boundary for crossing
+        fee_at_current = np.where(
+            buy_crosses,
+            fee_multiplier * y_to_boundary,
+            fee_multiplier * self.xi_buy
+        )
+        self.state[FEES1_KEY][np.arange(num_traj), tick_array_idx] += np.where(
+            is_buy, fee_at_current, 0.0
+        )
+
+        # Fee at next tick: only for crossing buys
+        fee_at_next = fee_multiplier * yi_remaining_buy
+        self.state[FEES1_KEY][np.arange(num_traj), next_tick_idx] += np.where(
+            buy_crosses, fee_at_next, 0.0
+        )
+
+    def _collect_lp_fees(self):
+        """
+        Collect LP's share of pool fees from the LP's current position range.
+
+        For each trajectory with an active position:
+        - LP's share at each tick = lp_liquidity / total_liquidity_at_tick
+        - Only considers ticks in LP's range [lower, upper)
+        - Subtracts LP's share from pool fee arrays
+
+        Returns:
+            (fee0_per_traj, fee1_per_traj): Arrays of shape (num_trajectories,)
+        """
+        lp_liq = self.state[LP_LIQUIDITY_KEY]
+        lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
+        lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
+        pool_liq = self.state[POOL_LIQUIDITY_ARRAY_KEY]
+
+        # Build mask for LP's range: (num_traj, num_ticks)
+        tick_indices = np.arange(self.num_ticks)  # (num_ticks,)
+        absolute_ticks = self.tick_lower_global + tick_indices  # (num_ticks,)
+
+        in_range = (absolute_ticks[None, :] >= lp_lower[:, None]) & \
+                   (absolute_ticks[None, :] < lp_upper[:, None])  # (num_traj, num_ticks)
+
+        # LP's share at each tick: lp_liq / total_liq (0 where total_liq is 0)
+        total_liq_safe = np.where(pool_liq > 0, pool_liq, 1.0)
+        lp_share = np.where(pool_liq > 0, lp_liq[:, None] / total_liq_safe, 0.0)
+
+        # Only count fees in LP's range
+        lp_share_in_range = lp_share * in_range  # (num_traj, num_ticks)
+
+        # Compute LP's fee share
+        lp_fee0 = np.sum(self.state[FEES0_KEY] * lp_share_in_range, axis=1)  # (num_traj,)
+        lp_fee1 = np.sum(self.state[FEES1_KEY] * lp_share_in_range, axis=1)  # (num_traj,)
+
+        # Subtract LP's share from pool fee arrays
+        self.state[FEES0_KEY] -= self.state[FEES0_KEY] * lp_share_in_range
+        self.state[FEES1_KEY] -= self.state[FEES1_KEY] * lp_share_in_range
+
+        return lp_fee0, lp_fee1
+
+    def _rebalance(self, action: np.ndarray):
+        """
+        Rebalance LP position: withdraw old position + fees, deploy into new range.
+
+        Called at the start of update_state() before xi computation and swaps.
+
+        Args:
+            action: (num_trajectories, 2) validated action [lower_offset, upper_offset]
+        """
+        num_traj = self.num_trajectories
+        sqrt_p = self.state[POOL_SQRT_PRICE_KEY]
+        external_price = self.state[ASSET_PRICE_KEY]
+        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+        lp_liq = self.state[LP_LIQUIDITY_KEY]
+
+        has_position = lp_liq > 0
+
+        # --- Phase 1: Compute wealth ---
+        wealth = np.full(num_traj, self.initial_wealth, dtype=np.float64)
+
+        if np.any(has_position):
+            # Compute position value for trajectories with existing positions
+            lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
+            lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
+            sqrt_p_lower = np.sqrt(self.exponential_value ** lp_lower.astype(np.float64))
+            sqrt_p_upper = np.sqrt(self.exponential_value ** lp_upper.astype(np.float64))
+
+            pos_value = get_position_value_vec(lp_liq, external_price, sqrt_p, sqrt_p_lower, sqrt_p_upper)
+
+            # Collect LP's share of fees
+            fee0, fee1 = self._collect_lp_fees()
+
+            # Accumulate in LP_COLLECTED_FEES for reward tracking
+            self.state[LP_COLLECTED_FEES0_KEY] += fee0
+            self.state[LP_COLLECTED_FEES1_KEY] += fee1
+
+            # Convert fee0 (token0) to token1 value using external price
+            fee_value = fee0 * external_price + fee1
+
+            wealth_with_pos = pos_value + fee_value
+
+            # Apply rebalancing cost (proportional to total position value)
+            wealth_with_pos *= (1.0 - self.rebalance_cost_coeff)
+
+            wealth = np.where(has_position, wealth_with_pos, wealth)
+
+            # Remove LP's liquidity from pool at old range
+            tick_indices = np.arange(self.num_ticks)
+            absolute_ticks = self.tick_lower_global + tick_indices
+            old_in_range = (absolute_ticks[None, :] >= lp_lower[:, None]) & \
+                           (absolute_ticks[None, :] < lp_upper[:, None])
+            # Only remove for trajectories that have a position
+            remove_mask = old_in_range & has_position[:, None]
+            self.state[POOL_LIQUIDITY_ARRAY_KEY] -= remove_mask * lp_liq[:, None]
+
+        # --- Phase 2: Deploy new position ---
+        new_lower = current_tick + np.round(action[:, 0]).astype(np.int64)
+        new_upper = current_tick + np.round(action[:, 1]).astype(np.int64)
+
+        sqrt_p_new_lower = np.sqrt(self.exponential_value ** new_lower.astype(np.float64))
+        sqrt_p_new_upper = np.sqrt(self.exponential_value ** new_upper.astype(np.float64))
+
+        # Value per unit liquidity at new range
+        value_per_L = get_position_value_vec(
+            np.ones(num_traj), external_price, sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper
+        )
+
+        # Compute new liquidity (handle zero value_per_L)
+        new_L = np.where(value_per_L > 0, wealth / value_per_L, 0.0)
+
+        # Add new liquidity to pool at new range
+        tick_indices = np.arange(self.num_ticks)
+        absolute_ticks = self.tick_lower_global + tick_indices
+        new_in_range = (absolute_ticks[None, :] >= new_lower[:, None]) & \
+                       (absolute_ticks[None, :] < new_upper[:, None])
+        self.state[POOL_LIQUIDITY_ARRAY_KEY] += new_in_range * new_L[:, None]
+
+        # --- Phase 3: Update LP state ---
+        self.state[LP_LIQUIDITY_KEY] = new_L
+        self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
+        self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
+
+        # Mark xi as stale since liquidity changed
+        self.mark_xi_stale()
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
@@ -356,7 +526,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        # Compute xi if stale
+        # Sync external price from midprice model (updated by AMMEnvironment before this call)
+        if self.midprice_model is not None:
+            self.state[ASSET_PRICE_KEY] = self.midprice_model.current_state[:, 0].copy()
+
+        # Phase 0: Rebalance LP position (before xi computation and swaps)
+        if action is not None:
+            validated = self.validate_action(action)
+            self._rebalance(validated)
+
+        # Phase 1: Compute xi if stale (triggered by rebalance or external changes)
         if self._xi_stale:
             self._compute_xi()
 
@@ -364,13 +543,13 @@ class UniswapV3ModelDynamics(ModelDynamics):
         is_sell = arrivals[:, 0].astype(bool)
         is_buy = arrivals[:, 1].astype(bool)
 
-        # Phase 1: Process sells (updates state in place)
+        # Phase 2: Process sells (updates state in place)
         self._process_sell(is_sell)
 
-        # Phase 2: Process buys from updated state
+        # Phase 3: Process buys from updated state
         self._process_buy(is_buy)
 
-        # Update time
+        # Phase 4: Update time
         step_size = self.midprice_model.step_size if self.midprice_model else 0.005
         self.state[TIME_KEY] += step_size
 

@@ -10,6 +10,7 @@ from SAiFE_gym.rewards.RewardFunctions import RewardFunction, PnL
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
     FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     ASSET_PRICE_KEY, TIME_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
@@ -135,6 +136,18 @@ class AMMEnvironment(gym.Env):
                 dtype=np.int32
             ),
 
+            # LP cumulative fee tracking
+            LP_COLLECTED_FEES0_KEY: gym.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
+            LP_COLLECTED_FEES1_KEY: gym.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
+
             # Market state
             ASSET_PRICE_KEY: gym.spaces.Box(
                 low=0.0, high=np.inf,
@@ -201,6 +214,10 @@ class AMMEnvironment(gym.Env):
             LP_TICK_UPPER_KEY: np.full(
                 self.num_trajectories, initial_tick + self.model_dynamics.tau, dtype=np.int64
             ),
+
+            # LP cumulative fee tracking (across all rebalances)
+            LP_COLLECTED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_COLLECTED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
 
             # Market state
             ASSET_PRICE_KEY: np.full(
