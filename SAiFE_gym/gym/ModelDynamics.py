@@ -88,6 +88,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.num_ticks = num_ticks  # Total number of ticks to track
         self.exponential_value = exponential_value
         self.tick_factor = np.sqrt(exponential_value) - 1.0
+        self.exp_quarter = exponential_value ** 0.25  # For midpoint snap after crossing
         self.initial_wealth = initial_wealth
         self.rebalance_cost_coeff = rebalance_cost_coeff
 
@@ -193,13 +194,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Compute tick boundaries
         sqrt_p_low = np.sqrt(self.exponential_value ** current_tick)
 
-        # Get liquidity at current and previous ticks
+        # Get liquidity at current tick
         tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
         tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
         L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
-
-        prev_tick_idx = np.clip(tick_array_idx - 1, 0, self.num_ticks - 1)
-        L_prev = liquidity_array[np.arange(num_traj), prev_tick_idx]
 
         # Handle zero liquidity: treat as zero capacity (will always cross)
         L_current_safe = np.where(L_current > 0, L_current, 1.0)
@@ -222,17 +220,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
         )
         sqrt_p_sell_no_cross = 1.0 / inv_sqrt_p_sell_no_cross
 
-        # Case 2: Sell, crossing
-        xi_remaining_sell = np.maximum(xi_sell - x_to_boundary, 0)
-        L_prev_safe = np.where(L_prev > 0, L_prev, 1.0)
-
-        sqrt_p_prev_tick_low = np.sqrt(self.exponential_value ** (current_tick - 1))
-        inv_sqrt_p_sell_cross = np.where(
-            L_prev > 0,
-            1.0 / sqrt_p_low + xi_remaining_sell / L_prev_safe,
-            1.0 / sqrt_p_prev_tick_low  # Zero liquidity in prev: jump to its boundary
-        )
-        sqrt_p_sell_cross = 1.0 / inv_sqrt_p_sell_cross
+        # Case 2: Sell, crossing — snap to midpoint of new tick
+        # Each trade crosses into the previous tick. Price is set to the geometric
+        # midpoint of the new tick, preventing sqrt_price drift when adjacent ticks
+        # have different liquidity.
+        # midpoint(tick T-1) = sqrt(exp_val^(T-0.5)) = sqrt_p_low / exp_val^0.25
+        sqrt_p_sell_cross = sqrt_p_low / self.exp_quarter
 
         # Combine results: crossing takes priority over no crossing
         new_sqrt_p = np.where(sell_crosses, sqrt_p_sell_cross, sqrt_p_sell_no_cross)
@@ -244,10 +237,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect sell fees, split between ticks on crossing
+        # Collect sell fees at the current tick
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
 
-        # Fee at current tick: full xi for non-crossing, x_to_boundary for crossing
+        # Fee is based on volume traversed in the current tick:
+        # - No crossing: full xi_sell
+        # - Crossing: x_to_boundary (volume from current price to tick boundary)
         fee_at_current = np.where(
             sell_crosses,
             fee_multiplier * x_to_boundary,
@@ -255,12 +250,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         )
         self.state[FEES0_KEY][np.arange(num_traj), tick_array_idx] += np.where(
             active, fee_at_current, 0.0
-        )
-
-        # Fee at prev tick: only for crossing sells
-        fee_at_prev = fee_multiplier * xi_remaining_sell
-        self.state[FEES0_KEY][np.arange(num_traj), prev_tick_idx] += np.where(
-            sell_crosses, fee_at_prev, 0.0
         )
 
     def _process_buy_single(self, active: np.ndarray, xi_buy: np.ndarray) -> None:
@@ -284,13 +273,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Compute tick boundaries from CURRENT tick (may be updated by sell)
         sqrt_p_high = np.sqrt(self.exponential_value ** (current_tick + 1))
 
-        # Get liquidity at CURRENT and next ticks
+        # Get liquidity at current tick
         tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
         tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
         L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
-
-        next_tick_idx = np.clip(tick_array_idx + 1, 0, self.num_ticks - 1)
-        L_next = liquidity_array[np.arange(num_traj), next_tick_idx]
 
         # Handle zero liquidity
         L_current_safe = np.where(L_current > 0, L_current, 1.0)
@@ -313,16 +299,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
             sqrt_p_high  # Zero liquidity: jump to boundary
         )
 
-        # Case 2: Buy, crossing
-        yi_remaining_buy = np.maximum(xi_buy - y_to_boundary, 0)
-        L_next_safe = np.where(L_next > 0, L_next, 1.0)
-
-        sqrt_p_next_tick_high = np.sqrt(self.exponential_value ** (current_tick + 2))
-        sqrt_p_buy_cross = np.where(
-            L_next > 0,
-            sqrt_p_high + yi_remaining_buy / L_next_safe,
-            sqrt_p_next_tick_high  # Zero liquidity in next: jump to its boundary
-        )
+        # Case 2: Buy, crossing — snap to midpoint of new tick
+        # Each trade crosses into the next tick. Price is set to the geometric
+        # midpoint of the new tick, preventing sqrt_price drift when adjacent ticks
+        # have different liquidity.
+        # midpoint(tick T+1) = sqrt(exp_val^(T+1.5)) = sqrt_p_high * exp_val^0.25
+        sqrt_p_buy_cross = sqrt_p_high * self.exp_quarter
 
         # Combine results: crossing takes priority over no crossing
         new_sqrt_p = np.where(buy_crosses, sqrt_p_buy_cross, sqrt_p_buy_no_cross)
@@ -334,10 +316,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect buy fees, split between ticks on crossing
+        # Collect buy fees at the current tick
         fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
 
-        # Fee at current tick: full xi for non-crossing, y_to_boundary for crossing
+        # Fee is based on volume traversed in the current tick:
+        # - No crossing: full xi_buy
+        # - Crossing: y_to_boundary (volume from current price to tick boundary)
         fee_at_current = np.where(
             buy_crosses,
             fee_multiplier * y_to_boundary,
@@ -345,12 +329,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         )
         self.state[FEES1_KEY][np.arange(num_traj), tick_array_idx] += np.where(
             active, fee_at_current, 0.0
-        )
-
-        # Fee at next tick: only for crossing buys
-        fee_at_next = fee_multiplier * yi_remaining_buy
-        self.state[FEES1_KEY][np.arange(num_traj), next_tick_idx] += np.where(
-            buy_crosses, fee_at_next, 0.0
         )
 
     def _collect_lp_fees(self):
