@@ -94,7 +94,6 @@ def initialize_state(model, liquidity_value=1e6, mid_tick=True):
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
 
-    model._xi_stale = True
 
 
 class TestFirstRebalance:
@@ -406,27 +405,6 @@ class TestPoolLiquidityModification:
             model.update_state(arrivals, action)
             assert np.all(model.state[POOL_LIQUIDITY_ARRAY_KEY] >= -1e-10), \
                 f"Negative liquidity after action [{lower}, {upper}]"
-
-
-class TestXiStaleness:
-    """Test that xi is marked stale after rebalance."""
-
-    def test_xi_stale_after_rebalance(self):
-        """xi should be recomputed after rebalance changes liquidity."""
-        model = create_test_model(initial_wealth=1e6)
-        initialize_state(model, liquidity_value=1e6)
-
-        # Compute initial xi
-        model._compute_xi()
-        xi_sell_before = model.xi_sell[0]
-
-        # Rebalance (adds significant liquidity to a few ticks)
-        action = np.array([[-2, 2]], dtype=np.float64)
-        arrivals = np.array([[0, 0]], dtype=np.int64)
-        model.update_state(arrivals, action)
-
-        # xi should have been recomputed (may differ if liquidity changed significantly)
-        assert not model._xi_stale
 
 
 class TestActionValidation:

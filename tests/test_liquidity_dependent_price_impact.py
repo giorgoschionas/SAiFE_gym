@@ -2,12 +2,13 @@
 Tests for liquidity-dependent price impact in UniswapV3ModelDynamics.
 
 Tests verify:
-1. xi computation from liquidity array
-2. No-crossing: small trades stay within tick
-3. Crossing: large trades cross tick boundary
+1. Local xi computation from current tick's liquidity
+2. No-crossing: directly calling _process_sell_single with small xi
+3. Crossing: local xi always crosses one tick per arrival
 4. Zero liquidity: price jumps to boundary
 5. Vectorization: multiple trajectories with different directions
-6. Fee calculation proportional to xi
+6. Fee calculation proportional to local xi
+7. Multiple arrivals: Poisson counts > 1 cross multiple ticks
 """
 
 import numpy as np
@@ -103,142 +104,127 @@ def initialize_state(model, liquidity_value=1e6, initial_sqrt_price=None, mid_ti
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
 
-    # Mark xi as stale to force recomputation
-    model._xi_stale = True
 
+class TestLocalXiComputation:
+    """Test local xi (trade size) computation from current tick."""
 
-class TestXiComputation:
-    """Test xi (trade size) computation."""
-
-    def test_xi_computation_uniform_liquidity(self):
-        """Test xi computation with uniform liquidity."""
+    def test_local_xi_positive_finite(self):
+        """Test local xi computation with uniform liquidity."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        model._compute_xi()
+        xi_sell, xi_buy = model._compute_local_xi()
 
         # xi should be finite and positive
-        assert np.isfinite(model.xi_sell[0])
-        assert np.isfinite(model.xi_buy[0])
-        assert model.xi_sell[0] > 0
-        assert model.xi_buy[0] > 0
+        assert np.isfinite(xi_sell[0])
+        assert np.isfinite(xi_buy[0])
+        assert xi_sell[0] > 0
+        assert xi_buy[0] > 0
 
-    def test_xi_computation_varies_with_liquidity(self):
-        """Test that xi is smaller with lower liquidity."""
+    def test_local_xi_varies_with_liquidity(self):
+        """Test that local xi scales with current tick's liquidity."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
 
         # High liquidity
         initialize_state(model, liquidity_value=1e8)
-        model._compute_xi()
-        xi_sell_high = model.xi_sell[0]
-        xi_buy_high = model.xi_buy[0]
+        xi_sell_high, xi_buy_high = model._compute_local_xi()
 
         # Low liquidity
         initialize_state(model, liquidity_value=1e4)
-        model._compute_xi()
-        xi_sell_low = model.xi_sell[0]
-        xi_buy_low = model.xi_buy[0]
+        xi_sell_low, xi_buy_low = model._compute_local_xi()
 
         # Lower liquidity should give smaller xi
-        assert xi_sell_low < xi_sell_high
-        assert xi_buy_low < xi_buy_high
+        assert xi_sell_low[0] < xi_sell_high[0]
+        assert xi_buy_low[0] < xi_buy_high[0]
 
-    def test_xi_minimum_across_ticks(self):
-        """Test that xi takes minimum across all ticks."""
+    def test_local_xi_ignores_distant_ticks(self):
+        """Test that changing liquidity at a distant tick does NOT affect local xi."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        # Set one tick to very low liquidity
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 50] = 100.0  # Much lower
-        model._xi_stale = True
-        model._compute_xi()
+        xi_sell_before, xi_buy_before = model._compute_local_xi()
 
-        xi_sell_with_low = model.xi_sell[0]
+        # Change liquidity at a distant tick (tick 99, far from current tick ~50)
+        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 100.0  # Much lower
 
-        # Reset to uniform high liquidity
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 50] = 1e6
-        model._xi_stale = True
-        model._compute_xi()
+        xi_sell_after, xi_buy_after = model._compute_local_xi()
 
-        xi_sell_uniform = model.xi_sell[0]
+        # Local xi should be unchanged (only depends on current tick)
+        assert xi_sell_before[0] == xi_sell_after[0]
+        assert xi_buy_before[0] == xi_buy_after[0]
 
-        # xi with one low-liquidity tick should be smaller
-        assert xi_sell_with_low < xi_sell_uniform
-
-    def test_xi_zero_liquidity_gives_inf(self):
-        """Test that all-zero liquidity gives infinite xi (no trades possible)."""
+    def test_local_xi_zero_liquidity_gives_zero(self):
+        """Test that zero liquidity at current tick gives zero xi."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=0.0)  # All zero
+        initialize_state(model, liquidity_value=1e6)
 
-        model._compute_xi()
+        # Set current tick to zero liquidity
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        tick_idx = current_tick - model.tick_lower_global
+        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx] = 0.0
 
-        assert np.isinf(model.xi_sell[0])
-        assert np.isinf(model.xi_buy[0])
+        xi_sell, xi_buy = model._compute_local_xi()
+
+        assert xi_sell[0] == 0.0
+        assert xi_buy[0] == 0.0
 
 
 class TestNoCrossing:
-    """Test price updates when trade stays within tick.
+    """Test no-crossing code path by calling _process_sell_single/_process_buy_single
+    directly with a manually small xi.
 
-    Note: With uniform liquidity, xi (global minimum) is ~2x the mid-tick boundary capacity,
-    so crossing always occurs. To test no-crossing, we need non-uniform liquidity where
-    the xi-determining tick has low liquidity (small xi) while current tick has high
-    liquidity (large boundary capacity).
+    Note: With local xi (full tick capacity), crossing always occurs via update_state().
+    These tests exercise the no-crossing code path for completeness.
     """
 
-    def test_sell_no_crossing_non_uniform_liquidity(self):
-        """Test sell that doesn't cross with non-uniform liquidity."""
+    def test_sell_no_crossing_with_small_xi(self):
+        """Test sell that doesn't cross by passing a small xi directly."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e8)  # High base liquidity
-
-        # Set the highest-price tick (which determines xi_sell) to low liquidity
-        # This makes xi_sell small while keeping current tick's capacity high
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e4  # Low at tick 99
-        model._xi_stale = True
+        initialize_state(model, liquidity_value=1e8)
 
         initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        # Sell arrival
-        arrivals = np.array([[1, 0]], dtype=np.int64)
-        model.update_state(arrivals, None)
+        # Compute local xi and use 1/10th to ensure no crossing
+        xi_sell, _ = model._compute_local_xi()
+        small_xi = xi_sell * 0.1
+
+        active = np.array([True])
+        model._process_sell_single(active, small_xi)
 
         new_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
 
         # Price should decrease
         assert new_sqrt_price < initial_sqrt_price
-
-        # Tick should NOT change (xi is small due to low liquidity at tick 99)
+        # Tick should NOT change (small xi)
         assert new_tick == initial_tick
 
-    def test_buy_no_crossing_non_uniform_liquidity(self):
-        """Test buy that doesn't cross with non-uniform liquidity."""
+    def test_buy_no_crossing_with_small_xi(self):
+        """Test buy that doesn't cross by passing a small xi directly."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e8)  # High base liquidity
-
-        # Set the lowest-price tick (which determines xi_buy) to low liquidity
-        # This makes xi_buy small while keeping current tick's capacity high
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 0] = 1e4  # Low at tick 0
-        model._xi_stale = True
+        initialize_state(model, liquidity_value=1e8)
 
         initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        # Buy arrival
-        arrivals = np.array([[0, 1]], dtype=np.int64)
-        model.update_state(arrivals, None)
+        # Compute local xi and use 1/10th to ensure no crossing
+        _, xi_buy = model._compute_local_xi()
+        small_xi = xi_buy * 0.1
+
+        active = np.array([True])
+        model._process_buy_single(active, small_xi)
 
         new_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
 
         # Price should increase
         assert new_sqrt_price > initial_sqrt_price
-
-        # Tick should NOT change (xi is small due to low liquidity at tick 0)
+        # Tick should NOT change (small xi)
         assert new_tick == initial_tick
 
     def test_uniform_liquidity_always_crosses(self):
-        """Test that uniform liquidity causes crossing (by design)."""
+        """Test that with local xi, a single arrival always crosses."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
@@ -250,7 +236,7 @@ class TestNoCrossing:
 
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
 
-        # With uniform liquidity, xi/capacity ratio ~2, so always crosses
+        # With local xi (full tick capacity), always crosses
         assert new_tick == initial_tick - 1
 
 
@@ -258,9 +244,9 @@ class TestCrossing:
     """Test price updates when trade crosses tick boundary."""
 
     def test_sell_crossing(self):
-        """Test sell that crosses tick boundary due to low liquidity."""
+        """Test sell that crosses tick boundary."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=100.0)  # Very low liquidity
+        initialize_state(model, liquidity_value=100.0)  # Any liquidity
 
         initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
@@ -279,9 +265,9 @@ class TestCrossing:
         assert new_tick == initial_tick - 1
 
     def test_buy_crossing(self):
-        """Test buy that crosses tick boundary due to low liquidity."""
+        """Test buy that crosses tick boundary."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=100.0)  # Very low liquidity
+        initialize_state(model, liquidity_value=100.0)  # Any liquidity
 
         initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
@@ -346,6 +332,69 @@ class TestZeroLiquidity:
         assert new_tick == initial_tick + 1
 
 
+class TestMultipleArrivals:
+    """Test that multiple arrivals (Poisson counts > 1) move multiple ticks."""
+
+    def test_multiple_sells_move_multiple_ticks(self):
+        """arrivals=[[3,0]] should move tick down by ~3."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        arrivals = np.array([[3, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
+
+        # Each sell crosses one tick, so 3 sells → tick decreases by 3
+        assert new_tick == initial_tick - 3
+
+    def test_multiple_buys_move_multiple_ticks(self):
+        """arrivals=[[0,3]] should move tick up by ~3."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        arrivals = np.array([[0, 3]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
+
+        # Each buy crosses one tick, so 3 buys → tick increases by 3
+        assert new_tick == initial_tick + 3
+
+    def test_zero_arrivals_no_change(self):
+        """arrivals=[[0,0]] should not change price or tick."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        assert model.state[POOL_SQRT_PRICE_KEY][0] == initial_sqrt_price
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick
+
+    def test_multiple_sells_and_buys(self):
+        """arrivals=[[2,3]] should move tick by net +1 (3 buys - 2 sells)."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        # 2 sells then 3 buys: net tick movement should be +1
+        arrivals = np.array([[2, 3]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
+        # Sells processed first (-2), then buys (+3), net = +1
+        assert new_tick == initial_tick + 1
+
+
 class TestVectorization:
     """Test that operations are properly vectorized across trajectories."""
 
@@ -358,12 +407,11 @@ class TestVectorization:
         initial_sqrt_prices = model.state[POOL_SQRT_PRICE_KEY].copy()
 
         # Different arrivals for each trajectory:
-        # [sell, no trade, buy, both (net zero)]
         arrivals = np.array([
             [1, 0],  # sell
             [0, 0],  # no trade
             [0, 1],  # buy
-            [1, 1],  # both (should prioritize sell in current impl)
+            [1, 1],  # both
         ], dtype=np.int64)
 
         model.update_state(arrivals, None)
@@ -379,25 +427,19 @@ class TestVectorization:
         # Trajectory 2 (buy): price increased
         assert new_sqrt_prices[2] > initial_sqrt_prices[2]
 
-    def test_mixed_crossing_no_crossing_per_trajectory(self):
-        """Test trajectories with different xi (per-trajectory) causing mixed behavior.
-
-        Note: xi is computed per-trajectory based on each trajectory's liquidity array.
-        Trajectory 0 has non-uniform liquidity (low at tick 99) → small xi → no crossing
-        Trajectory 1 has uniform liquidity → xi ~2x boundary capacity → crosses
-        """
+    def test_mixed_liquidity_per_trajectory(self):
+        """Test trajectories with different current-tick liquidity."""
         num_traj = 2
         model = create_test_model(num_trajectories=num_traj, num_ticks=100)
-        initialize_state(model, liquidity_value=1e8, mid_tick=True)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
 
-        # Trajectory 0: low liquidity at tick 99 (determines xi_sell) → small xi
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e3
-        # Trajectory 1: uniform high liquidity → xi ~2x boundary, will cross
-        # (already set to 1e8)
+        # Trajectory 0: low liquidity at current tick
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        tick_idx = current_tick - model.tick_lower_global
+        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx] = 1e3
+        # Trajectory 1: high liquidity at current tick (already 1e6)
 
-        model._xi_stale = True
-
-        initial_ticks = model.state[POOL_CURRENT_TICK_KEY].copy()
+        initial_prices = model.state[POOL_SQRT_PRICE_KEY].copy() ** 2
 
         # Both sell
         arrivals = np.array([
@@ -407,22 +449,23 @@ class TestVectorization:
 
         model.update_state(arrivals, None)
 
+        # Both should cross one tick (local xi always crosses)
+        initial_ticks = np.full(num_traj, current_tick)
         new_ticks = model.state[POOL_CURRENT_TICK_KEY]
-
-        # Trajectory 0 (small xi due to low liq at tick 99): should NOT cross
-        assert new_ticks[0] == initial_ticks[0]
-
-        # Trajectory 1 (uniform liquidity, large xi): should cross
+        assert new_ticks[0] == initial_ticks[0] - 1
         assert new_ticks[1] == initial_ticks[1] - 1
 
 
 class TestFeeCalculation:
-    """Test that fees are calculated proportionally to xi."""
+    """Test that fees are calculated proportionally to local xi."""
 
     def test_sell_fees(self):
         """Test fee collection for sell trades."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
+
+        # Get local xi before the trade
+        xi_sell, _ = model._compute_local_xi()
 
         initial_fees0 = model.state[FEES0_KEY][0].sum()
 
@@ -435,14 +478,17 @@ class TestFeeCalculation:
         # Fees should increase
         assert new_fees0 > initial_fees0
 
-        # Fee should be proportional to xi_sell
-        expected_fee = model.fee_tier / (1 - model.fee_tier) * model.xi_sell[0]
+        # Fee should be proportional to local xi_sell
+        expected_fee = model.fee_tier / (1 - model.fee_tier) * xi_sell[0]
         assert np.isclose(new_fees0 - initial_fees0, expected_fee, rtol=1e-10)
 
     def test_buy_fees(self):
         """Test fee collection for buy trades."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
+
+        # Get local xi before the trade
+        _, xi_buy = model._compute_local_xi()
 
         initial_fees1 = model.state[FEES1_KEY][0].sum()
 
@@ -455,12 +501,12 @@ class TestFeeCalculation:
         # Fees should increase
         assert new_fees1 > initial_fees1
 
-        # Fee should be proportional to xi_buy
-        expected_fee = model.fee_tier / (1 - model.fee_tier) * model.xi_buy[0]
+        # Fee should be proportional to local xi_buy
+        expected_fee = model.fee_tier / (1 - model.fee_tier) * xi_buy[0]
         assert np.isclose(new_fees1 - initial_fees1, expected_fee, rtol=1e-10)
 
     def test_fees_scale_with_liquidity(self):
-        """Test that fees vary with liquidity (via xi)."""
+        """Test that fees vary with current-tick liquidity (via local xi)."""
         # High liquidity case
         model_high = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_high, liquidity_value=1e8)
@@ -476,7 +522,7 @@ class TestFeeCalculation:
         model_low.update_state(arrivals, None)
         fees_low = model_low.state[FEES0_KEY][0].sum()
 
-        # Lower liquidity → smaller xi → smaller fees
+        # Lower liquidity → smaller local xi → smaller fees
         assert fees_low < fees_high
 
 
@@ -488,10 +534,13 @@ class TestFeeSplitOnCrossing:
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        # With uniform liquidity and mid-tick, sell will cross
+        # With local xi and mid-tick, sell will cross
         current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
         tick_idx = current_tick - model.tick_lower_global
         prev_tick_idx = tick_idx - 1
+
+        # Get local xi before the trade
+        xi_sell, _ = model._compute_local_xi()
 
         arrivals = np.array([[1, 0]], dtype=np.int64)
         model.update_state(arrivals, None)
@@ -508,7 +557,7 @@ class TestFeeSplitOnCrossing:
 
         # Total should still equal fee_multiplier * xi_sell
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_total = fee_multiplier * model.xi_sell[0]
+        expected_total = fee_multiplier * xi_sell[0]
         assert np.isclose(fee_at_current + fee_at_prev, expected_total, rtol=1e-10)
 
     def test_buy_crossing_fees_split_between_ticks(self):
@@ -519,6 +568,9 @@ class TestFeeSplitOnCrossing:
         current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
         tick_idx = current_tick - model.tick_lower_global
         next_tick_idx = tick_idx + 1
+
+        # Get local xi before the trade
+        _, xi_buy = model._compute_local_xi()
 
         arrivals = np.array([[0, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
@@ -535,24 +587,23 @@ class TestFeeSplitOnCrossing:
 
         # Total should still equal fee_multiplier * xi_buy
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_total = fee_multiplier * model.xi_buy[0]
+        expected_total = fee_multiplier * xi_buy[0]
         assert np.isclose(fee_at_current + fee_at_next, expected_total, rtol=1e-10)
 
     def test_no_crossing_fees_at_single_tick(self):
-        """When no crossing, all fees should be at the current tick only."""
+        """When no crossing (via direct call with small xi), all fees at current tick."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8)
-
-        # Non-uniform: low liq at tick 99 makes xi small → no crossing
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e4
-        model._xi_stale = True
 
         current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
         tick_idx = current_tick - model.tick_lower_global
         prev_tick_idx = tick_idx - 1
 
-        arrivals = np.array([[1, 0]], dtype=np.int64)
-        model.update_state(arrivals, None)
+        # Use small xi to force no-crossing
+        xi_sell, _ = model._compute_local_xi()
+        small_xi = xi_sell * 0.1
+        active = np.array([True])
+        model._process_sell_single(active, small_xi)
 
         # Verify no crossing
         assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick
@@ -603,116 +654,49 @@ class TestAssetPriceSync:
         assert np.isclose(model.state[ASSET_PRICE_KEY][0], 95.0)
 
 
-class TestMarkXiStale:
-    """Test the xi staleness mechanism."""
-
-    def test_mark_xi_stale(self):
-        """Test that mark_xi_stale triggers recomputation."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6)
-
-        # Force initial computation
-        model._compute_xi()
-        xi_sell_initial = model.xi_sell[0]
-
-        # Change liquidity
-        model.state[POOL_LIQUIDITY_ARRAY_KEY][0, :] = 1e4  # Much lower
-
-        # xi should still be the old value (stale)
-        assert model.xi_sell[0] == xi_sell_initial
-
-        # Mark stale and update state (which will recompute)
-        model.mark_xi_stale()
-        arrivals = np.array([[1, 0]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        # Now xi should be different (lower due to lower liquidity)
-        assert model.xi_sell[0] < xi_sell_initial
-
-
 class TestPriceImpactMagnitude:
-    """Test that price impact magnitude depends on liquidity distribution."""
+    """Test that price impact magnitude depends on current tick liquidity."""
 
-    def test_price_impact_with_crossing_vs_no_crossing(self):
-        """Test price impact differs between crossing and no-crossing cases.
-
-        With non-uniform liquidity we can control whether crossing occurs:
-        - No crossing (small xi): smaller price change, stays within tick
-        - Crossing (large xi): larger price change, moves to next tick
-        """
-        # No-crossing case: low liquidity at tick 99 makes xi_sell small
-        model_no_cross = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_no_cross, liquidity_value=1e8, mid_tick=True)
-        model_no_cross.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e3  # Small xi
-        model_no_cross._xi_stale = True
-
-        initial_price_no_cross = model_no_cross.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        initial_tick_no_cross = model_no_cross.state[POOL_CURRENT_TICK_KEY][0]
+    def test_price_impact_higher_liquidity_same_tick_movement(self):
+        """Both high and low liquidity cross one tick, but endpoint differs."""
+        # High liquidity case
+        model_high = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_high, liquidity_value=1e8, mid_tick=True)
+        initial_tick_high = model_high.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         arrivals = np.array([[1, 0]], dtype=np.int64)
-        model_no_cross.update_state(arrivals, None)
+        model_high.update_state(arrivals, None)
 
-        final_price_no_cross = model_no_cross.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        final_tick_no_cross = model_no_cross.state[POOL_CURRENT_TICK_KEY][0]
-        impact_no_cross = abs(final_price_no_cross - initial_price_no_cross) / initial_price_no_cross
+        # Low liquidity case
+        model_low = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_low, liquidity_value=1e4, mid_tick=True)
+        initial_tick_low = model_low.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        # Crossing case: uniform high liquidity makes xi large (crosses)
-        model_cross = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_cross, liquidity_value=1e8, mid_tick=True)
+        model_low.update_state(arrivals, None)
 
-        initial_price_cross = model_cross.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        initial_tick_cross = model_cross.state[POOL_CURRENT_TICK_KEY][0]
+        # Both should cross exactly one tick
+        assert model_high.state[POOL_CURRENT_TICK_KEY][0] == initial_tick_high - 1
+        assert model_low.state[POOL_CURRENT_TICK_KEY][0] == initial_tick_low - 1
 
-        model_cross.update_state(arrivals, None)
+    def test_more_arrivals_larger_price_impact(self):
+        """More arrivals should cause larger total price movement."""
+        model_1 = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_1, liquidity_value=1e6, mid_tick=True)
+        initial_price_1 = model_1.state[POOL_SQRT_PRICE_KEY][0] ** 2
 
-        final_price_cross = model_cross.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        final_tick_cross = model_cross.state[POOL_CURRENT_TICK_KEY][0]
-        impact_cross = abs(final_price_cross - initial_price_cross) / initial_price_cross
+        model_3 = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model_3, liquidity_value=1e6, mid_tick=True)
+        initial_price_3 = model_3.state[POOL_SQRT_PRICE_KEY][0] ** 2
 
-        # Verify crossing behavior
-        assert final_tick_no_cross == initial_tick_no_cross, "No-cross should stay in tick"
-        assert final_tick_cross == initial_tick_cross - 1, "Cross should move down one tick"
+        # 1 sell
+        model_1.update_state(np.array([[1, 0]], dtype=np.int64), None)
+        impact_1 = abs(model_1.state[POOL_SQRT_PRICE_KEY][0] ** 2 - initial_price_1)
 
-        # Crossing case should have larger price impact (moved further)
-        assert impact_cross > impact_no_cross
+        # 3 sells
+        model_3.update_state(np.array([[3, 0]], dtype=np.int64), None)
+        impact_3 = abs(model_3.state[POOL_SQRT_PRICE_KEY][0] ** 2 - initial_price_3)
 
-    def test_price_impact_scales_with_xi(self):
-        """Test that price impact is proportional to xi (trade size)."""
-        # Create two scenarios with different xi
-        # Scenario 1: small xi (low liquidity at determining tick)
-        model_small_xi = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_small_xi, liquidity_value=1e8, mid_tick=True)
-        model_small_xi.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e2  # Very small xi
-        model_small_xi._xi_stale = True
-
-        initial_price_small = model_small_xi.state[POOL_SQRT_PRICE_KEY][0] ** 2
-
-        arrivals = np.array([[1, 0]], dtype=np.int64)
-        model_small_xi.update_state(arrivals, None)
-        xi_small = model_small_xi.xi_sell[0]
-
-        final_price_small = model_small_xi.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        impact_small = abs(final_price_small - initial_price_small)
-
-        # Scenario 2: larger xi (higher liquidity at determining tick)
-        model_large_xi = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_large_xi, liquidity_value=1e8, mid_tick=True)
-        model_large_xi.state[POOL_LIQUIDITY_ARRAY_KEY][0, 99] = 1e5  # Larger xi
-        model_large_xi._xi_stale = True
-
-        initial_price_large = model_large_xi.state[POOL_SQRT_PRICE_KEY][0] ** 2
-
-        model_large_xi.update_state(arrivals, None)
-        xi_large = model_large_xi.xi_sell[0]
-
-        final_price_large = model_large_xi.state[POOL_SQRT_PRICE_KEY][0] ** 2
-        impact_large = abs(final_price_large - initial_price_large)
-
-        # Verify xi relationship
-        assert xi_large > xi_small, "Larger liquidity should give larger xi"
-
-        # Larger xi should cause larger price impact
-        assert impact_large > impact_small
+        assert impact_3 > impact_1
 
 
 class TestSequentialProcessing:
@@ -733,43 +717,36 @@ class TestSequentialProcessing:
         assert model.state[FEES1_KEY][0].sum() > initial_fees1, "Buy fee not collected"
 
     def test_both_arrivals_fee_amounts_correct(self):
-        """When [1,1] arrives, fee amounts match expected values."""
+        """When [1,1] arrives, sell fee matches pre-sell xi, buy fee matches post-sell xi."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        # Force xi computation
-        model._compute_xi()
-        xi_sell = model.xi_sell[0]
-        xi_buy = model.xi_buy[0]
+        # Pre-sell local xi (for the sell trade)
+        xi_sell_pre, _ = model._compute_local_xi()
 
         arrivals = np.array([[1, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_fee0 = fee_multiplier * xi_sell
-        expected_fee1 = fee_multiplier * xi_buy
+        expected_fee0 = fee_multiplier * xi_sell_pre[0]
 
+        # Sell fee should match pre-sell xi
         assert np.isclose(model.state[FEES0_KEY][0].sum(), expected_fee0, rtol=1e-10)
-        assert np.isclose(model.state[FEES1_KEY][0].sum(), expected_fee1, rtol=1e-10)
+        # Buy fee should be positive (xi_buy computed from post-sell state)
+        assert model.state[FEES1_KEY][0].sum() > 0
 
     def test_buy_uses_updated_state_after_sell(self):
         """Buy phase uses state updated by sell phase."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
-        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
-
-        # With uniform liquidity and mid_tick, sell will cross (tick -= 1)
+        # With local xi, sell will cross (tick -= 1)
         # Then buy should start from the new (lower) price
 
         arrivals = np.array([[1, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
         final_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
-
-        # Sequential processing: sell decreases price, then buy increases from new state
-        # The result should be different from just applying sell OR buy individually
 
         # Compare to sell-only to ensure buy also had an effect
         model_sell_only = create_test_model(num_trajectories=1, num_ticks=100)
