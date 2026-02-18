@@ -1,6 +1,6 @@
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, particularly Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
+SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
 
 **Current Status**: Active development. Core components implemented but integration is ongoing.
 
@@ -44,7 +44,7 @@ source venv/bin/activate  # On Windows: venv\Scripts\activate
 **Indexing Convention:**
 ```
 liquidity_array[i] = liquidity for absolute tick (tick_lower + i)
-                   = liquidity in price range [1.0001^(tick_lower+i), 1.0001^(tick_lower+i+1))
+                   = liquidity in price range [1.0001^(tick_lower+i), 1.0001^(tick_lower+i+1)]
 ```
 
 **Conversion between array index and absolute tick:**
@@ -75,7 +75,6 @@ The environment follows a standard RL cycle with AMM-specific components:
    - Manages episodes, state transitions via `step()` and `reset()`
    - Delegates AMM logic to **ModelDynamics**
    - Handles observation/action/reward normalization
-   - Currently under development: `_update_state()` integration
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
@@ -96,8 +95,6 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
-   - Implementations planned: `ImpermanentLoss`, `LVR`
-   - 🚧 Currently stubs - needs implementation
 
 ### State Representation
 
@@ -139,7 +136,6 @@ The state is a **dictionary** with the following keys:
 
 ### Action Space - Dynamic Active Ticks
 
-**IMPORTANT**: The action space is DYNAMIC - agents allocate only to "active ticks" around the current price.
 
 **Key Concept:**
 - **Tau (τ)**: Hyperparameter defining the active tick window
@@ -228,15 +224,7 @@ When creating `UniswapV3ModelDynamics`:
 - The action space is automatically set to `Box(shape=(2*tau+1,))`
 - Example: `tau=5` creates action space over 11 active ticks (5 left + 1 center + 5 right)
 
-### Agent Implementation Pattern
 
-
-## Work in Progress
-
-Areas under active development:
-- Reward function implementations (ImpermanentLoss, LVR) - 🚧 Currently stubs
-- Full integration of state updates in `AMMEnvironment.step()`
-- Comprehensive testing and validation framework
 
 
 

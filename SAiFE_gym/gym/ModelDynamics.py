@@ -1,9 +1,7 @@
 
 import abc
-import gym
-from copy import copy
-from typing import Optional
 
+import gym
 import numpy as np
 from numpy.random import default_rng
 
@@ -84,11 +82,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
-        self.tau = tau  # Hyperparameter for active tick window
-        self.num_ticks = num_ticks  # Total number of ticks to track
+        self.fee_multiplier = fee_tier / (1.0 - fee_tier)
+        self.tau = tau
+        self.num_ticks = num_ticks
         self.exponential_value = exponential_value
         self.tick_factor = np.sqrt(exponential_value) - 1.0
-        self.exp_quarter = exponential_value ** 0.25  # For midpoint snap after crossing
+        self.exp_quarter = exponential_value ** 0.25
         self.initial_wealth = initial_wealth
         self.rebalance_cost_coeff = rebalance_cost_coeff
 
@@ -147,6 +146,23 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return action
 
+    def _get_current_tick_liquidity(self):
+        """
+        Look up the liquidity at the current tick for each trajectory.
+
+        Returns:
+            (tick_array_idx, L_current):
+                tick_array_idx: Clipped array index, shape (num_trajectories,)
+                L_current: Liquidity at current tick, shape (num_trajectories,)
+        """
+        current_tick = self.state[POOL_CURRENT_TICK_KEY]
+        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
+        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
+        L_current = self.state[POOL_LIQUIDITY_ARRAY_KEY][
+            np.arange(self.num_trajectories), tick_array_idx
+        ]
+        return tick_array_idx, L_current
+
     def _compute_local_xi(self):
         """
         Compute trade size from current tick's liquidity (one tick's capacity).
@@ -164,9 +180,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             raise ValueError("State not initialized. Call reset() first.")
 
         current_tick = self.state[POOL_CURRENT_TICK_KEY]
-        tick_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-        tick_idx = np.clip(tick_idx, 0, self.num_ticks - 1)
-        L = self.state[POOL_LIQUIDITY_ARRAY_KEY][np.arange(self.num_trajectories), tick_idx]
+        _, L = self._get_current_tick_liquidity()
 
         sqrt_p_low = np.sqrt(self.exponential_value ** current_tick)
         sqrt_p_high = np.sqrt(self.exponential_value ** (current_tick + 1))
@@ -179,156 +193,115 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Process a single sell arrival per trajectory and update state in place.
 
+        Sells push price downward. Trade size xi_sell is the token0 amount that
+        traverses the full current tick. If capacity to the lower boundary is less
+        than xi_sell (or liquidity is zero), the trade crosses into the previous tick
+        and price snaps to the midpoint of that tick.
+
         Args:
-            active: Boolean array of shape (num_trajectories,) — which trajectories have a sell.
-            xi_sell: Trade size array of shape (num_trajectories,) from _compute_local_xi().
+            active: Boolean mask, shape (num_trajectories,) -- which trajectories have a sell.
+            xi_sell: Trade size, shape (num_trajectories,) from _compute_local_xi().
         """
         if not np.any(active):
             return
 
-        num_traj = self.num_trajectories
         current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
         sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
-        liquidity_array = self.state[POOL_LIQUIDITY_ARRAY_KEY]
 
-        # Compute tick boundaries
         sqrt_p_low = np.sqrt(self.exponential_value ** current_tick)
+        tick_array_idx, L_current = self._get_current_tick_liquidity()
+        L_safe = np.where(L_current > 0, L_current, 1.0)
 
-        # Get liquidity at current tick
-        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
-        L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
-
-        # Handle zero liquidity: treat as zero capacity (will always cross)
-        L_current_safe = np.where(L_current > 0, L_current, 1.0)
-
-        # Capacity to reach lower boundary (for sell)
+        # Token0 capacity from current price to lower tick boundary
         x_to_boundary = np.where(
             L_current > 0,
             L_current * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c),
-            0.0  # Zero liquidity → zero capacity → always crosses
+            0.0
         )
 
-        # Determine tick crossings (zero liquidity always crosses — no resistance)
-        sell_crosses = active & ((xi_sell > x_to_boundary) | (L_current <= 0))
+        crosses = active & ((xi_sell > x_to_boundary) | (L_current <= 0))
 
-        # Case 1: Sell, no crossing
-        inv_sqrt_p_sell_no_cross = np.where(
+        # No crossing: new price from 1/sqrt_p formula
+        inv_sqrt_p_no_cross = np.where(
             L_current > 0,
-            1.0 / sqrt_p_c + xi_sell / L_current_safe,
-            1.0 / sqrt_p_low  # Zero liquidity: jump to boundary
+            1.0 / sqrt_p_c + xi_sell / L_safe,
+            1.0 / sqrt_p_low
         )
-        sqrt_p_sell_no_cross = 1.0 / inv_sqrt_p_sell_no_cross
+        sqrt_p_no_cross = 1.0 / inv_sqrt_p_no_cross
 
-        # Case 2: Sell, crossing — snap to midpoint of new tick
-        # Each trade crosses into the previous tick. Price is set to the geometric
-        # midpoint of the new tick, preventing sqrt_price drift when adjacent ticks
-        # have different liquidity.
+        # Crossing: snap to geometric midpoint of previous tick
         # midpoint(tick T-1) = sqrt(exp_val^(T-0.5)) = sqrt_p_low / exp_val^0.25
-        sqrt_p_sell_cross = sqrt_p_low / self.exp_quarter
+        sqrt_p_cross = sqrt_p_low / self.exp_quarter
 
-        # Combine results: crossing takes priority over no crossing
-        new_sqrt_p = np.where(sell_crosses, sqrt_p_sell_cross, sqrt_p_sell_no_cross)
+        new_sqrt_p = np.where(crosses, sqrt_p_cross, sqrt_p_no_cross)
 
-        # Update state only where active is True
         self.state[POOL_SQRT_PRICE_KEY] = np.where(active, new_sqrt_p, sqrt_p_c)
         self.state[POOL_CURRENT_TICK_KEY] = np.where(
-            sell_crosses, current_tick - 1,
+            crosses, current_tick - 1,
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect sell fees at the current tick
-        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
-
-        # Fee is based on volume traversed in the current tick:
-        # - No crossing: full xi_sell
-        # - Crossing: x_to_boundary (volume from current price to tick boundary)
-        fee_at_current = np.where(
-            sell_crosses,
-            fee_multiplier * x_to_boundary,
-            fee_multiplier * xi_sell
-        )
-        self.state[FEES0_KEY][np.arange(num_traj), tick_array_idx] += np.where(
-            active, fee_at_current, 0.0
+        # Fees: full xi_sell if no crossing, x_to_boundary if crossing
+        fee_volume = np.where(crosses, x_to_boundary, xi_sell)
+        self.state[FEES0_KEY][np.arange(self.num_trajectories), tick_array_idx] += np.where(
+            active, self.fee_multiplier * fee_volume, 0.0
         )
 
     def _process_buy_single(self, active: np.ndarray, xi_buy: np.ndarray) -> None:
         """
         Process a single buy arrival per trajectory and update state in place.
 
-        Reads from CURRENT state (may have been updated by _process_sell_single).
+        Buys push price upward. Trade size xi_buy is the token1 amount that
+        traverses the full current tick. If capacity to the upper boundary is less
+        than xi_buy (or liquidity is zero), the trade crosses into the next tick
+        and price snaps to the midpoint of that tick.
 
         Args:
-            active: Boolean array of shape (num_trajectories,) — which trajectories have a buy.
-            xi_buy: Trade size array of shape (num_trajectories,) from _compute_local_xi().
+            active: Boolean mask, shape (num_trajectories,) -- which trajectories have a buy.
+            xi_buy: Trade size, shape (num_trajectories,) from _compute_local_xi().
         """
         if not np.any(active):
             return
 
-        num_traj = self.num_trajectories
         current_tick = self.state[POOL_CURRENT_TICK_KEY].copy()
         sqrt_p_c = self.state[POOL_SQRT_PRICE_KEY].copy()
-        liquidity_array = self.state[POOL_LIQUIDITY_ARRAY_KEY]
 
-        # Compute tick boundaries from CURRENT tick (may be updated by sell)
         sqrt_p_high = np.sqrt(self.exponential_value ** (current_tick + 1))
+        tick_array_idx, L_current = self._get_current_tick_liquidity()
+        L_safe = np.where(L_current > 0, L_current, 1.0)
 
-        # Get liquidity at current tick
-        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
-        L_current = liquidity_array[np.arange(num_traj), tick_array_idx]
-
-        # Handle zero liquidity
-        L_current_safe = np.where(L_current > 0, L_current, 1.0)
-
-        # Capacity to reach upper boundary (for buy)
+        # Token1 capacity from current price to upper tick boundary
         y_to_boundary = np.where(
             L_current > 0,
             L_current * (sqrt_p_high - sqrt_p_c),
-            0.0  # Zero liquidity → zero capacity → always crosses
+            0.0
         )
 
-        # Determine tick crossings
-        # Zero liquidity always crosses — no resistance
-        buy_crosses = active & ((xi_buy > y_to_boundary) | (L_current <= 0))
+        crosses = active & ((xi_buy > y_to_boundary) | (L_current <= 0))
 
-        # Case 1: Buy, no crossing
-        sqrt_p_buy_no_cross = np.where(
+        # No crossing: new price from sqrt_p formula
+        sqrt_p_no_cross = np.where(
             L_current > 0,
-            sqrt_p_c + xi_buy / L_current_safe,
-            sqrt_p_high  # Zero liquidity: jump to boundary
+            sqrt_p_c + xi_buy / L_safe,
+            sqrt_p_high
         )
 
-        # Case 2: Buy, crossing — snap to midpoint of new tick
-        # Each trade crosses into the next tick. Price is set to the geometric
-        # midpoint of the new tick, preventing sqrt_price drift when adjacent ticks
-        # have different liquidity.
+        # Crossing: snap to geometric midpoint of next tick
         # midpoint(tick T+1) = sqrt(exp_val^(T+1.5)) = sqrt_p_high * exp_val^0.25
-        sqrt_p_buy_cross = sqrt_p_high * self.exp_quarter
+        sqrt_p_cross = sqrt_p_high * self.exp_quarter
 
-        # Combine results: crossing takes priority over no crossing
-        new_sqrt_p = np.where(buy_crosses, sqrt_p_buy_cross, sqrt_p_buy_no_cross)
+        new_sqrt_p = np.where(crosses, sqrt_p_cross, sqrt_p_no_cross)
 
-        # Update state only where active is True
         self.state[POOL_SQRT_PRICE_KEY] = np.where(active, new_sqrt_p, sqrt_p_c)
         self.state[POOL_CURRENT_TICK_KEY] = np.where(
-            buy_crosses, current_tick + 1,
+            crosses, current_tick + 1,
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Collect buy fees at the current tick
-        fee_multiplier = self.fee_tier / (1.0 - self.fee_tier)
-
-        # Fee is based on volume traversed in the current tick:
-        # - No crossing: full xi_buy
-        # - Crossing: y_to_boundary (volume from current price to tick boundary)
-        fee_at_current = np.where(
-            buy_crosses,
-            fee_multiplier * y_to_boundary,
-            fee_multiplier * xi_buy
-        )
-        self.state[FEES1_KEY][np.arange(num_traj), tick_array_idx] += np.where(
-            active, fee_at_current, 0.0
+        # Fees: full xi_buy if no crossing, y_to_boundary if crossing
+        fee_volume = np.where(crosses, y_to_boundary, xi_buy)
+        self.state[FEES1_KEY][np.arange(self.num_trajectories), tick_array_idx] += np.where(
+            active, self.fee_multiplier * fee_volume, 0.0
         )
 
     def _collect_lp_fees(self):
@@ -454,22 +427,36 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
         self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
 
+    def _process_arrivals(self, counts: np.ndarray, xi_index: int, process_fn) -> None:
+        """
+        Iterate over arrival counts, processing one trade per iteration.
+
+        Each trade changes price/tick, so xi is recomputed from the new tick's
+        liquidity before each trade. Trajectories drop out as their count is
+        exhausted.
+
+        Args:
+            counts: Integer array, shape (num_trajectories,) -- per-trajectory arrival count.
+            xi_index: Index into _compute_local_xi() return tuple (0=sell, 1=buy).
+            process_fn: One of _process_sell_single or _process_buy_single.
+        """
+        max_count = int(np.max(counts)) if np.any(counts > 0) else 0
+        for i in range(max_count):
+            active = counts > i
+            if not np.any(active):
+                break
+            xi = self._compute_local_xi()[xi_index]
+            process_fn(active, xi)
+
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
+        Process one timestep: rebalance LP, execute swaps, advance time.
+
         Args:
             arrivals: Integer array of shape (num_trajectories, 2)
                       Column 0: sell_token0 arrival counts (token0 into pool, price decreases)
                       Column 1: buy_token0 arrival counts (token0 out of pool, price increases)
             action: Agent action array (for LP positioning, not used in swap)
-
-        Price Update Logic (applied per individual trade):
-            SELL (price decreases):
-                No crossing: 1/sqrt_p_new = 1/sqrt_p_c + xi_sell/L_current
-                Crossing: 1/sqrt_p_new = 1/sqrt_p_low + xi_remaining/L_prev, tick -= 1
-
-            BUY (price increases):
-                No crossing: sqrt_p_new = sqrt_p_c + xi_buy/L_current
-                Crossing: sqrt_p_new = sqrt_p_high + yi_remaining/L_next, tick += 1
 
         Each arrival count triggers that many individual trades. Each trade uses
         local xi (current tick's capacity) and may cross one tick boundary,
@@ -478,38 +465,19 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        # Sync external price from midprice model (updated by AMMEnvironment before this call)
         if self.midprice_model is not None:
             self.state[ASSET_PRICE_KEY] = self.midprice_model.current_state[:, 0].copy()
 
-        # Phase 0: Rebalance LP position (before swaps)
         if action is not None:
-            validated = self.validate_action(action)
-            self._rebalance(validated)
+            self._rebalance(self.validate_action(action))
 
-        # Apply safety cap to arrival counts
+        # Cap arrival counts to prevent runaway loops
         sell_counts = np.minimum(arrivals[:, 0].astype(np.int64), self.max_arrivals_per_step)
         buy_counts = np.minimum(arrivals[:, 1].astype(np.int64), self.max_arrivals_per_step)
 
-        # Phase 1: Process sells one at a time (each changes price/tick, so xi must be recomputed)
-        max_sells = int(np.max(sell_counts)) if np.any(sell_counts > 0) else 0
-        for i in range(max_sells):
-            active = sell_counts > i
-            if not np.any(active):
-                break
-            xi_sell, _ = self._compute_local_xi()
-            self._process_sell_single(active, xi_sell)
+        self._process_arrivals(sell_counts, xi_index=0, process_fn=self._process_sell_single)
+        self._process_arrivals(buy_counts, xi_index=1, process_fn=self._process_buy_single)
 
-        # Phase 2: Process buys one at a time
-        max_buys = int(np.max(buy_counts)) if np.any(buy_counts > 0) else 0
-        for i in range(max_buys):
-            active = buy_counts > i
-            if not np.any(active):
-                break
-            _, xi_buy = self._compute_local_xi()
-            self._process_buy_single(active, xi_buy)
-
-        # Phase 3: Update time
         step_size = self.midprice_model.step_size if self.midprice_model else 0.005
         self.state[TIME_KEY] += step_size
 
@@ -552,30 +520,17 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Pre-compute values for state-dependent arrival models.
 
         Returns:
-            dict: Context with keys:
-                - 'active_liquidity': Liquidity at current tick, shape (num_trajectories,)
-                - 'amm_price': AMM price (sqrt_price**2), shape (num_trajectories,)
-                - 'midprice': External market midprice, shape (num_trajectories,)
-            Returns None if state is not initialized.
+            dict with 'active_liquidity', 'amm_price', 'midprice' arrays,
+            each shape (num_trajectories,). Returns None if state is not initialized.
         """
         if self.state is None:
             return None
 
-        # Get active liquidity at current tick (same pattern as update_state)
-        current_tick = self.state[POOL_CURRENT_TICK_KEY]
-        tick_array_idx = (current_tick - self.tick_lower_global).astype(np.int64)
-        tick_array_idx = np.clip(tick_array_idx, 0, self.num_ticks - 1)
-        active_liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(self.num_trajectories), tick_array_idx
-        ]
-
-        # Get prices
+        _, active_liquidity = self._get_current_tick_liquidity()
         sqrt_price = self.state[POOL_SQRT_PRICE_KEY]
-        amm_price = sqrt_price ** 2
-        midprice = self.state[ASSET_PRICE_KEY]
 
         return {
             'active_liquidity': active_liquidity,
-            'amm_price': amm_price,
-            'midprice': midprice,
+            'amm_price': sqrt_price ** 2,
+            'midprice': self.state[ASSET_PRICE_KEY],
         }
