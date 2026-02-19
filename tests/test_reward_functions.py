@@ -450,7 +450,6 @@ def _initialize_model_state(model):
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
-    model._xi_stale = True
 
 
 if __name__ == "__main__":
