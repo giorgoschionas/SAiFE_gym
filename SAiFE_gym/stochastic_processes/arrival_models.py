@@ -29,10 +29,10 @@ class ArrivalModel(StochasticProcessModel):
 
     @abc.abstractmethod
     def get_arrivals(self) -> np.ndarray:
-        """Generate arrival events using internal state (no arguments).
+        """Generate arrival counts using internal state (no arguments).
 
         Returns:
-            np.ndarray: Arrival indicators of shape (num_trajectories, 2) for [SELL, BUY]
+            np.ndarray: Integer arrival counts of shape (num_trajectories, 2) for [SELL, BUY]
         """
         pass
 
@@ -64,7 +64,7 @@ class PoissonArrivalModel(ArrivalModel):
             seed=seed,
         )
 
-    def update(self, arrivals: np.ndarray, actions: np.ndarray,
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray,
                state: dict = None) -> np.ndarray:
         """Update is a no-op for constant intensity model.
 
@@ -74,13 +74,13 @@ class PoissonArrivalModel(ArrivalModel):
         return self.current_state
 
     def get_arrivals(self) -> np.ndarray:
-        """Generate arrivals using Poisson process (uses internal state).
+        """Generate arrival counts using Poisson process (uses internal state).
 
         Returns:
-            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+            np.ndarray: Integer arrival counts of shape (num_trajectories, 2) for [SELL, BUY]
         """
-        unif = self.rng.uniform(size=(self.num_trajectories, 2))
-        return unif < self.intensity * self.step_size
+        lam = self.intensity * self.step_size
+        return self.rng.poisson(lam=lam, size=(self.num_trajectories, 2))
 
     def reset(self):
         """Reset internal state to constant intensity."""
@@ -205,13 +205,13 @@ class PoissonLinearArrivalModel(ArrivalModel):
         return self.current_state
 
     def get_arrivals(self) -> np.ndarray:
-        """Generate arrivals using internal intensity state (no arguments).
+        """Generate arrival counts using internal intensity state (no arguments).
 
         Returns:
-            np.ndarray: Boolean arrivals of shape (num_trajectories, 2) for [SELL, BUY]
+            np.ndarray: Integer arrival counts of shape (num_trajectories, 2) for [SELL, BUY]
         """
-        unif = self.rng.uniform(size=(self.num_trajectories, 2))
-        return unif < self.current_state * self.step_size
+        lam = np.maximum(self.current_state * self.step_size, 0.0)
+        return self.rng.poisson(lam=lam)
 
     def reset(self):
         """Reset internal state to baseline intensity (α₁)."""
