@@ -249,10 +249,19 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Fees: full xi_sell if no crossing, x_to_boundary if crossing
+        # Fees in old tick: full xi_sell if no crossing, x_to_boundary if crossing
         fee_volume = np.where(crosses, x_to_boundary, xi_sell)
         self.state[FEES0_KEY][np.arange(self.num_trajectories), tick_array_idx] += np.where(
             active, self.fee_multiplier * fee_volume, 0.0
+        )
+
+        # Fees in new tick (Uniswap V3 split): x_from_boundary executes in tick-1 after crossing
+        # x_from_boundary = L_{i-1} * (1/sqrt_p_cross - 1/sqrt_p_low)
+        prev_tick_array_idx = np.clip(tick_array_idx - 1, 0, self.num_ticks - 1)
+        L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][np.arange(self.num_trajectories), prev_tick_array_idx]
+        x_from_boundary = L_prev * (1.0 / sqrt_p_cross - 1.0 / sqrt_p_low)
+        self.state[FEES0_KEY][np.arange(self.num_trajectories), prev_tick_array_idx] += np.where(
+            crosses, self.fee_multiplier * x_from_boundary, 0.0
         )
 
     def _process_buy_single(self, active: np.ndarray, xi_buy: np.ndarray) -> None:
@@ -306,10 +315,19 @@ class UniswapV3ModelDynamics(ModelDynamics):
             np.where(active, current_tick, self.state[POOL_CURRENT_TICK_KEY])
         )
 
-        # Fees: full xi_buy if no crossing, y_to_boundary if crossing
+        # Fees in old tick: full xi_buy if no crossing, y_to_boundary if crossing
         fee_volume = np.where(crosses, y_to_boundary, xi_buy)
         self.state[FEES1_KEY][np.arange(self.num_trajectories), tick_array_idx] += np.where(
             active, self.fee_multiplier * fee_volume, 0.0
+        )
+
+        # Fees in new tick (Uniswap V3 split): y_from_boundary executes in tick+1 after crossing
+        # y_from_boundary = L_{i+1} * (sqrt_p_cross - sqrt_p_high)
+        next_tick_array_idx = np.clip(tick_array_idx + 1, 0, self.num_ticks - 1)
+        L_next = self.state[POOL_LIQUIDITY_ARRAY_KEY][np.arange(self.num_trajectories), next_tick_array_idx]
+        y_from_boundary = L_next * (sqrt_p_cross - sqrt_p_high)
+        self.state[FEES1_KEY][np.arange(self.num_trajectories), next_tick_array_idx] += np.where(
+            crosses, self.fee_multiplier * y_from_boundary, 0.0
         )
 
     def _collect_lp_fees(self):

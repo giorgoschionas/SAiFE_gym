@@ -462,63 +462,71 @@ class TestFeeCalculation:
     def test_sell_fees(self):
         """Test fee collection for sell trades.
 
-        With mid-tick start and crossing, the fee is based on x_to_boundary
-        (the volume to reach the tick boundary), not the full xi_sell.
+        On a crossing, fees are split across two ticks (Uniswap V3 mechanics):
+          - x_to_boundary: portion that trades in the old tick (up to boundary)
+          - x_from_boundary: portion that trades in the new tick (boundary to new midpoint)
+        Total fee = fee_multiplier * (x_to_boundary + x_from_boundary).
         """
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        # Compute x_to_boundary before the trade
         current_tick = model.state[POOL_CURRENT_TICK_KEY].copy()
+        tick_idx = int(current_tick[0] - model.tick_lower_global)
         sqrt_p_c = model.state[POOL_SQRT_PRICE_KEY][0]
         sqrt_p_low = np.sqrt(model.exponential_value ** current_tick[0])
-        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, int(current_tick[0] - model.tick_lower_global)]
-        x_to_boundary = L * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c)
+        sqrt_p_cross = sqrt_p_low / model.exp_quarter
+
+        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
+        L_prev = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx - 1]
+
+        x_to_boundary   = L      * (1.0 / sqrt_p_low   - 1.0 / sqrt_p_c)
+        x_from_boundary = L_prev * (1.0 / sqrt_p_cross  - 1.0 / sqrt_p_low)
 
         initial_fees0 = model.state[FEES0_KEY][0].sum()
 
-        # Sell arrival
         arrivals = np.array([[1, 0]], dtype=np.int64)
         model.update_state(arrivals, None)
 
         new_fees0 = model.state[FEES0_KEY][0].sum()
 
-        # Fees should increase
         assert new_fees0 > initial_fees0
 
-        # Fee is proportional to x_to_boundary (crossing snaps to midpoint of new tick)
-        expected_fee = model.fee_tier / (1 - model.fee_tier) * x_to_boundary
+        expected_fee = model.fee_tier / (1 - model.fee_tier) * (x_to_boundary + x_from_boundary)
         assert np.isclose(new_fees0 - initial_fees0, expected_fee, rtol=1e-10)
 
     def test_buy_fees(self):
         """Test fee collection for buy trades.
 
-        With mid-tick start and crossing, the fee is based on y_to_boundary
-        (the volume to reach the tick boundary), not the full xi_buy.
+        On a crossing, fees are split across two ticks (Uniswap V3 mechanics):
+          - y_to_boundary: portion that trades in the old tick (up to boundary)
+          - y_from_boundary: portion that trades in the new tick (boundary to new midpoint)
+        Total fee = fee_multiplier * (y_to_boundary + y_from_boundary).
         """
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6)
 
-        # Compute y_to_boundary before the trade
         current_tick = model.state[POOL_CURRENT_TICK_KEY].copy()
+        tick_idx = int(current_tick[0] - model.tick_lower_global)
         sqrt_p_c = model.state[POOL_SQRT_PRICE_KEY][0]
         sqrt_p_high = np.sqrt(model.exponential_value ** (current_tick[0] + 1))
-        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, int(current_tick[0] - model.tick_lower_global)]
-        y_to_boundary = L * (sqrt_p_high - sqrt_p_c)
+        sqrt_p_cross = sqrt_p_high * model.exp_quarter
+
+        L      = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
+        L_next = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx + 1]
+
+        y_to_boundary   = L      * (sqrt_p_high  - sqrt_p_c)
+        y_from_boundary = L_next * (sqrt_p_cross - sqrt_p_high)
 
         initial_fees1 = model.state[FEES1_KEY][0].sum()
 
-        # Buy arrival
         arrivals = np.array([[0, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
         new_fees1 = model.state[FEES1_KEY][0].sum()
 
-        # Fees should increase
         assert new_fees1 > initial_fees1
 
-        # Fee is proportional to y_to_boundary (crossing snaps to midpoint of new tick)
-        expected_fee = model.fee_tier / (1 - model.fee_tier) * y_to_boundary
+        expected_fee = model.fee_tier / (1 - model.fee_tier) * (y_to_boundary + y_from_boundary)
         assert np.isclose(new_fees1 - initial_fees1, expected_fee, rtol=1e-10)
 
     def test_fees_scale_with_liquidity(self):
@@ -545,42 +553,39 @@ class TestFeeCalculation:
 class TestFeeSplitOnCrossing:
     """Test that fees are split between ticks when a trade crosses a tick boundary."""
 
-    def test_sell_crossing_fees_at_current_tick_only(self):
-        """On a sell crossing, fees are deposited only at the current tick (x_to_boundary)."""
+    def test_sell_crossing_fees_split_across_ticks(self):
+        """On a sell crossing, fees are split between old and new tick (Uniswap V3 split)."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        # With local xi and mid-tick, sell will cross
         current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
         tick_idx = current_tick - model.tick_lower_global
         prev_tick_idx = tick_idx - 1
 
-        # Compute x_to_boundary before the trade
         sqrt_p_c = model.state[POOL_SQRT_PRICE_KEY][0]
-        sqrt_p_low = np.sqrt(model.exponential_value ** current_tick)
-        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
-        x_to_boundary = L * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c)
+        sqrt_p_low   = np.sqrt(model.exponential_value ** current_tick)
+        sqrt_p_cross = sqrt_p_low / model.exp_quarter
+
+        L      = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
+        L_prev = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, prev_tick_idx]
+
+        x_to_boundary   = L      * (1.0 / sqrt_p_low   - 1.0 / sqrt_p_c)
+        x_from_boundary = L_prev * (1.0 / sqrt_p_cross  - 1.0 / sqrt_p_low)
 
         arrivals = np.array([[1, 0]], dtype=np.int64)
         model.update_state(arrivals, None)
 
-        # Verify crossing happened
         assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick - 1
 
-        # Fee at current tick only (midpoint snap — no remaining xi in prev tick)
         fee_at_current = model.state[FEES0_KEY][0, tick_idx]
-        fee_at_prev = model.state[FEES0_KEY][0, prev_tick_idx]
+        fee_at_prev    = model.state[FEES0_KEY][0, prev_tick_idx]
 
-        assert fee_at_current > 0, "No fee at current tick"
-        assert fee_at_prev == 0, "Fee should be zero at prev tick (midpoint snap)"
-
-        # Fee equals fee_multiplier * x_to_boundary
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_fee = fee_multiplier * x_to_boundary
-        assert np.isclose(fee_at_current, expected_fee, rtol=1e-10)
+        assert np.isclose(fee_at_current, fee_multiplier * x_to_boundary,   rtol=1e-10), "Old tick fee wrong"
+        assert np.isclose(fee_at_prev,    fee_multiplier * x_from_boundary, rtol=1e-10), "New tick fee wrong"
 
-    def test_buy_crossing_fees_at_current_tick_only(self):
-        """On a buy crossing, fees are deposited only at the current tick (y_to_boundary)."""
+    def test_buy_crossing_fees_split_across_ticks(self):
+        """On a buy crossing, fees are split between old and new tick (Uniswap V3 split)."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
@@ -588,29 +593,27 @@ class TestFeeSplitOnCrossing:
         tick_idx = current_tick - model.tick_lower_global
         next_tick_idx = tick_idx + 1
 
-        # Compute y_to_boundary before the trade
-        sqrt_p_c = model.state[POOL_SQRT_PRICE_KEY][0]
+        sqrt_p_c    = model.state[POOL_SQRT_PRICE_KEY][0]
         sqrt_p_high = np.sqrt(model.exponential_value ** (current_tick + 1))
-        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
-        y_to_boundary = L * (sqrt_p_high - sqrt_p_c)
+        sqrt_p_cross = sqrt_p_high * model.exp_quarter
+
+        L      = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
+        L_next = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, next_tick_idx]
+
+        y_to_boundary   = L      * (sqrt_p_high  - sqrt_p_c)
+        y_from_boundary = L_next * (sqrt_p_cross - sqrt_p_high)
 
         arrivals = np.array([[0, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
-        # Verify crossing happened
         assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick + 1
 
-        # Fee at current tick only (midpoint snap — no remaining xi in next tick)
         fee_at_current = model.state[FEES1_KEY][0, tick_idx]
-        fee_at_next = model.state[FEES1_KEY][0, next_tick_idx]
+        fee_at_next    = model.state[FEES1_KEY][0, next_tick_idx]
 
-        assert fee_at_current > 0, "No fee at current tick"
-        assert fee_at_next == 0, "Fee should be zero at next tick (midpoint snap)"
-
-        # Fee equals fee_multiplier * y_to_boundary
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_fee = fee_multiplier * y_to_boundary
-        assert np.isclose(fee_at_current, expected_fee, rtol=1e-10)
+        assert np.isclose(fee_at_current, fee_multiplier * y_to_boundary,   rtol=1e-10), "Old tick fee wrong"
+        assert np.isclose(fee_at_next,    fee_multiplier * y_from_boundary, rtol=1e-10), "New tick fee wrong"
 
     def test_no_crossing_fees_at_single_tick(self):
         """When no crossing (via direct call with small xi), all fees at current tick."""
@@ -739,26 +742,29 @@ class TestSequentialProcessing:
         assert model.state[FEES1_KEY][0].sum() > initial_fees1, "Buy fee not collected"
 
     def test_both_arrivals_fee_amounts_correct(self):
-        """When [1,1] arrives, sell fee matches x_to_boundary, buy fee is positive."""
+        """When [1,1] arrives, sell fee = x_to_boundary + x_from_boundary, buy fee > 0."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e8, mid_tick=True)
 
-        # Compute x_to_boundary before the trade (sell fee is based on this)
         current_tick = model.state[POOL_CURRENT_TICK_KEY].copy()
-        sqrt_p_c = model.state[POOL_SQRT_PRICE_KEY][0]
+        tick_idx = int(current_tick[0] - model.tick_lower_global)
+        sqrt_p_c   = model.state[POOL_SQRT_PRICE_KEY][0]
         sqrt_p_low = np.sqrt(model.exponential_value ** current_tick[0])
-        L = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, int(current_tick[0] - model.tick_lower_global)]
-        x_to_boundary = L * (1.0 / sqrt_p_low - 1.0 / sqrt_p_c)
+        sqrt_p_cross = sqrt_p_low / model.exp_quarter
+
+        L      = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx]
+        L_prev = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, tick_idx - 1]
+
+        x_to_boundary   = L      * (1.0 / sqrt_p_low   - 1.0 / sqrt_p_c)
+        x_from_boundary = L_prev * (1.0 / sqrt_p_cross  - 1.0 / sqrt_p_low)
 
         arrivals = np.array([[1, 1]], dtype=np.int64)
         model.update_state(arrivals, None)
 
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
-        expected_fee0 = fee_multiplier * x_to_boundary
+        expected_fee0 = fee_multiplier * (x_to_boundary + x_from_boundary)
 
-        # Sell fee should match x_to_boundary (crossing snaps to midpoint)
         assert np.isclose(model.state[FEES0_KEY][0].sum(), expected_fee0, rtol=1e-10)
-        # Buy fee should be positive (buy from midpoint of new tick has non-zero y_to_boundary)
         assert model.state[FEES1_KEY][0].sum() > 0
 
     def test_buy_uses_updated_state_after_sell(self):
