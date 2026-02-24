@@ -392,6 +392,57 @@ class TestPoolLiquidityModification:
                     base_liq, rtol=1e-6
                 ), f"Tick {tick} out of range: expected {base_liq}, got {model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx]}"
 
+    def test_full_array_after_subsequent_rebalance(self):
+        """
+        After a second rebalance, verify every tick in the liquidity array:
+
+          Old range [-3, 2), New range [0, 4)  →  overlap at [0, 2)
+
+          Tick zone               Expected liquidity
+          ─────────────────────────────────────────
+          only old  [-3, 0)     base_liq               (removed, not re-added)
+          overlap   [0,  2)     base_liq + new_lp_liq  (removed then re-added)
+          only new  [2,  4)     base_liq + new_lp_liq  (freshly added)
+          neither              base_liq               (untouched)
+        """
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+        base_liq = 1e6
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance: deploy into [-3, 2)
+        model.update_state(arrivals, np.array([[-3, 2]], dtype=np.float64))
+
+        # Second rebalance: move to [0, 4)
+        model.update_state(arrivals, np.array([[0, 4]], dtype=np.float64))
+
+        old_lower = current_tick - 3
+        old_upper = current_tick + 2
+        new_lower = current_tick + 0
+        new_upper = current_tick + 4
+        new_lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+
+        for tick in range(model.tick_lower_global, model.tick_lower_global + model.num_ticks):
+            idx = tick - model.tick_lower_global
+            actual = model.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx]
+
+            in_old = old_lower <= tick < old_upper
+            in_new = new_lower <= tick < new_upper
+
+            if in_new:
+                # New range: base + new LP liquidity (whether or not it was in old range)
+                expected = base_liq + new_lp_liq
+            else:
+                # Outside new range: old LP liquidity must have been removed
+                expected = base_liq
+
+            assert np.isclose(actual, expected, rtol=1e-6), (
+                f"Tick {tick} (in_old={in_old}, in_new={in_new}): "
+                f"expected {expected:.4f}, got {actual:.4f}"
+            )
+
     def test_no_negative_liquidity(self):
         """Pool liquidity should never go negative after rebalance."""
         model = create_test_model(initial_wealth=1e6)
