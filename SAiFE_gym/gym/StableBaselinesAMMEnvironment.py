@@ -1,0 +1,156 @@
+from typing import Any, List, Optional, Sequence, Type, Union
+
+import gymnasium
+import numpy as np
+from stable_baselines3.common.vec_env import VecEnv
+from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn
+
+from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
+from SAiFE_gym.gym.index_names import (
+    ASSET_PRICE_KEY,
+    FEES0_KEY,
+    FEES1_KEY,
+    LP_COLLECTED_FEES0_KEY,
+    LP_COLLECTED_FEES1_KEY,
+    LP_LIQUIDITY_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    POOL_CURRENT_TICK_KEY,
+    POOL_LIQUIDITY_ARRAY_KEY,
+    POOL_SQRT_PRICE_KEY,
+    TIME_KEY,
+)
+
+DEFAULT_OBS_KEYS = [
+    POOL_SQRT_PRICE_KEY,
+    POOL_CURRENT_TICK_KEY,
+    LP_LIQUIDITY_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY,
+    LP_COLLECTED_FEES1_KEY,
+    ASSET_PRICE_KEY,
+    TIME_KEY,
+]  # 9 scalar keys → obs_dim = 9
+
+_ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
+
+
+class StableBaselinesAMMEnvironment(VecEnv):
+    """
+    Wraps AMMEnvironment to expose a stable-baselines3 VecEnv interface.
+
+    Responsibilities:
+    - Flattens the Dict observation into a float32 array of shape (num_trajectories, obs_dim)
+    - Converts legacy gym spaces to gymnasium spaces expected by SB3 2.7+
+    - Implements auto-reset: when all trajectories are done, resets internally and
+      stores the terminal observation in infos[i]["terminal_observation"]
+    """
+
+    def __init__(
+        self,
+        amm_env: AMMEnvironment,
+        obs_keys: Optional[List[str]] = None,
+        store_terminal_observation_info: bool = True,
+    ):
+        self.env = amm_env  # must be set before super().__init__() calls get_attr()
+        self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
+        self.obs_dim = len(self.obs_keys)
+        self.store_terminal_observation_info = store_terminal_observation_info
+        self.actions = np.zeros((amm_env.num_trajectories, 2), dtype=np.float32)
+
+        for k in self.obs_keys:
+            if k in _ARRAY_KEYS:
+                raise ValueError(
+                    f"obs_keys may only contain scalar keys; '{k}' is an array key"
+                )
+
+        flat_obs_space = gymnasium.spaces.Box(
+            low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
+        )
+        old_act = amm_env.action_space
+        gymnasium_act_space = gymnasium.spaces.Box(
+            low=old_act.low.astype(np.float32),
+            high=old_act.high.astype(np.float32),
+            shape=old_act.shape,
+            dtype=np.float32,
+        )
+        super().__init__(amm_env.num_trajectories, flat_obs_space, gymnasium_act_space)
+
+    # ------------------------------------------------------------------
+    # Core VecEnv methods
+    # ------------------------------------------------------------------
+
+    def _flatten_obs(self, state_dict: dict) -> np.ndarray:
+        """Return shape (num_trajectories, obs_dim) float32 array."""
+        n = self.env.num_trajectories
+        cols = [state_dict[k].reshape(n, 1) for k in self.obs_keys]
+        return np.concatenate(cols, axis=1).astype(np.float32)
+
+    def reset(self) -> VecEnvObs:
+        return self._flatten_obs(self.env.reset())
+
+    def step_async(self, actions: np.ndarray) -> None:
+        self.actions = actions
+
+    def step_wait(self) -> VecEnvStepReturn:
+        state_dict, rewards, dones, _ = self.env.step(self.actions)
+        flat_obs = self._flatten_obs(state_dict)
+        infos = [{} for _ in range(self.env.num_trajectories)]
+        if dones.all():
+            if self.store_terminal_observation_info:
+                for i, info in enumerate(infos):
+                    info["terminal_observation"] = flat_obs[i]  # shape (obs_dim,)
+            flat_obs = self._flatten_obs(self.env.reset())
+        return flat_obs, rewards, dones, infos
+
+    def close(self) -> None:
+        pass
+
+    # ------------------------------------------------------------------
+    # VecEnv stubs
+    # ------------------------------------------------------------------
+
+    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+        if attr_name == "render_mode":
+            return [None] * self.env.num_trajectories
+        return [getattr(self.env, attr_name)] * self.env.num_trajectories
+
+    def set_attr(
+        self, attr_name: str, value: Any, indices: VecEnvIndices = None
+    ) -> None:
+        setattr(self.env, attr_name, value)
+
+    def env_method(
+        self,
+        method_name: str,
+        *method_args,
+        indices: VecEnvIndices = None,
+        **method_kwargs,
+    ) -> List[Any]:
+        result = getattr(self.env, method_name)(*method_args, **method_kwargs)
+        return [result] * self.env.num_trajectories
+
+    def env_is_wrapped(
+        self, wrapper_class: Type, indices: VecEnvIndices = None
+    ) -> List[bool]:
+        return [False] * self.env.num_trajectories
+
+    def seed(self, seed: Optional[int] = None) -> List[Optional[int]]:
+        self.env.seed(seed)
+        return [seed] * self.env.num_trajectories
+
+    def get_images(self) -> Sequence[np.ndarray]:
+        return []
+
+    # ------------------------------------------------------------------
+    # Properties
+    # ------------------------------------------------------------------
+
+    @property
+    def num_trajectories(self) -> int:
+        return self.env.num_trajectories
+
+    @property
+    def n_steps(self) -> int:
+        return self.env.n_steps

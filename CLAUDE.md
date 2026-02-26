@@ -91,7 +91,7 @@ The environment follows a standard RL cycle with AMM-specific components:
    - All inherit from `Agent` base class with `get_action(state) -> action` interface
    - **Baseline agents**:
      - `RandomAgent`: Samples from action space
-     - `UniformAllocationAgent`: Equal allocation across 2τ+1 active tick
+     - `UniformAllocationAgent`: Full range allocation `[-tau, +tau]`
 
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
@@ -134,8 +134,11 @@ The state is a **dictionary** with the following keys:
 
 **Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
-### Action Space - Dynamic Active Ticks
+### Action Space - 2D Offset Format
 
+**Action format**: `[lower_offset, upper_offset]` - tick offsets relative to current tick.
+
+**Action space shape**: `Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))`
 
 **Key Concept:**
 - **Tau (τ)**: Hyperparameter defining the active tick window
@@ -221,9 +224,8 @@ price = np.where(active, update_price(price, amount), price)
 When creating `UniswapV3ModelDynamics`:
 - **Must provide `tau`** parameter (number of ticks on each side of current price)
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
-- The action space is automatically set to `Box(shape=(2*tau+1,))`
-- Example: `tau=5` creates action space over 11 active ticks (5 left + 1 center + 5 right)
-
+- The action space is automatically set to `Box(shape=(2,))` with bounds `[-tau, tau]`
+- Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
 
 
 

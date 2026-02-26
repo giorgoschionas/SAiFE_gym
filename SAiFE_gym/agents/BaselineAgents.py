@@ -1,52 +1,66 @@
 import gym
-from copy import deepcopy
 import numpy as np
 from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
+from SAiFE_gym.gym.index_names import (
+    POOL_CURRENT_TICK_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    TIME_KEY
+)
 
 
 class RandomAgent(Agent):
-    def __init__(self, env: gym.Env, seed: int = None):
-        self.action_space = deepcopy(env.action_space)
-        self.action_space.seed(seed)
-        self.num_trajectories = env.num_trajectories
+    """
+    Randomly samples LP position bounds uniformly from [-tau, tau].
 
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        return np.repeat(self.action_space.sample().reshape(1, -1), self.num_trajectories, axis=0)
+    Uses order statistics: samples two points, sorts them to ensure lower < upper.
+    This guarantees valid actions where lower_offset < upper_offset.
+    """
+    def __init__(self, env: gym.Env, seed: int = None):
+        self.tau = env.model_dynamics.tau
+        self.num_trajectories = env.num_trajectories
+        self.rng = np.random.default_rng(seed)
+
+    def get_action(self, state: dict) -> np.ndarray:
+        # Sample two points uniformly from [-tau, tau] for each trajectory
+        # Shape: (num_trajectories, 2)
+        samples = self.rng.uniform(-self.tau, self.tau, size=(self.num_trajectories, 2))
+
+        # Sort along axis=1 so that [:, 0] < [:, 1]
+        actions = np.sort(samples, axis=1)
+
+        # Clip to valid action space bounds: lower ∈ [-tau, tau-1], upper ∈ [-tau+1, tau]
+        actions[:, 0] = np.clip(actions[:, 0], -self.tau, self.tau - 1)
+        actions[:, 1] = np.clip(actions[:, 1], -self.tau + 1, self.tau)
+
+        # Ensure minimum width of 1 tick (lower < upper)
+        too_close = actions[:, 1] <= actions[:, 0]
+        actions[too_close, 1] = actions[too_close, 0] + 1
+
+        return actions.astype(np.float32)
     
 
 class UniformAllocationAgent(Agent):
     """
-    Allocates capital uniformly across all active buckets (2*tau+1 buckets around current price).
-    Returns a uniform probability distribution where each active bucket receives equal weight.
+    Allocates capital across the full active tick range around the current price.
 
-    Only rebalances when price moves outside the current active bucket range.
-    When price stays in range, returns the cached previous action.
+    Action format: [lower_offset, upper_offset] = [-tau, +tau]
+    This covers 2*tau+1 ticks centered on the current price.
     """
     def __init__(self, env: AMMEnvironment):
-        pass 
-
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        pass
+        self.env = env
+        self.tau = env.model_dynamics.tau
 
 
-class ActiveLPAgent(Agent):
-    """
-    Active LP agent that implements a more sophisticated rebalancing strategy.
-    Only rebalances when price moves outside the current active bucket range.
-    When price stays in range, returns the cached previous action.
-    """
-    def __init__(self, env: AMMEnvironment, seed: int = None):
-        pass
+    def get_action(self, state: dict) -> np.ndarray:
 
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        pass
+        action = np.array([[-self.tau, self.tau]])
+        return np.repeat(action, self.env.num_trajectories, axis=0)
+
+class CarteaPLAgent(Agent):
+    pass
 
 
-class MovingAverageLPAgent(Agent):
-    def __init__(self, env: AMMEnvironment, window_size: int = 5, seed: int = None):
-        pass
-    def get_action(self, state: np.ndarray) -> np.ndarray:
-        pass
