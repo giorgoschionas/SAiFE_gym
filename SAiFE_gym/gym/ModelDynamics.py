@@ -107,11 +107,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
 
         Constraint: lower_offset < upper_offset (enforced by validate_action)
-<<<<<<< HEAD
-        Capital is always fully deployed (no liquidity_fraction parameter).
-=======
         The LP always deploys all available wealth into the specified range.
->>>>>>> main
         """
 
         return gym.spaces.Box(
@@ -126,11 +122,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Validate and clip action to ensure constraints.
 
         Args:
-<<<<<<< HEAD
-            action: (num_trajectories, 2) array of actions
-=======
             action: (num_trajectories, 2) array of [lower_offset, upper_offset]
->>>>>>> main
 
         Returns:
             Validated action with same shape

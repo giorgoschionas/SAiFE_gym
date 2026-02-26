@@ -50,6 +50,34 @@ fees = transaction_fee_for_sequence(bucket_low, bucket_high, price_seq, fee_rate
 
 ---
 
+## Price Observation & Mispricing Signal
+
+| | **saife** | **neural** |
+|--|-----------|------------|
+| **AMM / pool price** | ✅ Observed (`POOL_SQRT_PRICE_KEY`) | ✅ Observed directly (`pool_price`) |
+| **External oracle price** | ✅ Observed (`ASSET_PRICE_KEY`) | ❌ Not in observation |
+| **Mispricing S−Z** | Explicit (agent computes directly from both prices) | Implicit via EWMA volume proxy |
+| **Volume signal** | ❌ Not in observation | ✅ EWMA trading volume |
+
+### Why the difference matters
+
+**neural** hides the oracle price deliberately. The agent never sees `S` directly — instead, when `S ≠ Z`, arbitrageurs trade aggressively, spiking volume. The EWMA volume feature acts as a learned proxy for mispricing without requiring the oracle feed.
+
+**saife** exposes both prices explicitly. Because `PoissonLinearArrivalModel` models informed trading as a direct function of `S − Z`, giving the RL agent access to the mispricing signal lets it learn to react to it directly:
+
+```python
+DEFAULT_OBS_KEYS = [
+    POOL_SQRT_PRICE_KEY,  # √(AMM price) — Z
+    ...
+    ASSET_PRICE_KEY,      # external mid-price — S
+]
+# Agent can compute mispricing: S - Z = ASSET_PRICE_KEY - POOL_SQRT_PRICE_KEY²
+```
+
+This is the main theoretical source of RL outperformance over `UniformAllocationAgent`: the Uniform agent ignores mispricing entirely; the RL agent can learn to shift or narrow its range when `|S − Z|` is large, reducing adverse selection exposure — the LP equivalent of market-maker quote skew.
+
+---
+
 ## State Representation
 
 | | **saife** | **neural** |
@@ -59,29 +87,50 @@ fees = transaction_fee_for_sequence(bucket_low, bucket_high, price_seq, fee_rate
 | **Liquidity** | `liquidity_array[traj, tick_idx]` | Implicit (1 unit per bucket) |
 | **Tracking** | Per-trajectory arrays `(N, ...)` | Single values |
 
-### saife State Dictionary
+### saife State Dictionary (full pool state)
 ```python
 state = {
-    'sqrt_price': np.ndarray,      # (num_trajectories,)
-    'current_tick': np.ndarray,    # (num_trajectories,)
-    'liquidity_array': np.ndarray, # (num_trajectories, num_ticks)
-    'fees_0': np.ndarray,          # (num_trajectories,)
-    'fees_1': np.ndarray,          # (num_trajectories,)
-    'lp_liquidity': np.ndarray,    # (num_trajectories,)
-    'lp_tick_lower': np.ndarray,   # (num_trajectories,)
-    'lp_tick_upper': np.ndarray,   # (num_trajectories,)
-    'midprice': np.ndarray,        # (num_trajectories,)
-    'time': np.ndarray,            # (num_trajectories,)
+    'sqrt_price': np.ndarray,           # (num_trajectories,)  — AMM pool price
+    'current_tick': np.ndarray,         # (num_trajectories,)
+    'liquidity_array': np.ndarray,      # (num_trajectories, num_ticks)
+    'fees_0': np.ndarray,               # (num_trajectories, num_ticks)
+    'fees_1': np.ndarray,               # (num_trajectories, num_ticks)
+    'lp_liquidity': np.ndarray,         # (num_trajectories,)
+    'lp_tick_lower': np.ndarray,        # (num_trajectories,)
+    'lp_tick_upper': np.ndarray,        # (num_trajectories,)
+    'lp_collected_fees_0': np.ndarray,  # (num_trajectories,)
+    'lp_collected_fees_1': np.ndarray,  # (num_trajectories,)
+    'midprice': np.ndarray,             # (num_trajectories,)  — external oracle price
+    'time': np.ndarray,                 # (num_trajectories,)
 }
 ```
 
-### neural State (Implicit)
+`StableBaselinesAMMEnvironment` projects this dict down to the 9 scalar keys in `DEFAULT_OBS_KEYS`, including both `sqrt_price` (AMM) and `midprice` (oracle):
+
 ```python
-# No explicit state dict - variables tracked separately
-pool_price_seq = [p0, p1, p2, ...]  # List of prices
-external_price_seq = [e0, e1, ...]  # External market prices
-center_bucket = int                  # Current bucket ID
-wealth = float                       # Current portfolio value
+DEFAULT_OBS_KEYS = [
+    POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY,
+    LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    ASSET_PRICE_KEY,   # ← external oracle price
+    TIME_KEY,
+]
+```
+
+### neural Agent Observation (5 features)
+```python
+nn_input = [
+    t / t_horizon,                   # time progress
+    ewma_volume / ewma_norm,         # EWMA trading volume (mispricing proxy)
+    pool_price / price_norm,         # pool price only — oracle NOT included
+    center_bucket / bucket_norm,     # current bucket ID
+    wealth / wealth_norm,            # current portfolio value
+]
+
+# Neural state (implicit, not a dict)
+pool_price_seq = [p0, p1, p2, ...]  # pool prices only
+center_bucket = int                  # current bucket
+wealth = float                       # current portfolio value
 ```
 
 ---
@@ -236,6 +285,7 @@ for sample_idx in range(num_samples):  # 1000 iterations
 - State-dependent order flow (arbitrageurs react to mispricing)
 - OpenAI Gym interface for standard RL algorithms
 - Modular reward functions
+- Agent observes **both** AMM price and external oracle price — mispricing signal explicit
 
 ### neural Strengths
 - Clean, simple codebase for strategy research
@@ -243,6 +293,7 @@ for sample_idx in range(num_samples):  # 1000 iterations
 - Risk-adjusted optimization (CARA utility)
 - Explicit arbitrage modeling
 - PyTorch integration for neural network policies
+- EWMA volume as implicit mispricing proxy — no oracle feed required at inference time
 
 ### When to Use Which
 
