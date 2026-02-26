@@ -8,7 +8,8 @@ All simulations use:
 - N=200 steps, T=1.0, 200 trajectories per configuration
 
 Scripts: `notebooks/baseline_agent_simulations.py`,
-`notebooks/uniform_tau_comparison.py`
+`notebooks/uniform_tau_comparison.py`,
+`notebooks/mispricing_vs_alpha3.py`
 
 ---
 
@@ -169,6 +170,75 @@ slightly upward, but the effect is small relative to the ~1/τ fee scaling.
 
 ---
 
+## Experiment 4 — Mispricing ε = S − Z as a function of α₃
+
+**Setup:** `notebooks/mispricing_vs_alpha3.py`.
+UniformAllocationAgent (τ=50, always in range), α₃ ∈ {0, 50, 100, 200, 500, 1000, 2000,
+5000, 10000}, N=500 steps, 100 trajectories. α₂=0 so LP liquidity does not enter the
+intensity formula; LP presence has no effect on mispricing dynamics.
+
+**Theoretical baseline — Ornstein–Uhlenbeck (OU) approximation.**
+In continuous time the mispricing ε = S − Z satisfies:
+
+```
+dε = σ dW − κ ε dt + Poisson noise
+κ  = 2 · α₃ · tick_size_abs  ≈  0.02 · α₃   (at price ≈ 100, tick_size ≈ 0.01)
+```
+
+OU equilibrium:  Std(ε) ≈ 10/√α₃,  E[|ε|] ≈ 7.98/√α₃.
+
+### Observations
+
+**O4.1 — α₃=0: mispricing diverges as a random walk ✓ (anticipated).**
+With no coupling between S and Z, both evolve independently. `E[|ε|]` grows continuously
+and reaches ~1.30 at T=1.0, consistent with the expected √T scaling. No convergence occurs.
+
+**O4.2 — α₃>0: mispricing converges to a stationary level ✓ (anticipated).**
+For every α₃ ≥ 50, `E[|ε|]` stops growing and plateaus. Convergence is rapid: the OU
+relaxation time 1/κ = 1/(0.02·α₃) gives <2 steps for α₃=5000 and ~100 steps for α₃=50,
+consistent with the observed trajectories.
+
+**O4.3 — Steady-state E[|ε|] decreases monotonically with α₃ ✓ (anticipated).**
+
+| α₃ | sim E[\|ε\|] | OU theory | ratio |
+|----|-------------|-----------|-------|
+| 50 | 0.963 | 1.128 | 0.85 |
+| 100 | 0.808 | 0.798 | 1.01 |
+| 500 | 0.453 | 0.357 | 1.27 |
+| 1000 | 0.333 | 0.252 | 1.32 |
+| 5000 | 0.159 | 0.113 | 1.41 |
+| 10000 | 0.118 | 0.080 | 1.48 |
+
+Scaling is approximately 1/√α₃ (confirmed by log-log plots in Figure 2).
+
+**O4.4 — Simulation exceeds OU prediction by 0–50%, with the gap growing with α₃.**
+At α₃=100 the match is near-perfect (ratio 1.01). At α₃=10000 the simulation shows 48%
+more mispricing than OU predicts. This is **expected and explainable** by the intensity
+floor α₀.
+
+The OU formula assumes a symmetric linear restoring force of 2·α₃·ε. But when
+α₃·|ε| > α₁−α₀ = 90, the low-intensity direction is capped at α₀, so the net force
+becomes (α₁−α₀ + α₃·|ε|) < 2·α₃·|ε|. The restoring force is *weaker* than linear OU
+predicts in the floor regime, leading to more mispricing:
+
+| regime | α₃·|ε| vs 90 | observed at α₃ |
+|--------|--------------|----------------|
+| linear (OU valid) | ≲ 90 | α₃ ≲ 100 |
+| floor (OU underestimates) | ≫ 90 | α₃ ≳ 500 |
+
+**O4.5 — Practical implication for model calibration.**
+To achieve a target steady-state mispricing ε* in the floor regime, α₃ must be set higher
+than the naive OU formula suggests. The correction factor grows with α₃ (ratio reaches
+~1.5 at α₃=10000). The corrected relation is approximately:
+
+```
+E[|ε|] ≈ (7.98 / √α₃) · (sim/OU ratio)
+```
+
+where the ratio can be read from the table above for a given α₃.
+
+---
+
 ## Summary of Identified Model Issues
 
 | Issue | Severity | Description |
@@ -194,3 +264,11 @@ slightly upward, but the effect is small relative to the ~1/τ fee scaling.
 
 4. **Toxicity (α₃) affects the optimal τ only weakly under rebalancing costs.** An RL agent
    targeting a specific cost regime should primarily adapt to τ, not to α₃.
+
+5. **Mispricing ε = S − Z is the key observable linking α₃ to LP outcomes.** Higher α₃
+   compresses ε toward zero (faster tracking) but also drives more total volume. An RL agent
+   that observes ε directly can infer both adverse selection risk and expected fee volume.
+
+6. **The intensity floor α₀ means α₃ must be calibrated with the floor correction in mind.**
+   The naive OU formula underestimates steady-state mispricing by up to 50% at high α₃
+   (see O4.4). Any hyperparameter search over α₃ should account for this non-linearity.
