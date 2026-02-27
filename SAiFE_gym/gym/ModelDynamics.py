@@ -125,13 +125,19 @@ class UniswapV3ModelDynamics(ModelDynamics):
             action: (num_trajectories, 2) array of [lower_offset, upper_offset]
 
         Returns:
-            Validated action with same shape
+            Validated action with same shape, rounded to integers.
 
         Ensures:
+        - Values are rounded to integers (tick offsets must be whole numbers)
         - All values are within box bounds
         - lower_offset < upper_offset (minimum width of 1 tick)
         """
         action = action.copy()
+
+        # Round to integers first — continuous actions from PPO must snap to tick grid
+        # before the width constraint is applied (avoids zero-width positions)
+        action[:, 0] = np.round(action[:, 0])
+        action[:, 1] = np.round(action[:, 1])
 
         # Clip to box bounds
         action[:, 0] = np.clip(action[:, 0], -self.tau, self.tau - 1)
