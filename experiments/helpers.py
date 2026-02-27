@@ -17,7 +17,7 @@ import matplotlib.pyplot as plt
 
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import EvalCallback
-from stable_baselines3.common.vec_env import VecMonitor
+from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
@@ -136,9 +136,26 @@ def get_amm_env(
 # SB3 wrapping
 # ---------------------------------------------------------------------------
 
-def wrap_env(env: AMMEnvironment) -> VecMonitor:
-    """Wrap AMMEnvironment for SB3 training: flatten Dict obs + VecMonitor."""
-    return VecMonitor(StableBaselinesAMMEnvironment(env))
+def wrap_env(env: AMMEnvironment, normalise_obs: bool = True) -> VecMonitor:
+    """Wrap AMMEnvironment for SB3 training.
+
+    Pipeline: AMMEnvironment → StableBaselinesAMMEnvironment (Dict→flat obs)
+              → VecMonitor (episode stats) → VecNormalize (running mean/std).
+
+    VecNormalize is strongly recommended when features span very different
+    scales (e.g. time ∈ [0,1] vs lp_liquidity ∈ [0, 2×10⁸]).  It maintains
+    a running mean and std for each feature and clips at ±10σ, preventing
+    large activations from dominating the first layer's gradients.
+
+    Args:
+        normalise_obs: If True (default), wrap with VecNormalize.
+                       Disable only when loading a pre-trained model that
+                       already carries its own normalisation stats.
+    """
+    vec = VecMonitor(StableBaselinesAMMEnvironment(env))
+    if normalise_obs:
+        vec = VecNormalize(vec, norm_obs=True, norm_reward=False, clip_obs=10.0)
+    return vec
 
 
 # ---------------------------------------------------------------------------
@@ -147,15 +164,38 @@ def wrap_env(env: AMMEnvironment) -> VecMonitor:
 
 def get_ppo_learner_and_callback(
     env: AMMEnvironment,
-    tensorboard_base_logdir: str = "./tensorboard/",
+    tensorboard_base_logdir: str = None,
     best_model_path: str = "./best_models",
     tau: int = None,
     alpha3: float = None,
+    normalise_obs: bool = True,
+    learning_rate: float = 3e-4,
 ):
     """Build a PPO model and EvalCallback for the given environment.
 
-    n_steps is set to one full episode (env.n_steps) so each PPO update sees
-    complete trajectories. batch_size is ¼ of the total rollout.
+    Hyperparameter guidance
+    -----------------------
+    n_steps:      One full episode per rollout (env.n_steps).  With gamma=1
+                  the agent needs complete trajectories to estimate returns.
+
+    batch_size:   Rollout buffer has n_steps * num_trajectories transitions.
+                  We split it into 16 mini-batches per epoch so each update
+                  uses a representative slice of the collected data.
+                  Rule of thumb: aim for 8–16 mini-batches per epoch.
+
+    n_epochs:     10 reuses per rollout is standard.  Reduce to 4–6 if you
+                  observe policy loss exploding (use clip_range 0.2 as guard).
+
+    learning_rate: Default 3e-4 works well when obs are normalised (VecNormalize).
+                   Without normalisation use 1e-4 to avoid overshooting with
+                   large-magnitude raw features (current_tick ~46k, lp_liquidity ~2e8).
+
+    total_timesteps (caller's choice):
+                  Scales roughly as O(obs_dim * log(obs_dim)) with state
+                  dimension.  Practical guideline for this environment:
+                    obs_dim=2  (mbt reduced)  →   500k –   2M
+                    obs_dim=9  (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=9  (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(total_timesteps=...) to train.
@@ -164,26 +204,28 @@ def get_ppo_learner_and_callback(
     alpha3 = alpha3 if alpha3 is not None else 0.0
     experiment_str = get_experiment_string(env, tau=tau, alpha3=alpha3)
 
+    rollout_size = env.n_steps * env.num_trajectories
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     ppo_params = dict(
         policy="MlpPolicy",
-        env=wrap_env(env),
+        env=wrap_env(env, normalise_obs=normalise_obs),
         verbose=1,
         policy_kwargs=policy_kwargs,
-        tensorboard_log=os.path.join(tensorboard_base_logdir, experiment_str),
+        tensorboard_log=os.path.join(tensorboard_base_logdir, experiment_str) if tensorboard_base_logdir else None,
+        learning_rate=learning_rate,
         n_epochs=10,
-        batch_size=max(1, env.n_steps * env.num_trajectories // 4),
+        batch_size=max(64, rollout_size // 16),   # 16 mini-batches per epoch
         normalize_advantage=True,
         n_steps=env.n_steps,
         gae_lambda=0.95,
         gamma=1.0,
     )
     callback_params = dict(
-        eval_env=wrap_env(env),
+        eval_env=wrap_env(env, normalise_obs=False),  # raw env for evaluation
         n_eval_episodes=10,
         best_model_save_path=os.path.join(best_model_path, experiment_str),
         deterministic=True,
-        eval_freq=env.n_steps * env.num_trajectories * 10,
+        eval_freq=rollout_size * 10,
     )
     model = PPO(**ppo_params)
     callback = EvalCallback(**callback_params)
