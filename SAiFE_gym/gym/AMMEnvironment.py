@@ -21,26 +21,15 @@ class AMMEnvironment(gymnasium.Env):
         self,
         terminal_time: float = 1.0,
         n_steps: int = 200,
-        initial_cash: float = 0.0,
         reward_function: RewardFunction = None,
         model_dynamics: ModelDynamics = None,
-        num_trajectories: int = 1,  # FIXED: Added missing parameter
+        num_trajectories: int = 1,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
         self.num_trajectories = num_trajectories
         self._step_size = self.terminal_time / self.n_steps
-
-        # Initialize normalization flags
-        self.normalise_observation_space_ = False
-        self.normalise_action_space_ = False
-        self.normalise_rewards_ = False
-        self.reward_scaling = 1.0
-        self._intercept_obs_norm = 0.0
-        self._gradient_obs_norm = 1.0
-        self._intercept_action_norm = 0.0
-        self._gradient_action_norm = 1.0
 
         # Create model dynamics if not provided
         self.model_dynamics = model_dynamics or UniswapV3ModelDynamics(
@@ -259,7 +248,7 @@ class AMMEnvironment(gymnasium.Env):
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
 
-        return self.normalise_observation(self.model_dynamics.state), {}
+        return self.model_dynamics.state, {}
 
 
 
@@ -271,8 +260,6 @@ class AMMEnvironment(gymnasium.Env):
             terminated: episode reached its natural end (trading horizon elapsed).
             truncated: always False (no external time-limit truncation).
         """
-        action = self.normalise_action(action, inverse=True)
-
         # Copy current state (handle both Dict and array)
         if isinstance(self.model_dynamics.state, dict):
             current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
@@ -291,35 +278,8 @@ class AMMEnvironment(gymnasium.Env):
 
         # Calculate info dict
         info = self._calculate_infos(current_state, action, rewards)
-
-        return self.normalise_observation(next_state), self.normalise_rewards(rewards), terminated, truncated, info
-
-    def normalise_observation(self, obs, inverse: bool = False):
-        """Normalize observation (handles both Dict and array observations)."""
-        # For Dict observations, return as-is for now
-        # TODO: Implement per-key normalization if needed
-        if isinstance(obs, dict):
-            return obs
-
-        # For array observations, use existing normalization
-        if self.normalise_observation_space_ and not inverse:
-            return (obs - self._intercept_obs_norm) / self._gradient_obs_norm - 1
-        elif self.normalise_observation_space_ and inverse:
-            return (obs + 1) * self._gradient_obs_norm + self._intercept_obs_norm
-        else:
-            return obs
-
-    def normalise_action(self, action: np.ndarray, inverse: bool = False):
-        if self.normalise_action_space_ and not inverse:
-            return (action - self._intercept_action_norm) / self._gradient_action_norm - 1
-        elif self.normalise_action_space_ and inverse:
-            return (action + 1) * self._gradient_action_norm + self._intercept_action_norm
-        else:
-            return action
-    
-    def normalise_rewards(self, rewards: np.ndarray):
-        return self.reward_scaling * rewards if self.normalise_rewards_ else rewards
-
+        
+        return next_state, rewards, terminated, truncated, info
 
     def _update_state(self, action: np.ndarray):
         """
@@ -352,14 +312,6 @@ class AMMEnvironment(gymnasium.Env):
         self.model_dynamics.update_state(arrivals, action)
 
         return self.model_dynamics.state
-
-    def _update_market_state(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray):
-        """DEPRECATED: Use _update_state() instead."""
-        pass
-
-    def _update_agent_state(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray):
-        """DEPRECATED: Use _update_state() instead."""
-        pass
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""

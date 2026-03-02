@@ -1,4 +1,4 @@
-from typing import Any, List, Optional, Sequence, Type, Union
+from typing import Any, List, Optional, Sequence, Type
 
 import gymnasium
 import numpy as np
@@ -13,8 +13,11 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY,
     LP_COLLECTED_FEES1_KEY,
     LP_LIQUIDITY_KEY,
+    LP_LOWER_OFFSET_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
+    LP_UPPER_OFFSET_KEY,
+    MISPRICING_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     POOL_SQRT_PRICE_KEY,
@@ -22,18 +25,18 @@ from SAiFE_gym.gym.index_names import (
 )
 
 DEFAULT_OBS_KEYS = [
-    POOL_SQRT_PRICE_KEY,
-    POOL_CURRENT_TICK_KEY,
+    MISPRICING_KEY,          # external - AMM price gap (adverse selection signal)
+    LP_LOWER_OFFSET_KEY,     # current_tick - lp_tick_lower
+    LP_UPPER_OFFSET_KEY,     # lp_tick_upper - current_tick
     LP_LIQUIDITY_KEY,
-    LP_TICK_LOWER_KEY,
-    LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY,
     LP_COLLECTED_FEES1_KEY,
-    ASSET_PRICE_KEY,
+    ASSET_PRICE_KEY,         # absolute price level (affects fee token amounts)
     TIME_KEY,
-]  # 9 scalar keys → obs_dim = 9
+]  # obs_dim = 8
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
+_DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY}
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -42,7 +45,6 @@ class StableBaselinesAMMEnvironment(VecEnv):
 
     Responsibilities:
     - Flattens the Dict observation into a float32 array of shape (num_trajectories, obs_dim)
-    - Converts legacy gym spaces to gymnasium spaces expected by SB3 2.7+
     - Implements auto-reset: when all trajectories are done, resets internally and
       stores the terminal observation in infos[i]["terminal_observation"]
     """
@@ -81,10 +83,26 @@ class StableBaselinesAMMEnvironment(VecEnv):
     # Core VecEnv methods
     # ------------------------------------------------------------------
 
+    def _compute_derived(self, state_dict: dict) -> dict:
+        """Compute derived observation features from raw state."""
+        return {
+            MISPRICING_KEY:      state_dict[ASSET_PRICE_KEY]
+                                 - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
+            LP_LOWER_OFFSET_KEY: state_dict[POOL_CURRENT_TICK_KEY]
+                                 - state_dict[LP_TICK_LOWER_KEY],
+            LP_UPPER_OFFSET_KEY: state_dict[LP_TICK_UPPER_KEY]
+                                 - state_dict[POOL_CURRENT_TICK_KEY],
+        }
+
     def _flatten_obs(self, state_dict: dict) -> np.ndarray:
         """Return shape (num_trajectories, obs_dim) float32 array."""
         n = self.env.num_trajectories
-        cols = [state_dict[k].reshape(n, 1) for k in self.obs_keys]
+        derived = self._compute_derived(state_dict)
+        cols = [
+            derived[k].reshape(n, 1) if k in _DERIVED_KEYS
+            else state_dict[k].reshape(n, 1)
+            for k in self.obs_keys
+        ]
         return np.concatenate(cols, axis=1).astype(np.float32)
 
     def reset(self) -> VecEnvObs:
