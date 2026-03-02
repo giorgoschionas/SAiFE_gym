@@ -1,7 +1,7 @@
 
 import abc
 
-import gym
+import gymnasium
 import numpy as np
 from numpy.random import default_rng
 
@@ -41,7 +41,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         return None, None 
 
 
-    def get_action_space(self) -> gym.spaces.Space:
+    def get_action_space(self) -> gymnasium.spaces.Space:
         pass
 
     def get_required_stochastic_processes(self):
@@ -110,7 +110,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         The LP always deploys all available wealth into the specified range.
         """
 
-        return gym.spaces.Box(
+        return gymnasium.spaces.Box(
             low=np.array([-self.tau, -self.tau + 1], dtype=np.float32),
             high=np.array([self.tau - 1, self.tau], dtype=np.float32),
             shape=(2,),

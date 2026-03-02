@@ -88,20 +88,23 @@ class StableBaselinesAMMEnvironment(VecEnv):
         return np.concatenate(cols, axis=1).astype(np.float32)
 
     def reset(self) -> VecEnvObs:
-        return self._flatten_obs(self.env.reset())
+        obs, _ = self.env.reset()
+        return self._flatten_obs(obs)
 
     def step_async(self, actions: np.ndarray) -> None:
         self.actions = actions
 
     def step_wait(self) -> VecEnvStepReturn:
-        state_dict, rewards, dones, _ = self.env.step(self.actions)
+        state_dict, rewards, terminated, truncated, _ = self.env.step(self.actions)
+        dones = terminated | truncated
         flat_obs = self._flatten_obs(state_dict)
         infos = [{} for _ in range(self.env.num_trajectories)]
         if dones.all():
             if self.store_terminal_observation_info:
                 for i, info in enumerate(infos):
                     info["terminal_observation"] = flat_obs[i]  # shape (obs_dim,)
-            flat_obs = self._flatten_obs(self.env.reset())
+            reset_obs, _ = self.env.reset()
+            flat_obs = self._flatten_obs(reset_obs)
         return flat_obs, rewards, dones, infos
 
     def close(self) -> None:

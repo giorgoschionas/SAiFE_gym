@@ -1,7 +1,6 @@
 """
 Experiment helpers for SAiFE_gym RL training and evaluation.
 
-Mirrors the pattern of mbt_gym/experiments/helpers.py but adapted for the
 AMM liquidity-provision setting:
   - Dict-based observations → StableBaselinesAMMEnvironment flattens them
   - Baseline comparator is UniformAllocationAgent (full-range LP)
@@ -267,13 +266,13 @@ def run_episode(
     Returns:
         Final wealth per trajectory, shape (num_trajectories,).
     """
-    obs = env.reset()
+    obs, _ = env.reset()
     cumulative_reward = np.zeros(env.num_trajectories)
 
     for _ in range(env.n_steps):
         agent_obs = obs_transform(obs) if obs_transform else obs
         action = agent.get_action(agent_obs)
-        obs, rewards, dones, _ = env.step(action)
+        obs, rewards, terminated, truncated, _ = env.step(action)
         cumulative_reward += rewards
 
     return initial_wealth + cumulative_reward

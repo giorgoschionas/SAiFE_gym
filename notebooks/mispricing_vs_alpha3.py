@@ -151,12 +151,12 @@ for alpha3 in ALPHA3_VALUES:
     env   = make_env(alpha3, NUM_TRAJECTORIES, seed=SEED)
     agent = UniformAllocationAgent(env)
 
-    obs = env.reset()
+    obs, _ = env.reset()
     eps = np.zeros((NUM_TRAJECTORIES, N_STEPS))
 
     for step in range(N_STEPS):
         action = agent.get_action(obs)
-        obs, _, _, _ = env.step(action)
+        obs, _, _, _, _ = env.step(action)
 
         S = obs[ASSET_PRICE_KEY]                  # external midprice, shape (N,)
         Z = obs[POOL_SQRT_PRICE_KEY] ** 2         # AMM price, shape (N,)
