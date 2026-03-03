@@ -1,6 +1,6 @@
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It provides an OpenAI Gym-compatible environment for training RL agents to act as liquidity providers.
+SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It is Gymnasium-compatible for training RL agents to act as liquidity providers.
 
 **Current Status**: Active development. Core components implemented but integration is ongoing.
 
@@ -71,7 +71,7 @@ array_index = absolute_tick - tick_lower
 
 The environment follows a standard RL cycle with AMM-specific components:
 
-1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Main Gym environment
+1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Main Gymnasium environment
    - Manages episodes, state transitions via `step()` and `reset()`
    - Delegates AMM logic to **ModelDynamics**
    - Handles observation/action/reward normalization
@@ -166,7 +166,7 @@ The `update_state()` method in `UniswapV3ModelDynamics` implements **local xi + 
 **Core Principle**: Each trade = one tick of price movement.
 - Trade size (xi) is computed from the **current tick's liquidity only** (`_compute_local_xi()`)
 - `xi_sell = L * tick_factor / sqrt_p_low`, `xi_buy = L * tick_factor * sqrt_p_high`
-- Arrival counts are Poisson-distributed integers (can exceed 1 per step)
+- Arrival counts are Poisson-distributed integers
 - `update_state()` loops over arrival counts, processing one trade at a time
 - On crossing, sqrt_price snaps to the **geometric midpoint** of the new tick to prevent drift
 
@@ -174,7 +174,6 @@ The `update_state()` method in `UniswapV3ModelDynamics` implements **local xi + 
 - With mid-tick price and local xi (full tick capacity), xi > x_to_boundary → crossing occurs
 - Zero-liquidity ticks are always crossed (no resistance)
 - On crossing, `sqrt_price = sqrt_p_boundary / exp_quarter` (sell) or `sqrt_p_boundary * exp_quarter` (buy)
-- Fees are charged only at the current tick for the x_to_boundary / y_to_boundary portion
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
