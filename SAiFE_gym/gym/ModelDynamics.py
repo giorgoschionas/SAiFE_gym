@@ -472,6 +472,39 @@ class UniswapV3ModelDynamics(ModelDynamics):
             xi = self._compute_local_xi()[xi_index]
             process_fn(active, xi)
 
+    def _process_arrivals_alternating(self, sell_counts: np.ndarray, buy_counts: np.ndarray) -> None:
+        """
+        Process sell and buy arrivals in interleaved rounds with randomized intra-round ordering.
+
+        Each round i:
+        - Trajectories with sell_counts > i execute one sell
+        - Trajectories with buy_counts > i execute one buy
+        - The within-round order (sell-first or buy-first) is chosen randomly each round
+
+        Once one side is exhausted, remaining trades of the other side continue alone.
+        Using self.rng ensures reproducibility via the seed parameter.
+
+        Args:
+            sell_counts: Integer array, shape (num_trajectories,)
+            buy_counts:  Integer array, shape (num_trajectories,)
+        """
+        max_count = int(np.max(np.maximum(sell_counts, buy_counts))) \
+            if np.any((sell_counts > 0) | (buy_counts > 0)) else 0
+        for i in range(max_count):
+            active_sell = sell_counts > i
+            active_buy  = buy_counts  > i
+            sell_first  = bool(self.rng.integers(0, 2))
+            if sell_first:
+                if np.any(active_sell):
+                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
+                if np.any(active_buy):
+                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
+            else:
+                if np.any(active_buy):
+                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
+                if np.any(active_sell):
+                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
+
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
         Process one timestep: rebalance LP, execute swaps, advance time.
@@ -499,8 +532,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sell_counts = np.minimum(arrivals[:, 0].astype(np.int64), self.max_arrivals_per_step)
         buy_counts = np.minimum(arrivals[:, 1].astype(np.int64), self.max_arrivals_per_step)
 
-        self._process_arrivals(sell_counts, xi_index=0, process_fn=self._process_sell_single)
-        self._process_arrivals(buy_counts, xi_index=1, process_fn=self._process_buy_single)
+        self._process_arrivals_alternating(sell_counts, buy_counts)
 
         step_size = self.midprice_model.step_size if self.midprice_model else 0.005
         self.state[TIME_KEY] += step_size
