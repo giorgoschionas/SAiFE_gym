@@ -25,6 +25,11 @@ LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees collected by L
 ASSET_PRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
 TIME_KEY = 'time'                           # Current simulation time - shape: (num_trajectories,)
 
+# Derived observation features (computed from state, not stored in state dict)
+MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRICE - sqrt_price²)
+LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
+LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
+
 
 # ============================================================================
 # Legacy Array-based Indices (for backwards compatibility)

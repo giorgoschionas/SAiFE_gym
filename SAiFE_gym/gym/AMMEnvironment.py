@@ -1,7 +1,5 @@
-import gym
+import gymnasium
 import numpy as np
-
-from gym.spaces import Box
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel, PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
@@ -17,32 +15,21 @@ from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
 
 
-class AMMEnvironment(gym.Env):
+class AMMEnvironment(gymnasium.Env):
     metadata = {"render.modes": ["human"]}
     def __init__(
         self,
         terminal_time: float = 1.0,
         n_steps: int = 200,
-        initial_cash: float = 0.0,
         reward_function: RewardFunction = None,
         model_dynamics: ModelDynamics = None,
-        num_trajectories: int = 1,  # FIXED: Added missing parameter
+        num_trajectories: int = 1,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
         self.num_trajectories = num_trajectories
         self._step_size = self.terminal_time / self.n_steps
-
-        # Initialize normalization flags
-        self.normalise_observation_space_ = False
-        self.normalise_action_space_ = False
-        self.normalise_rewards_ = False
-        self.reward_scaling = 1.0
-        self._intercept_obs_norm = 0.0
-        self._gradient_obs_norm = 1.0
-        self._intercept_action_norm = 0.0
-        self._gradient_action_norm = 1.0
 
         # Create model dynamics if not provided
         self.model_dynamics = model_dynamics or UniswapV3ModelDynamics(
@@ -76,7 +63,7 @@ class AMMEnvironment(gym.Env):
         self.rng = np.random.default_rng(seed)
 
 
-    def _create_observation_space(self) -> gym.spaces.Space:
+    def _create_observation_space(self) -> gymnasium.spaces.Space:
         """
         Create observation space based on model dynamics type.
 
@@ -85,76 +72,76 @@ class AMMEnvironment(gym.Env):
         """
         if not isinstance(self.model_dynamics, UniswapV3ModelDynamics):
             # Fallback for other dynamics types (legacy flat array)
-            return gym.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
+            return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
 
         num_ticks = self.model_dynamics.num_ticks
 
-        return gym.spaces.Dict({
+        return gymnasium.spaces.Dict({
             # Pool state (global liquidity)
-            POOL_SQRT_PRICE_KEY: gym.spaces.Box(
+            POOL_SQRT_PRICE_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            POOL_CURRENT_TICK_KEY: gym.spaces.Box(
+            POOL_CURRENT_TICK_KEY: gymnasium.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
             ),
-            POOL_LIQUIDITY_ARRAY_KEY: gym.spaces.Box(
+            POOL_LIQUIDITY_ARRAY_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories, num_ticks),
                 dtype=np.float32
             ),
 
             # Fee arrays (per-tick)
-            FEES0_KEY: gym.spaces.Box(
+            FEES0_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories, num_ticks),
                 dtype=np.float32
             ),
-            FEES1_KEY: gym.spaces.Box(
+            FEES1_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories, num_ticks),
                 dtype=np.float32
             ),
 
             # LP state (agent's position)
-            LP_LIQUIDITY_KEY: gym.spaces.Box(
+            LP_LIQUIDITY_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            LP_TICK_LOWER_KEY: gym.spaces.Box(
+            LP_TICK_LOWER_KEY: gymnasium.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
             ),
-            LP_TICK_UPPER_KEY: gym.spaces.Box(
+            LP_TICK_UPPER_KEY: gymnasium.spaces.Box(
                 low=-np.inf, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.int32
             ),
 
             # LP cumulative fee tracking
-            LP_COLLECTED_FEES0_KEY: gym.spaces.Box(
+            LP_COLLECTED_FEES0_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            LP_COLLECTED_FEES1_KEY: gym.spaces.Box(
+            LP_COLLECTED_FEES1_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
 
             # Market state
-            ASSET_PRICE_KEY: gym.spaces.Box(
+            ASSET_PRICE_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
-            TIME_KEY: gym.spaces.Box(
+            TIME_KEY: gymnasium.spaces.Box(
                 low=0.0, high=self.terminal_time,
                 shape=(self.num_trajectories,),
                 dtype=np.float32
@@ -236,9 +223,15 @@ class AMMEnvironment(gym.Env):
             if self.model_dynamics.arrival_model:
                 self.model_dynamics.arrival_model.seed(seed + 1 if seed else None)
 
-    # clears internal state & returns initial observation (what the agent sees at the start)
-    def reset(self):
-        """Reset the environment to initial state."""
+    def reset(self, seed: int = None, options: dict = None):
+        """Reset the environment to initial state.
+
+        Returns:
+            (obs, info) per Gymnasium API.
+        """
+        if seed is not None:
+            self.seed(seed)
+
         # Reset stochastic processes
         if self.model_dynamics:
             if self.model_dynamics.midprice_model:
@@ -255,18 +248,18 @@ class AMMEnvironment(gym.Env):
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
 
-        return self.normalise_observation(self.model_dynamics.state)
+        return self.model_dynamics.state, {}
 
 
 
-    # The step function is a core component of reinforcement learning environments, simulating one discrete time step 
-    # within the trading environment. It takes an action from the agent, updates the environment's state based on that action, 
-    # calculates the resulting reward, and determines if the episode has concluded.
-    # It is standard structure for environments in OpenAI's Gym.
     def step(self, action: np.ndarray):
-        """Execute one environment step."""
-        action = self.normalise_action(action, inverse=True)
+        """Execute one environment step.
 
+        Returns:
+            (obs, rewards, terminated, truncated, info) per Gymnasium API.
+            terminated: episode reached its natural end (trading horizon elapsed).
+            truncated: always False (no external time-limit truncation).
+        """
         # Copy current state (handle both Dict and array)
         if isinstance(self.model_dynamics.state, dict):
             current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
@@ -277,42 +270,16 @@ class AMMEnvironment(gym.Env):
         next_state = self._update_state(action)
 
         # Calculate termination
-        dones = self._get_dones()
+        terminated = self._get_terminated()
+        truncated = np.zeros(self.num_trajectories, dtype=bool)
 
         # Calculate rewards
-        rewards = self.reward_function.calculate(current_state, action, next_state, dones[0])
+        rewards = self.reward_function.calculate(current_state, action, next_state, terminated[0])
 
         # Calculate info dict
-        infos = self._calculate_infos(current_state, action, rewards)
-
-        return self.normalise_observation(next_state), self.normalise_rewards(rewards), dones, infos
-
-    def normalise_observation(self, obs, inverse: bool = False):
-        """Normalize observation (handles both Dict and array observations)."""
-        # For Dict observations, return as-is for now
-        # TODO: Implement per-key normalization if needed
-        if isinstance(obs, dict):
-            return obs
-
-        # For array observations, use existing normalization
-        if self.normalise_observation_space_ and not inverse:
-            return (obs - self._intercept_obs_norm) / self._gradient_obs_norm - 1
-        elif self.normalise_observation_space_ and inverse:
-            return (obs + 1) * self._gradient_obs_norm + self._intercept_obs_norm
-        else:
-            return obs
-
-    def normalise_action(self, action: np.ndarray, inverse: bool = False):
-        if self.normalise_action_space_ and not inverse:
-            return (action - self._intercept_action_norm) / self._gradient_action_norm - 1
-        elif self.normalise_action_space_ and inverse:
-            return (action + 1) * self._gradient_action_norm + self._intercept_action_norm
-        else:
-            return action
-    
-    def normalise_rewards(self, rewards: np.ndarray):
-        return self.reward_scaling * rewards if self.normalise_rewards_ else rewards
-
+        info = self._calculate_infos(current_state, action, rewards)
+        
+        return next_state, rewards, terminated, truncated, info
 
     def _update_state(self, action: np.ndarray):
         """
@@ -346,23 +313,12 @@ class AMMEnvironment(gym.Env):
 
         return self.model_dynamics.state
 
-    def _update_market_state(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray):
-        """DEPRECATED: Use _update_state() instead."""
-        pass
-
-    def _update_agent_state(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray):
-        """DEPRECATED: Use _update_state() instead."""
-        pass
-
-    def _get_dones(self):
-        """Check if episode is complete."""
-        # Handle both Dict and array state
+    def _get_terminated(self):
+        """Return terminated flags: True when the trading horizon has elapsed."""
         if isinstance(self.model_dynamics.state, dict):
             done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
         else:
-            # Legacy array-based state (fallback)
             done = self.model_dynamics.state[0, -1] >= self.terminal_time - self._step_size / 2
-
         return np.full((self.num_trajectories,), done, dtype=bool)
 
     def _calculate_infos(self, current_state, action, rewards):

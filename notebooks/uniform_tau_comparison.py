@@ -112,12 +112,12 @@ def make_env(tau, alpha3, rebalance_cost, num_trajectories, seed):
 
 def run_episode(env, agent):
     """Run one episode. Returns final_wealth (N,) and cumulative_pnl (N, n_steps)."""
-    obs = env.reset()
+    obs, _ = env.reset()
     step_rewards = np.zeros((env.num_trajectories, N_STEPS))
 
     for step in range(N_STEPS):
         action = agent.get_action(obs)
-        obs, rewards, dones, _ = env.step(action)
+        obs, rewards, terminated, truncated, _ = env.step(action)
         step_rewards[:, step] = rewards
 
     cumulative = np.cumsum(step_rewards, axis=1)

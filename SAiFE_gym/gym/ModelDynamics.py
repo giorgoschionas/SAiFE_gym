@@ -1,7 +1,7 @@
 
 import abc
 
-import gym
+import gymnasium
 import numpy as np
 from numpy.random import default_rng
 
@@ -41,7 +41,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         return None, None 
 
 
-    def get_action_space(self) -> gym.spaces.Space:
+    def get_action_space(self) -> gymnasium.spaces.Space:
         pass
 
     def get_required_stochastic_processes(self):
@@ -110,7 +110,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         The LP always deploys all available wealth into the specified range.
         """
 
-        return gym.spaces.Box(
+        return gymnasium.spaces.Box(
             low=np.array([-self.tau, -self.tau + 1], dtype=np.float32),
             high=np.array([self.tau - 1, self.tau], dtype=np.float32),
             shape=(2,),
@@ -125,13 +125,19 @@ class UniswapV3ModelDynamics(ModelDynamics):
             action: (num_trajectories, 2) array of [lower_offset, upper_offset]
 
         Returns:
-            Validated action with same shape
+            Validated action with same shape, rounded to integers.
 
         Ensures:
+        - Values are rounded to integers (tick offsets must be whole numbers)
         - All values are within box bounds
         - lower_offset < upper_offset (minimum width of 1 tick)
         """
         action = action.copy()
+
+        # Round to integers first — continuous actions from PPO must snap to tick grid
+        # before the width constraint is applied (avoids zero-width positions)
+        action[:, 0] = np.round(action[:, 0])
+        action[:, 1] = np.round(action[:, 1])
 
         # Clip to box bounds
         action[:, 0] = np.clip(action[:, 0], -self.tau, self.tau - 1)

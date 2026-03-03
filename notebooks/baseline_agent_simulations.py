@@ -114,12 +114,12 @@ def run_episode(env: AMMEnvironment, agent, n_steps: int) -> np.ndarray:
     PnL.calculate() returns V(t+1) - V(t) each step, so
     sum(rewards) = V(T) - V(0) = V(T) - INITIAL_WEALTH.
     """
-    obs = env.reset()
+    obs, _ = env.reset()
     cumulative_reward = np.zeros(env.num_trajectories)
 
     for _ in range(n_steps):
         action = agent.get_action(obs)
-        obs, rewards, dones, _ = env.step(action)
+        obs, rewards, terminated, truncated, _ = env.step(action)
         cumulative_reward += rewards
 
     return INITIAL_WEALTH + cumulative_reward  # final wealth, shape (num_trajectories,)

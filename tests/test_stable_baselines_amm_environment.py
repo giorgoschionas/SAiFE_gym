@@ -17,6 +17,12 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
     FEES0_KEY,
+    LP_LOWER_OFFSET_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    LP_UPPER_OFFSET_KEY,
+    MISPRICING_KEY,
+    POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
     TIME_KEY,
 )
@@ -83,12 +89,12 @@ class TestReset:
     def test_shape_single_trajectory(self):
         env = create_sb3_env(num_trajectories=1)
         obs = env.reset()
-        assert obs.shape == (1, 9)
+        assert obs.shape == (1, 8)
 
     def test_shape_multi_trajectory(self):
         env = create_sb3_env(num_trajectories=3)
         obs = env.reset()
-        assert obs.shape == (3, 9)
+        assert obs.shape == (3, 8)
 
     def test_dtype(self):
         env = create_sb3_env(num_trajectories=1)
@@ -113,7 +119,7 @@ class TestStepWait:
         num_traj = 2
         env = create_sb3_env(num_trajectories=num_traj)
         obs, _, _, _ = self._step(env)
-        assert obs.shape == (num_traj, 9)
+        assert obs.shape == (num_traj, 8)
 
     def test_rewards_shape(self):
         num_traj = 2
@@ -182,7 +188,7 @@ class TestAutoReset:
         num_traj = 2
         env = create_sb3_env(num_trajectories=num_traj, n_steps=5)
         obs, _ = self._run_to_done(env)
-        assert obs.shape == (num_traj, 9)
+        assert obs.shape == (num_traj, 8)
 
 
 # ---------------------------------------------------------------------------
@@ -214,7 +220,7 @@ class TestTerminalObs:
     def test_shape_is_1d(self):
         env = create_sb3_env(num_trajectories=1, n_steps=5)
         _, final_infos = self._run_episode(env)
-        assert final_infos[0]["terminal_observation"].shape == (9,)
+        assert final_infos[0]["terminal_observation"].shape == (8,)
 
     def test_absent_before_done(self):
         env = create_sb3_env(num_trajectories=1, n_steps=5)
@@ -257,13 +263,13 @@ class TestMultiTrajectory:
         n_steps = 5
         env = create_sb3_env(num_trajectories=num_traj, n_steps=n_steps)
         obs = env.reset()
-        assert obs.shape == (num_traj, 9)
+        assert obs.shape == (num_traj, 8)
 
         actions = np.zeros((num_traj, 2), dtype=np.float32)
         for _ in range(n_steps):
             env.step_async(actions)
             obs, rewards, dones, infos = env.step_wait()
-            assert obs.shape == (num_traj, 9)
+            assert obs.shape == (num_traj, 8)
             assert rewards.shape == (num_traj,)
             assert dones.shape == (num_traj,)
             assert len(infos) == num_traj
@@ -310,3 +316,82 @@ class TestVecEnvInterface:
     def test_action_space_is_gymnasium_box(self):
         env = create_sb3_env(num_trajectories=1)
         assert isinstance(env.action_space, gymnasium.spaces.Box)
+
+
+# ---------------------------------------------------------------------------
+# TestRelativeObsKeys
+# ---------------------------------------------------------------------------
+
+class TestRelativeObsKeys:
+    def _get_state_and_obs(self, env: StableBaselinesAMMEnvironment):
+        """Reset env and return (raw_state_dict, flat_obs)."""
+        obs = env.reset()
+        state = env.env.model_dynamics.state
+        return state, obs
+
+    def test_mispricing_value(self):
+        """mispricing = asset_price - sqrt_price²"""
+        env = create_sb3_env(num_trajectories=1)
+        state, obs = self._get_state_and_obs(env)
+
+        expected = state[ASSET_PRICE_KEY] - state[POOL_SQRT_PRICE_KEY] ** 2
+        obs_keys = env.obs_keys
+        mispricing_col = obs_keys.index(MISPRICING_KEY)
+        np.testing.assert_allclose(obs[:, mispricing_col], expected.astype(np.float32), rtol=1e-5)
+
+    def test_lp_lower_offset_value(self):
+        """lp_lower_offset = current_tick - lp_tick_lower"""
+        env = create_sb3_env(num_trajectories=1)
+        state, obs = self._get_state_and_obs(env)
+
+        expected = state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]
+        obs_keys = env.obs_keys
+        col = obs_keys.index(LP_LOWER_OFFSET_KEY)
+        np.testing.assert_allclose(obs[:, col], expected.astype(np.float32), rtol=1e-5)
+
+    def test_lp_upper_offset_value(self):
+        """lp_upper_offset = lp_tick_upper - current_tick"""
+        env = create_sb3_env(num_trajectories=1)
+        state, obs = self._get_state_and_obs(env)
+
+        expected = state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]
+        obs_keys = env.obs_keys
+        col = obs_keys.index(LP_UPPER_OFFSET_KEY)
+        np.testing.assert_allclose(obs[:, col], expected.astype(np.float32), rtol=1e-5)
+
+    def test_offsets_non_negative_when_in_range(self):
+        """After reset with default uniform LP position, both offsets should be ≥ 0."""
+        env = create_sb3_env(num_trajectories=2)
+        state, obs = self._get_state_and_obs(env)
+
+        lower_col = env.obs_keys.index(LP_LOWER_OFFSET_KEY)
+        upper_col = env.obs_keys.index(LP_UPPER_OFFSET_KEY)
+        assert (obs[:, lower_col] >= 0).all(), "lp_lower_offset should be ≥ 0 when in-range"
+        assert (obs[:, upper_col] >= 0).all(), "lp_upper_offset should be ≥ 0 when in-range"
+
+    def test_offsets_change_after_rebalance(self):
+        """After a step that rebalances to a new tick range, offsets reflect new position."""
+        env = create_sb3_env(num_trajectories=1)
+        env.reset()
+
+        # Step with action [lower_offset=-3, upper_offset=3]
+        actions = np.array([[-3.0, 3.0]], dtype=np.float32)
+        env.step_async(actions)
+        obs, _, _, _ = env.step_wait()
+
+        state = env.env.model_dynamics.state
+        lower_col = env.obs_keys.index(LP_LOWER_OFFSET_KEY)
+        upper_col = env.obs_keys.index(LP_UPPER_OFFSET_KEY)
+
+        expected_lower = (state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]).astype(np.float32)
+        expected_upper = (state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]).astype(np.float32)
+        np.testing.assert_allclose(obs[:, lower_col], expected_lower, rtol=1e-5)
+        np.testing.assert_allclose(obs[:, upper_col], expected_upper, rtol=1e-5)
+
+    def test_derived_keys_individually(self):
+        """Single-key obs_keys work for each derived key."""
+        for key in [MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY]:
+            env = create_sb3_env(num_trajectories=1, obs_keys=[key])
+            obs = env.reset()
+            assert obs.shape == (1, 1), f"Expected (1,1) for key '{key}', got {obs.shape}"
+            assert obs.dtype == np.float32

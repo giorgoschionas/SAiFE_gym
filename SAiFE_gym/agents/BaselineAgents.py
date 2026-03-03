@@ -1,4 +1,4 @@
-import gym
+import gymnasium
 import numpy as np
 from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
@@ -19,7 +19,7 @@ class RandomAgent(Agent):
     Uses order statistics: samples two points, sorts them to ensure lower < upper.
     This guarantees valid actions where lower_offset < upper_offset.
     """
-    def __init__(self, env: gym.Env, seed: int = None):
+    def __init__(self, env: gymnasium.Env, seed: int = None):
         self.tau = env.model_dynamics.tau
         self.num_trajectories = env.num_trajectories
         self.rng = np.random.default_rng(seed)
