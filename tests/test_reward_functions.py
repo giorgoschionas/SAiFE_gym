@@ -113,9 +113,9 @@ class TestPnLRebalancingCost:
     def test_reward_reflects_rebalancing_cost(self):
         initial_wealth = 1e6
         model_no_cost = _create_test_model(initial_wealth=initial_wealth,
-                                            rebalance_cost_coeff=0.0)
+                                            gas_cost=0.0)
         model_with_cost = _create_test_model(initial_wealth=initial_wealth,
-                                              rebalance_cost_coeff=0.01)
+                                              gas_cost=10.0)
         _initialize_model_state(model_no_cost)
         _initialize_model_state(model_with_cost)
 
@@ -402,8 +402,7 @@ class TestCjCriterionAlias:
 # Helpers for integration tests using ModelDynamics
 # =====================================================================
 
-def _create_test_model(num_trajectories=1, initial_wealth=1e6,
-                        rebalance_cost_coeff=0.0):
+def _create_test_model(num_trajectories=1, initial_wealth=1e6, gas_cost=0.0):
     midprice_model = BrownianMotionMidpriceModel(
         drift=0.0, volatility=0.0, initial_price=100.0,
         terminal_time=1.0, step_size=0.005,
@@ -413,16 +412,16 @@ def _create_test_model(num_trajectories=1, initial_wealth=1e6,
         intensity=np.array([100.0, 100.0]),
         step_size=0.005, num_trajectories=num_trajectories, seed=42
     )
-    model = UniswapV3ModelDynamics(
+    return UniswapV3ModelDynamics(
         midprice_model=midprice_model,
         arrival_model=arrival_model,
         num_trajectories=num_trajectories,
         fee_tier=0.003, tau=5, num_ticks=100,
         exponential_value=EXPONENTIAL_VALUE,
-        initial_wealth=initial_wealth, seed=42
+        initial_wealth=initial_wealth,
+        gas_cost=gas_cost,
+        seed=42
     )
-    model.rebalance_cost_coeff = rebalance_cost_coeff
-    return model
 
 
 def _initialize_model_state(model):

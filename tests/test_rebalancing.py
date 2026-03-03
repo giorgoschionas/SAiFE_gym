@@ -28,7 +28,7 @@ from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 
 
 def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
-                      initial_wealth=1e6, tau=5):
+                      initial_wealth=1e6, tau=5, gas_cost=0.0, swap_fee_rate=0.0):
     """Create a UniswapV3ModelDynamics instance for testing."""
     midprice_model = BrownianMotionMidpriceModel(
         drift=0.0,
@@ -55,6 +55,8 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
         num_ticks=num_ticks,
         exponential_value=1.0001,
         initial_wealth=initial_wealth,
+        gas_cost=gas_cost,
+        swap_fee_rate=swap_fee_rate,
         seed=42
     )
 
@@ -712,13 +714,27 @@ class TestEdgeCases:
         assert model.state[LP_COLLECTED_FEES0_KEY][0] > 0
 
 
+def _get_position_value(model):
+    """Helper: compute current LP position value in token1 units."""
+    sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+    lp_liq = model.state[LP_LIQUIDITY_KEY][0]
+    lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
+    lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
+    sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
+    sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
+    ext_price = model.state[ASSET_PRICE_KEY][0]
+    return get_position_value_vec(
+        np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
+        np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
+    )[0]
+
+
 class TestRebalancingCost:
-    """Test proportional rebalancing cost."""
+    """Test decomposed rebalancing cost (gas + swap fee)."""
 
     def test_zero_cost_preserves_wealth(self):
-        """With rebalance_cost_coeff=0, wealth is fully preserved."""
-        model = create_test_model(initial_wealth=1e6)
-        # Default rebalance_cost_coeff=0.0
+        """With gas_cost=0 and swap_fee_rate=0, wealth is fully preserved."""
+        model = create_test_model(initial_wealth=1e6, gas_cost=0.0, swap_fee_rate=0.0)
         initialize_state(model, liquidity_value=1e6)
 
         action = np.array([[-2, 2]], dtype=np.float64)
@@ -726,71 +742,35 @@ class TestRebalancingCost:
 
         # First rebalance
         model.update_state(arrivals, action)
-        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
-        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
-        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
-        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
-        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
-        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
-        ext_price = model.state[ASSET_PRICE_KEY][0]
-        value_after_first = get_position_value_vec(
-            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
-            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
-        )[0]
+        value_after_first = _get_position_value(model)
 
         # Second rebalance (same range, no fees)
         model.update_state(arrivals, action)
-        sqrt_p2 = model.state[POOL_SQRT_PRICE_KEY][0]
-        lp_liq2 = model.state[LP_LIQUIDITY_KEY][0]
-        lp_lower2 = int(model.state[LP_TICK_LOWER_KEY][0])
-        lp_upper2 = int(model.state[LP_TICK_UPPER_KEY][0])
-        sqrt_p_lower2 = np.sqrt(model.exponential_value ** lp_lower2)
-        sqrt_p_upper2 = np.sqrt(model.exponential_value ** lp_upper2)
-        ext_price2 = model.state[ASSET_PRICE_KEY][0]
-        value_after_second = get_position_value_vec(
-            np.array([lp_liq2]), np.array([ext_price2]), np.array([sqrt_p2]),
-            np.array([sqrt_p_lower2]), np.array([sqrt_p_upper2])
-        )[0]
+        value_after_second = _get_position_value(model)
 
         assert np.isclose(value_after_first, value_after_second, rtol=1e-6)
 
-    def test_cost_reduces_wealth_on_rebalance(self):
-        """Rebalancing cost should reduce deployed wealth."""
-        cost_coeff = 0.01  # 1%
-        model = create_test_model(initial_wealth=1e6)
-        model.rebalance_cost_coeff = cost_coeff
+    def test_first_rebalance_no_cost(self):
+        """First rebalance (from cash) should not incur any cost."""
+        gas_cost = 50000.0  # Large to make effect obvious
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=gas_cost)
         initialize_state(model, liquidity_value=1e6)
 
         action = np.array([[-2, 2]], dtype=np.float64)
         arrivals = np.array([[0, 0]], dtype=np.int64)
 
-        # First rebalance: no cost (deploying from cash)
         model.update_state(arrivals, action)
-        value_after_first = 1e6  # initial_wealth deployed fully
 
-        # Second rebalance: 1% cost applied
-        model.update_state(arrivals, action)
-        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
-        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
-        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
-        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
-        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
-        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
-        ext_price = model.state[ASSET_PRICE_KEY][0]
-        value_after_second = get_position_value_vec(
-            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
-            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
-        )[0]
+        # Full initial_wealth deployed — no cost on first deployment
+        assert np.isclose(_get_position_value(model), initial_wealth, rtol=1e-6)
 
-        expected = value_after_first * (1.0 - cost_coeff)
-        assert np.isclose(value_after_second, expected, rtol=1e-6)
-
-    def test_cost_compounds_over_multiple_rebalances(self):
-        """Cost should compound: after N rebalances, wealth = initial * (1-c)^N."""
-        cost_coeff = 0.02  # 2%
+    def test_gas_cost_deducted_linearly(self):
+        """After N rebalances to same range: final_wealth = initial - N * gas_cost."""
+        gas_cost = 1000.0
         initial_wealth = 1e6
-        model = create_test_model(initial_wealth=initial_wealth)
-        model.rebalance_cost_coeff = cost_coeff
+        n_rebalances = 5
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=gas_cost, swap_fee_rate=0.0)
         initialize_state(model, liquidity_value=1e6)
 
         action = np.array([[-2, 2]], dtype=np.float64)
@@ -799,32 +779,18 @@ class TestRebalancingCost:
         # First rebalance (no cost — initial deployment)
         model.update_state(arrivals, action)
 
-        # 3 more rebalances (each incurs cost)
-        n_rebalances = 3
+        # N more rebalances to same range (each incurs only gas_cost; swap_cost=0 same range)
         for _ in range(n_rebalances):
             model.update_state(arrivals, action)
 
-        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
-        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
-        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
-        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
-        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
-        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
-        ext_price = model.state[ASSET_PRICE_KEY][0]
-        final_value = get_position_value_vec(
-            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
-            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
-        )[0]
+        expected = initial_wealth - n_rebalances * gas_cost
+        assert np.isclose(_get_position_value(model), expected, rtol=1e-6)
 
-        expected = initial_wealth * (1.0 - cost_coeff) ** n_rebalances
-        assert np.isclose(final_value, expected, rtol=1e-6)
-
-    def test_first_rebalance_no_cost(self):
-        """First rebalance (from cash) should not incur cost."""
-        cost_coeff = 0.05  # 5% — large to make effect obvious
+    def test_gas_cost_not_on_first_rebalance(self):
+        """First step from cash: gas cost is not deducted."""
+        gas_cost = 10000.0
         initial_wealth = 1e6
-        model = create_test_model(initial_wealth=initial_wealth)
-        model.rebalance_cost_coeff = cost_coeff
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=gas_cost, swap_fee_rate=0.0)
         initialize_state(model, liquidity_value=1e6)
 
         action = np.array([[-2, 2]], dtype=np.float64)
@@ -832,20 +798,115 @@ class TestRebalancingCost:
 
         model.update_state(arrivals, action)
 
-        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
-        lp_liq = model.state[LP_LIQUIDITY_KEY][0]
-        lp_lower = int(model.state[LP_TICK_LOWER_KEY][0])
-        lp_upper = int(model.state[LP_TICK_UPPER_KEY][0])
-        sqrt_p_lower = np.sqrt(model.exponential_value ** lp_lower)
-        sqrt_p_upper = np.sqrt(model.exponential_value ** lp_upper)
-        ext_price = model.state[ASSET_PRICE_KEY][0]
-        value = get_position_value_vec(
-            np.array([lp_liq]), np.array([ext_price]), np.array([sqrt_p]),
-            np.array([sqrt_p_lower]), np.array([sqrt_p_upper])
-        )[0]
+        # Should be full initial_wealth (no gas cost on first deployment)
+        assert np.isclose(_get_position_value(model), initial_wealth, rtol=1e-6)
 
-        # Full initial_wealth deployed — no cost on first deployment
-        assert np.isclose(value, initial_wealth, rtol=1e-6)
+    def test_swap_fee_zero_same_range(self):
+        """Rebalancing to identical range: α_new = α_current → swap cost = 0."""
+        swap_fee_rate = 0.05  # Large to detect any error
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=0.0, swap_fee_rate=swap_fee_rate)
+        initialize_state(model, liquidity_value=1e6)
+
+        action = np.array([[-2, 2]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance (no cost — initial deployment)
+        model.update_state(arrivals, action)
+        value_after_first = _get_position_value(model)
+
+        # Second rebalance: same range, same price, no fees → α_new = α_current
+        model.update_state(arrivals, action)
+        value_after_second = _get_position_value(model)
+
+        # No cost applied
+        assert np.isclose(value_after_first, value_after_second, rtol=1e-6)
+
+    def test_swap_fee_proportional_to_imbalance(self):
+        """Swap fee = swap_fee_rate * W * |α_new - α_current| (analytically verified)."""
+        swap_fee_rate = 0.01
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=0.0,
+                                  swap_fee_rate=swap_fee_rate, tau=10)
+        initialize_state(model, liquidity_value=1e6)
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance: place LP ABOVE current price → price below range → α_current = 1.0
+        action1 = np.array([[2, 8]], dtype=np.float64)
+        model.update_state(arrivals, action1)
+
+        # Verify price is below LP range (all token0 → α_current = 1.0)
+        lp_lower1 = int(model.state[LP_TICK_LOWER_KEY][0])
+        sqrt_p_lower1 = np.sqrt(model.exponential_value ** lp_lower1)
+        assert sqrt_p <= sqrt_p_lower1, "Price should be below LP range for test setup"
+
+        W = initial_wealth  # wealth after first rebalance (no cost on first)
+
+        # Compute expected α_new for centered range [-2, 2]
+        new_lower = current_tick - 2
+        new_upper = current_tick + 2
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** new_lower)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** new_upper)
+
+        assert sqrt_p_lower2 < sqrt_p < sqrt_p_upper2, "Price should be in new range"
+        numerator = sqrt_p**2 * (1.0 / sqrt_p - 1.0 / sqrt_p_upper2)
+        denominator = numerator + (sqrt_p - sqrt_p_lower2)
+        alpha_new = numerator / denominator
+        alpha_current = 1.0
+
+        expected_cost = swap_fee_rate * W * abs(alpha_new - alpha_current)
+
+        # Second rebalance to centered range
+        action2 = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        actual_cost = W - _get_position_value(model)
+        assert np.isclose(actual_cost, expected_cost, rtol=1e-6)
+
+    def test_gas_and_swap_fee_combined(self):
+        """Both gas cost and swap fee are deducted correctly together."""
+        gas_cost = 500.0
+        swap_fee_rate = 0.01
+        initial_wealth = 1e6
+        model = create_test_model(initial_wealth=initial_wealth, gas_cost=gas_cost,
+                                  swap_fee_rate=swap_fee_rate, tau=10)
+        initialize_state(model, liquidity_value=1e6)
+
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][0])
+        sqrt_p = model.state[POOL_SQRT_PRICE_KEY][0]
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+
+        # First rebalance: place LP ABOVE current price → α_current = 1.0
+        action1 = np.array([[2, 8]], dtype=np.float64)
+        model.update_state(arrivals, action1)
+
+        lp_lower1 = int(model.state[LP_TICK_LOWER_KEY][0])
+        sqrt_p_lower1 = np.sqrt(model.exponential_value ** lp_lower1)
+        assert sqrt_p <= sqrt_p_lower1, "Price should be below LP range for test setup"
+
+        W = initial_wealth
+
+        # Compute expected costs for second rebalance to centered range
+        new_lower = current_tick - 2
+        new_upper = current_tick + 2
+        sqrt_p_lower2 = np.sqrt(model.exponential_value ** new_lower)
+        sqrt_p_upper2 = np.sqrt(model.exponential_value ** new_upper)
+
+        numerator = sqrt_p**2 * (1.0 / sqrt_p - 1.0 / sqrt_p_upper2)
+        denominator = numerator + (sqrt_p - sqrt_p_lower2)
+        alpha_new = numerator / denominator
+        alpha_current = 1.0
+
+        expected_cost = gas_cost + swap_fee_rate * W * abs(alpha_new - alpha_current)
+
+        action2 = np.array([[-2, 2]], dtype=np.float64)
+        model.update_state(arrivals, action2)
+
+        actual_cost = W - _get_position_value(model)
+        assert np.isclose(actual_cost, expected_cost, rtol=1e-6)
 
 
 if __name__ == "__main__":
