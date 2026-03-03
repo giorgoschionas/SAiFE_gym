@@ -104,7 +104,27 @@ policy per rollout.
 
 ---
 
-## 5. `total_timesteps` — scales with observation dimension
+## 5. `total_timesteps` — the most fundamental training parameter
+
+`total_timesteps` controls how much experience the agent gets to learn from.
+All other hyperparameters determine *how efficiently* the agent learns per
+step; `total_timesteps` determines *how many steps it gets*.
+
+**Relationship to PPO update cycles:**
+
+```
+total_timesteps ÷ (n_steps × num_trajectories) = number of PPO update cycles
+```
+
+Each update cycle collects `n_steps × num_trajectories` transitions, runs
+`n_epochs` gradient updates on that data, then discards it and repeats.
+For example, with `num_trajectories=100` and `n_steps=100`, one cycle
+processes 10,000 transitions.  Calling `model.learn(total_timesteps=1_000_000)`
+yields 100 update cycles.
+
+**Early stopping is safe**: `EvalCallback` saves the best checkpoint
+encountered during training, so overfitting late in a long run does not
+destroy the best policy found earlier.
 
 The number of gradient updates needed to learn a well-performing policy
 scales roughly as `O(obs_dim × log(obs_dim))` in empirical practice.
