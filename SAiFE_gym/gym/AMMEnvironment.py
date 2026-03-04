@@ -275,43 +275,42 @@ class AMMEnvironment(gymnasium.Env):
 
         # Calculate rewards
         rewards = self.reward_function.calculate(current_state, action, next_state, terminated[0])
-
         # Calculate info dict
         info = self._calculate_infos(current_state, action, rewards)
-        
         return next_state, rewards, terminated, truncated, info
 
     def _update_state(self, action: np.ndarray):
-        """
-        Update environment state by one timestep.
-
-        Following mbt_gym pattern:
-        1. Update midprice model
-        2. Update arrival model's internal state (based on current AMM state)
-        3. Generate arrivals (using updated internal state)
-        4. Update pool state
-
-        Args:
-            action: (num_trajectories, 3) action array
-
-        Returns:
-            Updated state (Dict or array depending on model dynamics)
-        """
-        # Step 1: Update midprice model
-        if self.model_dynamics.midprice_model:
-            self.model_dynamics.midprice_model.update(None, None, None)
-
-        # Step 2: Update arrival model's internal state BEFORE generating arrivals
-        # This updates intensity based on current liquidity, prices, and mispricing
-        self.model_dynamics._update_arrival_model(None, action)
-
-        # Step 3: Get arrivals (uses updated internal state)
+        # Step 1: Get arrivals from current model state (intensity at t)
         arrivals = self.model_dynamics.get_arrivals()
 
-        # Step 4: Update pool state through model dynamics
+        # Step 2: Update pool state (rebalance + swaps + time advance)
         self.model_dynamics.update_state(arrivals, action)
 
+        # Step 3: Advance all stochastic processes
+        self._update_market_state(arrivals, action)
+        self.model_dynamics.state[TIME_KEY] += self.step_size
+
         return self.model_dynamics.state
+
+    def _update_market_state(self, arrivals: np.ndarray, action: np.ndarray):
+        """
+        Update all stochastic processes after pool state has been updated.
+
+        Processes are updated with ACTUAL arrivals
+        after they are generated, not before.
+        """
+        md = self.model_dynamics
+
+        md.midprice_model.update(arrivals, None, action, md.state)
+        md.state[ASSET_PRICE_KEY] = md.midprice_model.current_state[:, 0].copy()
+
+        _, active_liq = md._get_current_tick_liquidity()
+        context = {
+            'active_liquidity': active_liq,
+            'amm_price': md.state[POOL_SQRT_PRICE_KEY] ** 2,
+            'midprice': md.state[ASSET_PRICE_KEY],
+        }
+        md.arrival_model.update(arrivals, None, action, context)
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""

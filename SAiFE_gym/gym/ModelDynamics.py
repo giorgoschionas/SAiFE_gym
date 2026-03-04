@@ -81,7 +81,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
                          num_trajectories = num_trajectories,
                          seed = seed)
 
-        self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
         self.fee_multiplier = fee_tier / (1.0 - fee_tier)
         self.tau = tau
@@ -554,9 +553,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        if self.midprice_model is not None:
-            self.state[ASSET_PRICE_KEY] = self.midprice_model.current_state[:, 0].copy()
-
         if action is not None:
             self._rebalance(self.validate_action(action))
 
@@ -565,9 +561,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         buy_counts = np.minimum(arrivals[:, 1].astype(np.int64), self.max_arrivals_per_step)
 
         self._process_arrivals_alternating(sell_counts, buy_counts)
-
-        step_size = self.midprice_model.step_size if self.midprice_model else 0.005
-        self.state[TIME_KEY] += step_size
 
     def get_arrivals(self) -> np.ndarray:
         """
@@ -585,40 +578,4 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # No arguments! Uses arrival model's internal state
         return self.arrival_model.get_arrivals()
 
-    def _update_arrival_model(self, arrivals: np.ndarray, action: np.ndarray):
-        """
-        Update arrival model's internal state after processing arrivals.
 
-        Following mbt_gym pattern, this is called after state updates to prepare
-        the arrival model for the next timestep.
-
-        Args:
-            arrivals: Binary array of shape (num_trajectories, 2)
-            action: Agent action array
-        """
-        if self.arrival_model is None:
-            return
-
-        # Build state dict for arrival model
-        state_for_arrival = self._build_arrival_context()
-        self.arrival_model.update(arrivals, None, action, state_for_arrival)
-
-    def _build_arrival_context(self) -> dict:
-        """
-        Pre-compute values for state-dependent arrival models.
-
-        Returns:
-            dict with 'active_liquidity', 'amm_price', 'midprice' arrays,
-            each shape (num_trajectories,). Returns None if state is not initialized.
-        """
-        if self.state is None:
-            return None
-
-        _, active_liquidity = self._get_current_tick_liquidity()
-        sqrt_price = self.state[POOL_SQRT_PRICE_KEY]
-
-        return {
-            'active_liquidity': active_liquidity,
-            'amm_price': sqrt_price ** 2,
-            'midprice': self.state[ASSET_PRICE_KEY],
-        }
