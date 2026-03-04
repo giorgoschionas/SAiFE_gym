@@ -51,11 +51,8 @@ class AMMEnvironment(gymnasium.Env):
         self.action_space = self.model_dynamics.get_action_space()
 
         # Initialize state based on model dynamics type
-        if isinstance(self.model_dynamics, UniswapV3ModelDynamics):
-            self._initial_state = self._initialize_v3_state()
-        else:
-            # For other model types, initialize with placeholder or call their own init
-            self._initial_state = None
+        self._initial_state = self._initial_v3_state()
+        self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
 
         # Initialize random number generator
         if seed:
@@ -148,7 +145,7 @@ class AMMEnvironment(gymnasium.Env):
             ),
         })
 
-    def _initialize_v3_state(self) -> dict:
+    def _initial_v3_state(self) -> dict:
         """
         Initialize Uniswap v3 pool state.
 
@@ -327,7 +324,7 @@ class AMMEnvironment(gymnasium.Env):
     
     @property
     def initial_state(self):
-        return self._initial_state.copy()
+        return {k: v.copy() for k, v in self._initial_state.items()}
     
     @property
     def state(self):
