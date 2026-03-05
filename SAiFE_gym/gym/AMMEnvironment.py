@@ -248,7 +248,6 @@ class AMMEnvironment(gymnasium.Env):
         return self.model_dynamics.state, {}
 
 
-
     def step(self, action: np.ndarray):
         """Execute one environment step.
 

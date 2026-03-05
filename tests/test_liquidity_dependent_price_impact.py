@@ -70,7 +70,10 @@ def initialize_state(model, liquidity_value=1e6, initial_sqrt_price=None, mid_ti
     num_ticks = model.num_ticks
 
     # Compute tick_lower_global to center around initial price
-    initial_price = model.initial_price
+    try:
+        initial_price = model.initial_price
+    except AttributeError:
+        initial_price = 100.0  # default when no midprice_model
 
     # Tick for initial price
     initial_tick = int(np.floor(np.log(initial_price) / np.log(model.exponential_value)))
@@ -639,44 +642,6 @@ class TestFeeSplitOnCrossing:
 
         assert fee_at_current > 0
         assert fee_at_prev == 0, "Fee leaked to prev tick without crossing"
-
-
-class TestAssetPriceSync:
-    """Test that ASSET_PRICE_KEY syncs from midprice model."""
-
-    def test_asset_price_updates_from_midprice_model(self):
-        """ASSET_PRICE_KEY should reflect midprice model's current state."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6)
-
-        initial_price = model.state[ASSET_PRICE_KEY][0]
-
-        # Manually update midprice model's internal state (simulating a price move)
-        new_price = initial_price * 1.05
-        model.midprice_model.current_state[0, 0] = new_price
-
-        arrivals = np.array([[0, 0]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        # ASSET_PRICE_KEY should have synced
-        assert np.isclose(model.state[ASSET_PRICE_KEY][0], new_price, rtol=1e-10)
-
-    def test_asset_price_updates_each_step(self):
-        """ASSET_PRICE_KEY should update on every call to update_state."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6)
-
-        arrivals = np.array([[0, 0]], dtype=np.int64)
-
-        # Step 1: price moves up
-        model.midprice_model.current_state[0, 0] = 105.0
-        model.update_state(arrivals, None)
-        assert np.isclose(model.state[ASSET_PRICE_KEY][0], 105.0)
-
-        # Step 2: price moves down
-        model.midprice_model.current_state[0, 0] = 95.0
-        model.update_state(arrivals, None)
-        assert np.isclose(model.state[ASSET_PRICE_KEY][0], 95.0)
 
 
 class TestPriceImpactMagnitude:

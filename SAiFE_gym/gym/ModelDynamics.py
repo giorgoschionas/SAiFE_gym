@@ -51,6 +51,12 @@ class ModelDynamics(metaclass=abc.ABCMeta):
     def midprice(self):
         return self.midprice_model.current_state[:, 0].reshape(-1, 1)
 
+    @property
+    def initial_price(self):
+        if self.midprice_model is not None:
+            return self.midprice_model.initial_state[0, 0]
+        raise AttributeError("initial_price requires a midprice_model")
+
 
 
 class UniswapV3ModelDynamics(ModelDynamics):
