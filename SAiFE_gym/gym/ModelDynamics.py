@@ -51,6 +51,12 @@ class ModelDynamics(metaclass=abc.ABCMeta):
     def midprice(self):
         return self.midprice_model.current_state[:, 0].reshape(-1, 1)
 
+    @property
+    def initial_price(self):
+        if self.midprice_model is not None:
+            return self.midprice_model.initial_state[0, 0]
+        raise AttributeError("initial_price requires a midprice_model")
+
 
 
 class UniswapV3ModelDynamics(ModelDynamics):
@@ -72,7 +78,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         num_ticks: int = 1000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
         initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
-        rebalance_cost_coeff: float = 0.0, # Proportional cost per rebalance (e.g. 0.01 = 1%)
+        gas_cost: float = 0.0,            # Fixed cost per rebalance in token1 units
+        swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
     ):
         super().__init__(midprice_model = midprice_model,
@@ -80,7 +87,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
                          num_trajectories = num_trajectories,
                          seed = seed)
 
-        self.initial_price = midprice_model.initial_state[0, 0] if midprice_model else 100.0
         self.fee_tier = fee_tier
         self.fee_multiplier = fee_tier / (1.0 - fee_tier)
         self.tau = tau
@@ -89,7 +95,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.tick_factor = np.sqrt(exponential_value) - 1.0
         self.exp_quarter = exponential_value ** 0.25
         self.initial_wealth = initial_wealth
-        self.rebalance_cost_coeff = rebalance_cost_coeff
+        self.gas_cost = gas_cost
+        self.swap_fee_rate = swap_fee_rate
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
@@ -369,6 +376,27 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return lp_fee0, lp_fee1
 
+    def _compute_token0_fraction_vec(self, sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper):
+        """
+        Compute fraction of position value held in token0 (vectorized).
+
+        Returns α ∈ [0, 1]:
+        - price >= upper: 0.0 (all token1)
+        - price <= lower: 1.0 (all token0)
+        - in range: P*(1/√P - 1/√P_U) / (P*(1/√P - 1/√P_U) + (√P - √P_L))
+          where P = sqrt_p**2 (pool price)
+        """
+        above = sqrt_p >= sqrt_p_upper
+        below = sqrt_p <= sqrt_p_lower
+        in_range = ~above & ~below
+
+        numerator = np.where(in_range, sqrt_p**2 * (1.0 / sqrt_p - 1.0 / sqrt_p_upper), 0.0)
+        denominator = numerator + np.where(in_range, sqrt_p - sqrt_p_lower, 0.0)
+        safe_denom = np.where(denominator > 0, denominator, 1.0)
+        alpha_in_range = np.where(denominator > 0, numerator / safe_denom, 0.5)
+
+        return np.where(above, 0.0, np.where(below, 1.0, alpha_in_range))
+
     def _rebalance(self, action: np.ndarray):
         """
         Rebalance LP position: withdraw old position + fees, deploy into new range.
@@ -388,6 +416,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # --- Phase 1: Compute wealth ---
         wealth = np.full(num_traj, self.initial_wealth, dtype=np.float64)
+        alpha_current = np.zeros(num_traj)
 
         if np.any(has_position):
             # Compute position value for trajectories with existing positions
@@ -410,8 +439,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             wealth_with_pos = pos_value + fee_value
 
-            # Apply rebalancing cost (proportional to total position value)
-            wealth_with_pos *= (1.0 - self.rebalance_cost_coeff)
+            alpha_pos = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper)
+            token0_value = alpha_pos * pos_value + fee0 * external_price
+            alpha_current = np.where(wealth_with_pos > 0, token0_value / wealth_with_pos, 0.0)
 
             wealth = np.where(has_position, wealth_with_pos, wealth)
 
@@ -430,6 +460,13 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         sqrt_p_new_lower = np.sqrt(self.exponential_value ** new_lower.astype(np.float64))
         sqrt_p_new_upper = np.sqrt(self.exponential_value ** new_upper.astype(np.float64))
+
+        # Apply decomposed rebalancing cost (only for existing positions)
+        if np.any(has_position):
+            alpha_new = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_new_lower, sqrt_p_new_upper)
+            swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
+            total_cost = np.where(has_position, self.gas_cost + swap_cost, 0.0)
+            wealth = np.maximum(wealth - total_cost, 0.0)
 
         # Value per unit liquidity at new range
         value_per_L = get_position_value_vec(
@@ -472,6 +509,39 @@ class UniswapV3ModelDynamics(ModelDynamics):
             xi = self._compute_local_xi()[xi_index]
             process_fn(active, xi)
 
+    def _process_arrivals_alternating(self, sell_counts: np.ndarray, buy_counts: np.ndarray) -> None:
+        """
+        Process sell and buy arrivals in interleaved rounds with randomized intra-round ordering.
+
+        Each round i:
+        - Trajectories with sell_counts > i execute one sell
+        - Trajectories with buy_counts > i execute one buy
+        - The within-round order (sell-first or buy-first) is chosen randomly each round
+
+        Once one side is exhausted, remaining trades of the other side continue alone.
+        Using self.rng ensures reproducibility via the seed parameter.
+
+        Args:
+            sell_counts: Integer array, shape (num_trajectories,)
+            buy_counts:  Integer array, shape (num_trajectories,)
+        """
+        max_count = int(np.max(np.maximum(sell_counts, buy_counts))) \
+            if np.any((sell_counts > 0) | (buy_counts > 0)) else 0
+        for i in range(max_count):
+            active_sell = sell_counts > i
+            active_buy  = buy_counts  > i
+            sell_first  = bool(self.rng.integers(0, 2))
+            if sell_first:
+                if np.any(active_sell):
+                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
+                if np.any(active_buy):
+                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
+            else:
+                if np.any(active_buy):
+                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
+                if np.any(active_sell):
+                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
+
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
         Process one timestep: rebalance LP, execute swaps, advance time.
@@ -489,9 +559,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
 
-        if self.midprice_model is not None:
-            self.state[ASSET_PRICE_KEY] = self.midprice_model.current_state[:, 0].copy()
-
         if action is not None:
             self._rebalance(self.validate_action(action))
 
@@ -499,11 +566,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sell_counts = np.minimum(arrivals[:, 0].astype(np.int64), self.max_arrivals_per_step)
         buy_counts = np.minimum(arrivals[:, 1].astype(np.int64), self.max_arrivals_per_step)
 
-        self._process_arrivals(sell_counts, xi_index=0, process_fn=self._process_sell_single)
-        self._process_arrivals(buy_counts, xi_index=1, process_fn=self._process_buy_single)
-
-        step_size = self.midprice_model.step_size if self.midprice_model else 0.005
-        self.state[TIME_KEY] += step_size
+        self._process_arrivals_alternating(sell_counts, buy_counts)
 
     def get_arrivals(self) -> np.ndarray:
         """
@@ -521,40 +584,4 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # No arguments! Uses arrival model's internal state
         return self.arrival_model.get_arrivals()
 
-    def _update_arrival_model(self, arrivals: np.ndarray, action: np.ndarray):
-        """
-        Update arrival model's internal state after processing arrivals.
 
-        Following mbt_gym pattern, this is called after state updates to prepare
-        the arrival model for the next timestep.
-
-        Args:
-            arrivals: Binary array of shape (num_trajectories, 2)
-            action: Agent action array
-        """
-        if self.arrival_model is None:
-            return
-
-        # Build state dict for arrival model
-        state_for_arrival = self._build_arrival_context()
-        self.arrival_model.update(arrivals, None, action, state_for_arrival)
-
-    def _build_arrival_context(self) -> dict:
-        """
-        Pre-compute values for state-dependent arrival models.
-
-        Returns:
-            dict with 'active_liquidity', 'amm_price', 'midprice' arrays,
-            each shape (num_trajectories,). Returns None if state is not initialized.
-        """
-        if self.state is None:
-            return None
-
-        _, active_liquidity = self._get_current_tick_liquidity()
-        sqrt_price = self.state[POOL_SQRT_PRICE_KEY]
-
-        return {
-            'active_liquidity': active_liquidity,
-            'amm_price': sqrt_price ** 2,
-            'midprice': self.state[ASSET_PRICE_KEY],
-        }

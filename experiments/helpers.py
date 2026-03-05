@@ -61,25 +61,28 @@ def get_amm_env(
     volatility: float = VOLATILITY,
     arrival_rate: float = 100.0,
     alpha3: float = 0.0,
-    rebalance_cost_coeff: float = 0.0,
+    gas_cost: float = 0.0,
+    swap_fee_rate: float = 0.0,
     reward_function: RewardFunction = None,
     seed: int = SEED,
 ) -> AMMEnvironment:
     """Build an AMMEnvironment for LP training / evaluation.
 
     Args:
-        num_trajectories:     Parallel trajectories (acts as vectorised batch size).
-        terminal_time:        Episode length.
-        n_steps:              Number of discrete steps per episode.
-        tau:                  LP position half-width in ticks (action range ±tau).
-        volatility:           Brownian motion volatility of the external mid-price.
-        arrival_rate:         Baseline Poisson order arrival rate (α₁ for both sides).
-        alpha3:               Arbitrage / toxicity coefficient (α₃). Higher values
-                              mean informed traders exploit mispricing more aggressively.
-        rebalance_cost_coeff: Proportional cost applied to LP wealth at every rebalance
-                              (e.g. 0.001 = 0.1% per step). Compounds over n_steps.
-        reward_function:      Defaults to PnL.
-        seed:                 Random seed.
+        num_trajectories: Parallel trajectories (acts as vectorised batch size).
+        terminal_time:    Episode length.
+        n_steps:          Number of discrete steps per episode.
+        tau:              LP position half-width in ticks (action range ±tau).
+        volatility:       Brownian motion volatility of the external mid-price.
+        arrival_rate:     Baseline Poisson order arrival rate (α₁ for both sides).
+        alpha3:           Arbitrage / toxicity coefficient (α₃). Higher values
+                          mean informed traders exploit mispricing more aggressively.
+        gas_cost:         Fixed cost per rebalance in token1 units (e.g. 10.0).
+                          Applied only when the LP already holds a position.
+        swap_fee_rate:    Fee rate on the imbalanced swap amount when rebalancing
+                          (e.g. 0.001 = 0.1%). Cost = rate * W * |α_new - α_current|.
+        reward_function:  Defaults to PnL.
+        seed:             Random seed.
 
     Returns:
         Configured AMMEnvironment ready for reset / step.
@@ -118,7 +121,8 @@ def get_amm_env(
         num_ticks=NUM_TICKS,
         exponential_value=1.0001,
         initial_wealth=INITIAL_WEALTH,
-        rebalance_cost_coeff=rebalance_cost_coeff,
+        gas_cost=gas_cost,
+        swap_fee_rate=swap_fee_rate,
         seed=seed + 2,
     )
     return AMMEnvironment(
