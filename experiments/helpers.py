@@ -37,7 +37,7 @@ N_STEPS = 200
 INITIAL_PRICE = 100.0
 VOLATILITY = 2.0
 FEE_TIER = 0.003
-NUM_TICKS = 1000
+NUM_TICKS = 5000
 LIQUIDITY_SCALE = 1e6
 INITIAL_WEALTH = 1e6
 SEED = 42
@@ -235,17 +235,28 @@ def get_ppo_learner_and_callback(
     return model, callback
 
 
-def get_experiment_string(env: AMMEnvironment, tau: int = None, alpha3: float = None) -> str:
+def get_experiment_string(
+    env: AMMEnvironment,
+    tau: int = None,
+    alpha3: float = None,
+    gas_cost: float = None,
+    swap_fee_rate: float = None,
+) -> str:
     tau = tau if tau is not None else env.model_dynamics.tau
     alpha3 = alpha3 if alpha3 is not None else 0.0
     reward_name = type(env.reward_function).__name__
-    return (
+    s = (
         f"n_traj_{env.num_trajectories}"
         f"__tau_{tau}"
         f"__alpha3_{alpha3}"
         f"__vol_{env.model_dynamics.midprice_model.volatility}"
         f"__reward_{reward_name}"
     )
+    if gas_cost is not None and gas_cost > 0:
+        s += f"__gas_{gas_cost}"
+    if swap_fee_rate is not None and swap_fee_rate > 0:
+        s += f"__swapfee_{swap_fee_rate}"
+    return s
 
 
 # ---------------------------------------------------------------------------
@@ -288,6 +299,7 @@ def compare_rl_vs_uniform(
     sb3_env: StableBaselinesAMMEnvironment,
     n_eval_episodes: int = 10,
     initial_wealth: float = INITIAL_WEALTH,
+    vec_normalize: VecNormalize = None,
 ) -> dict:
     """Evaluate a trained PPO model against UniformAllocationAgent.
 
@@ -301,6 +313,10 @@ def compare_rl_vs_uniform(
                         (used only to access the obs flattening function).
         n_eval_episodes: Number of episodes to average over.
         initial_wealth: Starting wealth for final wealth calculation.
+        vec_normalize:  Optional VecNormalize wrapper from training. When provided,
+                        its running statistics (mean/std) are applied to flatten
+                        observations before feeding them to the RL agent, matching
+                        the normalization the model was trained with.
 
     Returns:
         dict with keys 'rl' and 'uniform', each containing:
@@ -310,11 +326,18 @@ def compare_rl_vs_uniform(
     """
     rl_agent = SbAgent(model, num_trajectories=env.num_trajectories)
     uniform_agent = UniformAllocationAgent(env)
-    obs_transform = sb3_env._flatten_obs
+    flatten = sb3_env._flatten_obs
+
+    # Build RL obs transform: flatten → normalize (if VecNormalize stats available)
+    if vec_normalize is not None:
+        vec_normalize.training = False  # don't update running stats during eval
+        rl_obs_transform = lambda obs: vec_normalize.normalize_obs(flatten(obs))
+    else:
+        rl_obs_transform = flatten
 
     results = {}
     for name, agent, transform in [
-        ("rl",      rl_agent,      obs_transform),
+        ("rl",      rl_agent,      rl_obs_transform),
         ("uniform", uniform_agent, None),
     ]:
         all_wealths = []
