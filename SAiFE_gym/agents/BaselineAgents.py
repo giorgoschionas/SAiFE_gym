@@ -62,6 +62,7 @@ class UniformAllocationAgent(Agent):
     def get_action(self, state: dict) -> np.ndarray:
 
         action = np.array([[-self.tau, self.tau]])
+        action = np.array([[-5, +5]])
         return np.repeat(action, self.env.num_trajectories, axis=0)
 
 class CarteaPLAgent(Agent):
@@ -157,18 +158,14 @@ class CarteaPLAgent(Agent):
 
         # Optimal deltas from equations (27)
         delta_lower = base_term - mu  # δₗ* = base_term - μ
-        
-        if delta_lower > 2 * np.ones(self.num_trajectories):
-            delta_lower = 2 * np.ones(self.num_trajectories)
-        if delta_lower < np.zeros(self.num_trajectories):
-            delta_lower = 0.001* np.ones(self.num_trajectories)
+
+        # Clip delta_lower to valid bounds [0.0001, 2.0]
+        delta_lower = np.clip(delta_lower, 0.0001, 2.0)
 
         delta_upper = base_term + mu  # δᵤ* = base_term + μ
-        
-        if delta_upper > 2 * np.ones(self.num_trajectories):
-            delta_upper = 1.999 * np.ones(self.num_trajectories)
-        if delta_upper < np.zeros(self.num_trajectories):
-            delta_upper = np.zeros(self.num_trajectories) 
+
+        # Clip delta_upper to valid bounds [0.0, 1.9999]
+        delta_upper = np.clip(delta_upper, 0.0, 1.9999) 
 
         return delta_lower, delta_upper
 
