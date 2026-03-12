@@ -173,6 +173,7 @@ def get_ppo_learner_and_callback(
     alpha3: float = None,
     normalise_obs: bool = True,
     learning_rate: float = 3e-4,
+    eval_log_path: str = None,
 ):
     """Build a PPO model and EvalCallback for the given environment.
 
@@ -223,10 +224,14 @@ def get_ppo_learner_and_callback(
         gae_lambda=0.95,
         gamma=1.0,
     )
+    eval_vec = wrap_env(env, normalise_obs=normalise_obs)
+    if isinstance(eval_vec, VecNormalize):
+        eval_vec.training = False  # stats synced from training env; don't update here
     callback_params = dict(
-        eval_env=wrap_env(env, normalise_obs=False),  # raw env for evaluation
+        eval_env=eval_vec,
         n_eval_episodes=10,
         best_model_save_path=os.path.join(best_model_path, experiment_str),
+        log_path=eval_log_path,
         deterministic=True,
         eval_freq=rollout_size * 10,
     )
@@ -456,6 +461,212 @@ def plot_training_curve_vs_uniform(
     else:
         plt.show()
 
+    return fig
+
+
+def plot_convergence_curve(
+    log_path: str,
+    uniform_baseline_reward: float = None,
+    title: str = "PPO convergence: mean eval reward vs timesteps",
+    save_figure: bool = False,
+    figures_dir: str = "./figures",
+    filename: str = "convergence_curve.png",
+) -> plt.Figure:
+    """Load EvalCallback's evaluations.npz and plot convergence.
+
+    Args:
+        log_path:                Directory containing evaluations.npz
+                                 (same value passed as eval_log_path in
+                                 get_ppo_learner_and_callback).
+        uniform_baseline_reward: Mean episode reward of UniformAllocationAgent
+                                 (ΔWealth, not absolute wealth). If provided,
+                                 drawn as a dashed reference line.
+    """
+    data = np.load(os.path.join(log_path, "evaluations.npz"))
+    timesteps = data["timesteps"]               # (n_checkpoints,)
+    results   = data["results"]                 # (n_checkpoints, n_eval_episodes)
+    mean_rewards = results.mean(axis=1)
+    std_rewards  = results.std(axis=1)
+
+    fig, ax = plt.subplots(figsize=(9, 5))
+    ax.plot(timesteps, mean_rewards,
+            color=AGENT_COLORS["rl"], linewidth=1.5, label=AGENT_LABELS["rl"])
+    ax.fill_between(timesteps,
+                    mean_rewards - std_rewards,
+                    mean_rewards + std_rewards,
+                    alpha=0.2, color=AGENT_COLORS["rl"])
+    if uniform_baseline_reward is not None:
+        ax.axhline(uniform_baseline_reward,
+                   color=AGENT_COLORS["uniform"], linestyle="--", linewidth=1.5,
+                   label=f"{AGENT_LABELS['uniform']} ({uniform_baseline_reward:+.0f})")
+    ax.set_xlabel("Training timesteps")
+    ax.set_ylabel("Mean episode reward")
+    ax.set_title(title)
+    ax.legend()
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    if save_figure:
+        os.makedirs(figures_dir, exist_ok=True)
+        fig.savefig(os.path.join(figures_dir, filename), dpi=150, bbox_inches="tight")
+    else:
+        plt.show()
+    return fig
+
+
+def create_policy_behavior_plot(
+    model: PPO,
+    vec_normalize: VecNormalize,
+    tau: int,
+    n_points: int = 101,
+    mispricing_range: tuple = (-5.0, 5.0),
+    fixed_lp_liquidity: float = 2e8,
+    fixed_time: float = 0.5,
+    title: str = "Policy behavior vs mispricing",
+    save_figure: bool = False,
+    figures_dir: str = "./figures",
+    filename: str = "policy_behavior.png",
+) -> plt.Figure:
+    """Plot tick offsets chosen by RL vs Uniform agent as mispricing varies.
+
+    Analogous to mbt's create_inventory_plot(): sweeps mispricing on the
+    x-axis (the LP's primary adverse-selection signal) while holding all
+    other observations at neutral values.
+
+    A converged policy should show a structured response to mispricing
+    (e.g. narrowing the range or shifting it defensively when mispricing
+    is large), unlike the flat Uniform baseline.
+
+    Obs column order (DEFAULT_OBS_KEYS):
+        0: MISPRICING_KEY       ← swept
+        1: LP_LOWER_OFFSET_KEY
+        2: LP_UPPER_OFFSET_KEY
+        3: LP_LIQUIDITY_KEY
+        4: LP_COLLECTED_FEES0_KEY
+        5: LP_COLLECTED_FEES1_KEY
+        6: ASSET_PRICE_KEY
+        7: TIME_KEY
+    """
+    mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
+
+    raw_obs = np.column_stack([
+        mispricings,
+        np.full(n_points, float(tau)),
+        np.full(n_points, float(tau)),
+        np.full(n_points, fixed_lp_liquidity),
+        np.zeros(n_points),
+        np.zeros(n_points),
+        np.full(n_points, INITIAL_PRICE),
+        np.full(n_points, fixed_time),
+    ]).astype(np.float32)
+
+    old_training = vec_normalize.training
+    vec_normalize.training = False
+    norm_obs = vec_normalize.normalize_obs(raw_obs)
+    vec_normalize.training = old_training
+
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)  # (n_points, 2)
+    rl_lower, rl_upper = rl_actions[:, 0], rl_actions[:, 1]
+
+    fig, (ax_lo, ax_hi) = plt.subplots(1, 2, figsize=(12, 5))
+    fig.suptitle(title)
+
+    for ax, rl_vals, uniform_val, ylabel, sub_title in [
+        (ax_lo, rl_lower, -tau, "lower_offset", "Lower bound action"),
+        (ax_hi, rl_upper,  tau, "upper_offset", "Upper bound action"),
+    ]:
+        ax.plot(mispricings, rl_vals,
+                color=AGENT_COLORS["rl"], linewidth=1.5, label=AGENT_LABELS["rl"])
+        ax.axhline(uniform_val,
+                   color=AGENT_COLORS["uniform"], linestyle="--", linewidth=1.5,
+                   label=AGENT_LABELS["uniform"])
+        ax.axvline(0, color="gray", linestyle=":", linewidth=0.8)
+        ax.set_xlabel("Mispricing (asset_price − AMM_price)")
+        ax.set_ylabel(ylabel)
+        ax.set_title(sub_title)
+        ax.legend()
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_figure:
+        os.makedirs(figures_dir, exist_ok=True)
+        fig.savefig(os.path.join(figures_dir, filename), dpi=150, bbox_inches="tight")
+    else:
+        plt.show()
+    return fig
+
+
+def create_time_behavior_plot(
+    model: PPO,
+    vec_normalize: VecNormalize,
+    tau: int,
+    mispricing_levels: list = None,
+    n_time_points: int = 101,
+    fixed_lp_liquidity: float = 2e8,
+    title: str = "Policy behavior vs time",
+    save_figure: bool = False,
+    figures_dir: str = "./figures",
+    filename: str = "policy_time_behavior.png",
+) -> plt.Figure:
+    """Plot how tick offsets evolve over the episode at fixed mispricing levels.
+
+    Analogous to mbt's create_time_plot(). Multiple lines (one per mispricing
+    level) show whether the policy adapts its range width over time.
+    """
+    if mispricing_levels is None:
+        mispricing_levels = [-5.0, 0.0, 5.0]
+    time_vals  = np.linspace(0.0, TERMINAL_TIME, n_time_points)
+    n_levels   = len(mispricing_levels)
+    n_total    = n_levels * n_time_points
+
+    mispricing_rep = np.repeat(mispricing_levels, n_time_points).astype(np.float32)
+    time_tiled     = np.tile(time_vals, n_levels).astype(np.float32)
+    raw_obs = np.column_stack([
+        mispricing_rep,
+        np.full(n_total, float(tau)),
+        np.full(n_total, float(tau)),
+        np.full(n_total, fixed_lp_liquidity),
+        np.zeros(n_total),
+        np.zeros(n_total),
+        np.full(n_total, INITIAL_PRICE),
+        time_tiled,
+    ]).astype(np.float32)
+
+    old_training = vec_normalize.training
+    vec_normalize.training = False
+    norm_obs = vec_normalize.normalize_obs(raw_obs)
+    vec_normalize.training = old_training
+
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)       # (n_total, 2)
+    rl_actions = rl_actions.reshape(n_levels, n_time_points, 2)       # (levels, time, 2)
+
+    level_colors = plt.cm.RdYlGn(np.linspace(0.15, 0.85, n_levels))
+    fig, (ax_lo, ax_hi) = plt.subplots(1, 2, figsize=(13, 5))
+    fig.suptitle(title)
+
+    for i, (mp, color) in enumerate(zip(mispricing_levels, level_colors)):
+        label = f"mispricing={mp:+.1f}"
+        ax_lo.plot(time_vals, rl_actions[i, :, 0], color=color, linewidth=1.5, label=label)
+        ax_hi.plot(time_vals, rl_actions[i, :, 1], color=color, linewidth=1.5, label=label)
+
+    for ax, uniform_val, ylabel, sub_title in [
+        (ax_lo, -tau, "lower_offset", "Lower bound action vs time"),
+        (ax_hi,  tau, "upper_offset", "Upper bound action vs time"),
+    ]:
+        ax.axhline(uniform_val,
+                   color=AGENT_COLORS["uniform"], linestyle="--", linewidth=1.2,
+                   label=AGENT_LABELS["uniform"])
+        ax.set_xlabel("Time t / T")
+        ax.set_ylabel(ylabel)
+        ax.set_title(sub_title)
+        ax.legend(fontsize=8)
+        ax.grid(True, alpha=0.3)
+
+    plt.tight_layout()
+    if save_figure:
+        os.makedirs(figures_dir, exist_ok=True)
+        fig.savefig(os.path.join(figures_dir, filename), dpi=150, bbox_inches="tight")
+    else:
+        plt.show()
     return fig
 
 
