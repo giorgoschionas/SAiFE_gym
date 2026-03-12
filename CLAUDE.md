@@ -112,8 +112,8 @@ The state is a **dictionary** with the following keys:
 **Fees (accumulated totals):**
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `FEES0_KEY` | `(num_trajectories,)` | Total fees collected in token0 |
-| `FEES1_KEY` | `(num_trajectories,)` | Total fees collected in token1 |
+| `FEES0_KEY` | `(num_trajectories, num_ticks)` | Total fees collected in token0 per tick |
+| `FEES1_KEY` | `(num_trajectories, num_ticks)` | Total fees collected in token1 per tick |
 
 **LP position state:**
 | Key | Shape | Description |
@@ -147,11 +147,6 @@ The state is a **dictionary** with the following keys:
   - 1 tick containing current price (center tick at index τ)
   - τ ticks above current price
 - **Action space shape**: `Box(low=0, high=1, shape=(2*tau+1,))`
-
-**Why dynamic?**
-- Focuses liquidity provision around the current trading range
-- Reduces action space dimensionality
-- Moves the active window as price evolves and LPs gets out of range
 
 **tick Structure:**
 - Each tick: `{'p_low': lower_price, 'p_high': upper_price}`
