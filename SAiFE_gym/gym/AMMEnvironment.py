@@ -9,6 +9,7 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
     FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     ASSET_PRICE_KEY, TIME_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
@@ -202,6 +203,10 @@ class AMMEnvironment(gymnasium.Env):
             # LP cumulative fee tracking (across all rebalances)
             LP_COLLECTED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
             LP_COLLECTED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+
+            # LP fee snapshots (for excluding pre-entry fees)
+            LP_FEE_SNAPSHOT0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_FEE_SNAPSHOT1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
 
             # Market state
             ASSET_PRICE_KEY: np.full(

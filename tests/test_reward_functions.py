@@ -19,7 +19,8 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -50,6 +51,8 @@ def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
         LP_TICK_UPPER_KEY: np.full(num_traj, lp_upper_tick, dtype=np.float64),
         LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, price, dtype=np.float64),
         TIME_KEY: np.full(num_traj, time, dtype=np.float64),
     }
@@ -446,6 +449,8 @@ def _initialize_model_state(model):
         LP_TICK_UPPER_KEY: np.full(num_traj, initial_tick + model.tau, dtype=np.float64),
         LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
