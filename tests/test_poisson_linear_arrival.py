@@ -52,8 +52,8 @@ class TestPoissonLinearArrivalModelStateful:
         arrivals = model.get_arrivals()  # No arguments!
         assert arrivals.shape == (num_trajectories, 2), \
             f"Expected shape ({num_trajectories}, 2), got {arrivals.shape}"
-        assert np.issubdtype(arrivals.dtype, np.integer), \
-            f"Expected integer dtype, got {arrivals.dtype}"
+        assert arrivals.dtype == bool, \
+            f"Expected bool dtype, got {arrivals.dtype}"
 
     def test_reset_restores_baseline(self):
         """Test that reset() restores baseline intensity."""
@@ -276,25 +276,6 @@ class TestPoissonLinearArrivalModelStateful:
                 ]),
                 num_trajectories=1
             )
-
-    def test_arrivals_can_exceed_one(self):
-        """With high intensity, Poisson counts can exceed 1."""
-        num_trajectories = 1000
-        model = PoissonLinearArrivalModel(
-            alpha=np.array([
-                [10.0, 10.0],
-                [500.0, 500.0],  # High baseline
-                [0.0, 0.0],
-                [0.0, 0.0],
-            ]),
-            step_size=0.01,  # lambda = 500 * 0.01 = 5
-            num_trajectories=num_trajectories,
-            seed=42,
-        )
-        arrivals = model.get_arrivals()
-        # With lambda=5, P(X>1) is very high; at least some should exceed 1
-        assert np.any(arrivals > 1), \
-            "With high intensity, some arrival counts should exceed 1"
 
     def test_default_alpha_values(self):
         """Test that default alpha values are used when not provided."""

@@ -8,7 +8,7 @@ Tests verify:
 4. Zero liquidity: price jumps to boundary
 5. Vectorization: multiple trajectories with different directions
 6. Fee calculation proportional to local xi
-7. Multiple arrivals: Poisson counts > 1 cross multiple ticks
+7. Bernoulli arrivals: at most one sell + one buy per step
 """
 
 import numpy as np
@@ -19,7 +19,8 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
 )
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
@@ -103,6 +104,8 @@ def initialize_state(model, liquidity_value=1e6, initial_sqrt_price=None, mid_ti
         LP_TICK_UPPER_KEY: np.full(num_traj, initial_tick + model.tau, dtype=np.float64),
         LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
     }
@@ -234,7 +237,7 @@ class TestNoCrossing:
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         # Sell arrival
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
@@ -255,7 +258,7 @@ class TestCrossing:
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         # Sell arrival
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         new_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
@@ -276,7 +279,7 @@ class TestCrossing:
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         # Buy arrival
-        arrivals = np.array([[0, 1]], dtype=np.int64)
+        arrivals = np.array([[False, True]])
         model.update_state(arrivals, None)
 
         new_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
@@ -305,7 +308,7 @@ class TestZeroLiquidity:
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         # Sell arrival
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
@@ -326,7 +329,7 @@ class TestZeroLiquidity:
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
         # Buy arrival
-        arrivals = np.array([[0, 1]], dtype=np.int64)
+        arrivals = np.array([[False, True]])
         model.update_state(arrivals, None)
 
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
@@ -335,67 +338,58 @@ class TestZeroLiquidity:
         assert new_tick == initial_tick + 1
 
 
-class TestMultipleArrivals:
-    """Test that multiple arrivals (Poisson counts > 1) move multiple ticks."""
-
-    def test_multiple_sells_move_multiple_ticks(self):
-        """arrivals=[[3,0]] should move tick down by ~3."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6, mid_tick=True)
-
-        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
-
-        arrivals = np.array([[3, 0]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
-
-        # Each sell crosses one tick, so 3 sells → tick decreases by 3
-        assert new_tick == initial_tick - 3
-
-    def test_multiple_buys_move_multiple_ticks(self):
-        """arrivals=[[0,3]] should move tick up by ~3."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6, mid_tick=True)
-
-        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
-
-        arrivals = np.array([[0, 3]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
-
-        # Each buy crosses one tick, so 3 buys → tick increases by 3
-        assert new_tick == initial_tick + 3
+class TestSingleArrival:
+    """Test Bernoulli arrivals: at most one sell + one buy per step."""
 
     def test_zero_arrivals_no_change(self):
-        """arrivals=[[0,0]] should not change price or tick."""
+        """arrivals=[[False,False]] should not change price or tick."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6, mid_tick=True)
 
         initial_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0].copy()
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        arrivals = np.array([[0, 0]], dtype=np.int64)
+        arrivals = np.array([[False, False]])
         model.update_state(arrivals, None)
 
         assert model.state[POOL_SQRT_PRICE_KEY][0] == initial_sqrt_price
         assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick
 
-    def test_multiple_sells_and_buys(self):
-        """arrivals=[[2,3]] should move tick by net +1 (3 buys - 2 sells)."""
+    def test_single_sell_one_tick(self):
+        """[[True, False]] → exactly -1 tick."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6, mid_tick=True)
 
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        # 2 sells and 3 buys: net tick movement should be +1
-        arrivals = np.array([[2, 3]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
-        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
-        # Interleaved with randomized order: net movement = buys - sells = +1
-        assert new_tick == initial_tick + 1
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick - 1
+
+    def test_single_buy_one_tick(self):
+        """[[False, True]] → exactly +1 tick."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        arrivals = np.array([[False, True]])
+        model.update_state(arrivals, None)
+
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick + 1
+
+    def test_simultaneous_net_zero(self):
+        """[[True, True]] → net 0 tick movement."""
+        model = create_test_model(num_trajectories=1, num_ticks=100)
+        initialize_state(model, liquidity_value=1e6, mid_tick=True)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
+
+        arrivals = np.array([[True, True]])
+        model.update_state(arrivals, None)
+
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick
 
 
 class TestVectorization:
@@ -411,11 +405,11 @@ class TestVectorization:
 
         # Different arrivals for each trajectory:
         arrivals = np.array([
-            [1, 0],  # sell
-            [0, 0],  # no trade
-            [0, 1],  # buy
-            [1, 1],  # both
-        ], dtype=np.int64)
+            [True, False],   # sell
+            [False, False],  # no trade
+            [False, True],   # buy
+            [True, True],    # both
+        ])
 
         model.update_state(arrivals, None)
 
@@ -446,9 +440,9 @@ class TestVectorization:
 
         # Both sell
         arrivals = np.array([
-            [1, 0],
-            [1, 0],
-        ], dtype=np.int64)
+            [True, False],
+            [True, False],
+        ])
 
         model.update_state(arrivals, None)
 
@@ -487,7 +481,7 @@ class TestFeeCalculation:
 
         initial_fees0 = model.state[FEES0_KEY][0].sum()
 
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         new_fees0 = model.state[FEES0_KEY][0].sum()
@@ -522,7 +516,7 @@ class TestFeeCalculation:
 
         initial_fees1 = model.state[FEES1_KEY][0].sum()
 
-        arrivals = np.array([[0, 1]], dtype=np.int64)
+        arrivals = np.array([[False, True]])
         model.update_state(arrivals, None)
 
         new_fees1 = model.state[FEES1_KEY][0].sum()
@@ -575,7 +569,7 @@ class TestFeeSplitOnCrossing:
         x_to_boundary   = L      * (1.0 / sqrt_p_low   - 1.0 / sqrt_p_c)
         x_from_boundary = L_prev * (1.0 / sqrt_p_cross  - 1.0 / sqrt_p_low)
 
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick - 1
@@ -606,7 +600,7 @@ class TestFeeSplitOnCrossing:
         y_to_boundary   = L      * (sqrt_p_high  - sqrt_p_c)
         y_from_boundary = L_next * (sqrt_p_cross - sqrt_p_high)
 
-        arrivals = np.array([[0, 1]], dtype=np.int64)
+        arrivals = np.array([[False, True]])
         model.update_state(arrivals, None)
 
         assert model.state[POOL_CURRENT_TICK_KEY][0] == current_tick + 1
@@ -668,26 +662,6 @@ class TestPriceImpactMagnitude:
         assert model_high.state[POOL_CURRENT_TICK_KEY][0] == initial_tick_high - 1
         assert model_low.state[POOL_CURRENT_TICK_KEY][0] == initial_tick_low - 1
 
-    def test_more_arrivals_larger_price_impact(self):
-        """More arrivals should cause larger total price movement."""
-        model_1 = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_1, liquidity_value=1e6, mid_tick=True)
-        initial_price_1 = model_1.state[POOL_SQRT_PRICE_KEY][0] ** 2
-
-        model_3 = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model_3, liquidity_value=1e6, mid_tick=True)
-        initial_price_3 = model_3.state[POOL_SQRT_PRICE_KEY][0] ** 2
-
-        # 1 sell
-        model_1.update_state(np.array([[1, 0]], dtype=np.int64), None)
-        impact_1 = abs(model_1.state[POOL_SQRT_PRICE_KEY][0] ** 2 - initial_price_1)
-
-        # 3 sells
-        model_3.update_state(np.array([[3, 0]], dtype=np.int64), None)
-        impact_3 = abs(model_3.state[POOL_SQRT_PRICE_KEY][0] ** 2 - initial_price_3)
-
-        assert impact_3 > impact_1
-
 
 class TestSequentialProcessing:
     """Test that sell and buy are processed sequentially."""
@@ -700,7 +674,7 @@ class TestSequentialProcessing:
         initial_fees0 = model.state[FEES0_KEY][0].sum()
         initial_fees1 = model.state[FEES1_KEY][0].sum()
 
-        arrivals = np.array([[1, 1]], dtype=np.int64)
+        arrivals = np.array([[True, True]])
         model.update_state(arrivals, None)
 
         assert model.state[FEES0_KEY][0].sum() > initial_fees0, "Sell fee not collected"
@@ -724,7 +698,7 @@ class TestSequentialProcessing:
         x_from_boundary = L_prev * (1.0 / sqrt_p_cross  - 1.0 / sqrt_p_low)
 
         # Use sell-only to guarantee the sell executes from the pre-computed initial state
-        arrivals = np.array([[1, 0]], dtype=np.int64)
+        arrivals = np.array([[True, False]])
         model.update_state(arrivals, None)
 
         fee_multiplier = model.fee_tier / (1.0 - model.fee_tier)
@@ -741,7 +715,7 @@ class TestSequentialProcessing:
         # With local xi, sell will cross (tick -= 1)
         # Then buy should start from the new (lower) price
 
-        arrivals = np.array([[1, 1]], dtype=np.int64)
+        arrivals = np.array([[True, True]])
         model.update_state(arrivals, None)
 
         final_sqrt_price = model.state[POOL_SQRT_PRICE_KEY][0]
@@ -749,7 +723,7 @@ class TestSequentialProcessing:
         # Compare to sell-only to ensure buy also had an effect
         model_sell_only = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_sell_only, liquidity_value=1e8, mid_tick=True)
-        model_sell_only.update_state(np.array([[1, 0]], dtype=np.int64), None)
+        model_sell_only.update_state(np.array([[True, False]]), None)
         sell_only_sqrt_price = model_sell_only.state[POOL_SQRT_PRICE_KEY][0]
 
         # Final price should be higher than sell-only (buy increased it)
@@ -757,12 +731,12 @@ class TestSequentialProcessing:
             "Buy did not increase price after sell"
 
     def test_sequential_vs_individual_arrivals(self):
-        """Test that [1,1] processes both, not just one."""
+        """Test that [True,True] processes both, not just one."""
         # Scenario: simultaneous arrivals
         model_both = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_both, liquidity_value=1e8, mid_tick=True)
 
-        arrivals_both = np.array([[1, 1]], dtype=np.int64)
+        arrivals_both = np.array([[True, True]])
         model_both.update_state(arrivals_both, None)
 
         fees0_both = model_both.state[FEES0_KEY][0].sum()
@@ -772,7 +746,7 @@ class TestSequentialProcessing:
         model_sell = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_sell, liquidity_value=1e8, mid_tick=True)
 
-        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+        arrivals_sell = np.array([[True, False]])
         model_sell.update_state(arrivals_sell, None)
 
         fees0_sell = model_sell.state[FEES0_KEY][0].sum()
@@ -782,15 +756,15 @@ class TestSequentialProcessing:
         model_buy = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_buy, liquidity_value=1e8, mid_tick=True)
 
-        arrivals_buy = np.array([[0, 1]], dtype=np.int64)
+        arrivals_buy = np.array([[False, True]])
         model_buy.update_state(arrivals_buy, None)
 
         fees0_buy = model_buy.state[FEES0_KEY][0].sum()
         fees1_buy = model_buy.state[FEES1_KEY][0].sum()
 
         # Both arrivals should collect both fees
-        assert fees0_both > 0, "Sell fee not collected in [1,1]"
-        assert fees1_both > 0, "Buy fee not collected in [1,1]"
+        assert fees0_both > 0, "Sell fee not collected in [True,True]"
+        assert fees1_both > 0, "Buy fee not collected in [True,True]"
 
         # Sell-only should only collect token0 fee
         assert fees0_sell > 0
@@ -800,10 +774,9 @@ class TestSequentialProcessing:
         assert fees0_buy == 0
         assert fees1_buy > 0
 
-        # With interleaved randomized ordering, the sell in [1,1] may execute at an adjacent tick
-        # (if buy goes first), so fee0 is close but not necessarily identical to [1,0] fee0.
+        # With randomized ordering, the sell in [True,True] may execute at an adjacent tick
+        # (if buy goes first), so fee0 is close but not necessarily identical to sell-only fee0.
         assert np.isclose(fees0_both, fees0_sell, rtol=1e-2), "Sell fee should be close"
-        # Note: fees1_both may differ from fees1_buy because the buy state depends on ordering
 
     def test_vectorized_mixed_arrivals(self):
         """Test vectorized handling with mixed arrival patterns."""
@@ -815,11 +788,11 @@ class TestSequentialProcessing:
 
         # Different arrival patterns
         arrivals = np.array([
-            [1, 0],  # sell only
-            [0, 1],  # buy only
-            [1, 1],  # both
-            [0, 0],  # no trade
-        ], dtype=np.int64)
+            [True, False],   # sell only
+            [False, True],   # buy only
+            [True, True],    # both
+            [False, False],  # no trade
+        ])
 
         model.update_state(arrivals, None)
 
@@ -843,50 +816,22 @@ class TestSequentialProcessing:
         assert model.state[FEES1_KEY][3].sum() == 0
 
 
-class TestAlternatingOrdering:
-    """Tests for _process_arrivals_alternating: interleaved + randomized sell/buy ordering."""
+class TestBernoulliOrdering:
+    """Tests for Bernoulli arrivals with randomized sell/buy ordering."""
 
-    def test_remaining_sells_at_end(self):
-        """[3, 1] → net = -2 ticks: once buys exhausted, remaining sells execute alone."""
+    def test_simultaneous_net_zero(self):
+        """[True, True] → net = 0 ticks: balanced arrivals produce zero net price movement."""
         model = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model, liquidity_value=1e6, mid_tick=True)
 
         initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        arrivals = np.array([[3, 1]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
-        assert new_tick == initial_tick - 2, \
-            f"Expected net -2 ticks (3 sells − 1 buy), got {new_tick - initial_tick}"
-
-    def test_remaining_buys_at_end(self):
-        """[1, 3] → net = +2 ticks: once sells exhausted, remaining buys execute alone."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6, mid_tick=True)
-
-        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
-
-        arrivals = np.array([[1, 3]], dtype=np.int64)
-        model.update_state(arrivals, None)
-
-        new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
-        assert new_tick == initial_tick + 2, \
-            f"Expected net +2 ticks (3 buys − 1 sell), got {new_tick - initial_tick}"
-
-    def test_equal_counts_zero_net(self):
-        """[3, 3] → net = 0 ticks: balanced arrivals produce zero net price movement."""
-        model = create_test_model(num_trajectories=1, num_ticks=100)
-        initialize_state(model, liquidity_value=1e6, mid_tick=True)
-
-        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0].copy()
-
-        arrivals = np.array([[3, 3]], dtype=np.int64)
+        arrivals = np.array([[True, True]])
         model.update_state(arrivals, None)
 
         new_tick = model.state[POOL_CURRENT_TICK_KEY][0]
         assert new_tick == initial_tick, \
-            f"Expected net 0 ticks (3 sells = 3 buys), got {new_tick - initial_tick}"
+            f"Expected net 0 ticks (1 sell = 1 buy), got {new_tick - initial_tick}"
 
     def test_randomization_uses_rng(self):
         """Same seed → identical final states; both fee0 and fee1 collected over many runs."""
@@ -897,7 +842,7 @@ class TestAlternatingOrdering:
         model_b = create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0)
         initialize_state(model_b, liquidity_value=1e6, mid_tick=True)
 
-        arrivals = np.array([[2, 2]], dtype=np.int64)
+        arrivals = np.array([[True, True]])
         model_a.update_state(arrivals, None)
         model_b.update_state(arrivals, None)
 
@@ -920,7 +865,7 @@ class TestAlternatingOrdering:
                 seed=None,
             )
             initialize_state(m, liquidity_value=1e6, mid_tick=True)
-            m.update_state(np.array([[1, 1]], dtype=np.int64), None)
+            m.update_state(np.array([[True, True]]), None)
             fee0_seen = fee0_seen or m.state[FEES0_KEY][0].sum() > 0
             fee1_seen = fee1_seen or m.state[FEES1_KEY][0].sum() > 0
             if fee0_seen and fee1_seen:
@@ -930,24 +875,24 @@ class TestAlternatingOrdering:
         assert fee1_seen, "fee1 never collected — buy never executed"
 
     def test_single_direction_unaffected(self):
-        """[3, 0] → -3 ticks; [0, 3] → +3 ticks: pure directional arrivals unaffected."""
+        """[True, False] → -1 tick; [False, True] → +1 tick."""
         # Sells only
         model_sell = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_sell, liquidity_value=1e6, mid_tick=True)
         initial_tick = model_sell.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        model_sell.update_state(np.array([[3, 0]], dtype=np.int64), None)
-        assert model_sell.state[POOL_CURRENT_TICK_KEY][0] == initial_tick - 3, \
-            f"Expected -3 ticks, got {model_sell.state[POOL_CURRENT_TICK_KEY][0] - initial_tick}"
+        model_sell.update_state(np.array([[True, False]]), None)
+        assert model_sell.state[POOL_CURRENT_TICK_KEY][0] == initial_tick - 1, \
+            f"Expected -1 tick, got {model_sell.state[POOL_CURRENT_TICK_KEY][0] - initial_tick}"
 
         # Buys only
         model_buy = create_test_model(num_trajectories=1, num_ticks=100)
         initialize_state(model_buy, liquidity_value=1e6, mid_tick=True)
         initial_tick = model_buy.state[POOL_CURRENT_TICK_KEY][0].copy()
 
-        model_buy.update_state(np.array([[0, 3]], dtype=np.int64), None)
-        assert model_buy.state[POOL_CURRENT_TICK_KEY][0] == initial_tick + 3, \
-            f"Expected +3 ticks, got {model_buy.state[POOL_CURRENT_TICK_KEY][0] - initial_tick}"
+        model_buy.update_state(np.array([[False, True]]), None)
+        assert model_buy.state[POOL_CURRENT_TICK_KEY][0] == initial_tick + 1, \
+            f"Expected +1 tick, got {model_buy.state[POOL_CURRENT_TICK_KEY][0] - initial_tick}"
 
 
 if __name__ == "__main__":

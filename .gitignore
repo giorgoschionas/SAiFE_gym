@@ -17,4 +17,4 @@ __pycache__/
 
 prompts/
 
-.claude/
+.claude/settings.local.json
