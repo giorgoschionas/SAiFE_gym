@@ -7,9 +7,10 @@ from numpy.random import default_rng
 
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
-    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
@@ -75,7 +76,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         num_trajectories: int = 1,
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of ticks around current tick
-        num_ticks: int = 1000,             # Total ticks to track in liquidity array
+        num_ticks: int = 2000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
         initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
         gas_cost: float = 0.0,            # Fixed cost per rebalance in token1 units
@@ -101,8 +102,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
 
-        # Safety cap for maximum arrivals per step (prevents runaway loops)
-        self.max_arrivals_per_step = 50
 
 
     def get_action_space(self):
@@ -335,46 +334,69 @@ class UniswapV3ModelDynamics(ModelDynamics):
             crosses, self.fee_multiplier * y_from_boundary, 0.0
         )
 
-    def _collect_lp_fees(self):
+    def _compute_gross_lp_fees(self):
         """
-        Collect LP's share of pool fees from the LP's current position range.
-
-        For each trajectory with an active position:
-        - LP's share at each tick = lp_liquidity / total_liquidity_at_tick
-        - Only considers ticks in LP's range [lower, upper)
-        - Subtracts LP's share from pool fee arrays
+        Compute LP's gross share of pool fees (read-only, does not modify state).
 
         Returns:
-            (fee0_per_traj, fee1_per_traj): Arrays of shape (num_trajectories,)
+            (gross_fee0, gross_fee1, lp_share_in_range):
+                gross_fee0: shape (num_trajectories,)
+                gross_fee1: shape (num_trajectories,)
+                lp_share_in_range: shape (num_trajectories, num_ticks) — for pool subtraction
         """
         lp_liq = self.state[LP_LIQUIDITY_KEY]
         lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
         lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
         pool_liq = self.state[POOL_LIQUIDITY_ARRAY_KEY]
 
-        # Build mask for LP's range: (num_traj, num_ticks)
-        tick_indices = np.arange(self.num_ticks)  # (num_ticks,)
-        absolute_ticks = self.tick_lower_global + tick_indices  # (num_ticks,)
+        tick_indices = np.arange(self.num_ticks)
+        absolute_ticks = self.tick_lower_global + tick_indices
 
         in_range = (absolute_ticks[None, :] >= lp_lower[:, None]) & \
-                   (absolute_ticks[None, :] < lp_upper[:, None])  # (num_traj, num_ticks)
+                   (absolute_ticks[None, :] < lp_upper[:, None])
 
-        # LP's share at each tick: lp_liq / total_liq (0 where total_liq is 0)
         total_liq_safe = np.where(pool_liq > 0, pool_liq, 1.0)
         lp_share = np.where(pool_liq > 0, lp_liq[:, None] / total_liq_safe, 0.0)
+        lp_share_in_range = lp_share * in_range
 
-        # Only count fees in LP's range
-        lp_share_in_range = lp_share * in_range  # (num_traj, num_ticks)
+        gross_fee0 = np.sum(self.state[FEES0_KEY] * lp_share_in_range, axis=1)
+        gross_fee1 = np.sum(self.state[FEES1_KEY] * lp_share_in_range, axis=1)
 
-        # Compute LP's fee share
-        lp_fee0 = np.sum(self.state[FEES0_KEY] * lp_share_in_range, axis=1)  # (num_traj,)
-        lp_fee1 = np.sum(self.state[FEES1_KEY] * lp_share_in_range, axis=1)  # (num_traj,)
+        return gross_fee0, gross_fee1, lp_share_in_range
 
-        # Subtract LP's share from pool fee arrays
-        self.state[FEES0_KEY] -= self.state[FEES0_KEY] * lp_share_in_range
-        self.state[FEES1_KEY] -= self.state[FEES1_KEY] * lp_share_in_range
+    def _collect_lp_fees(self):
+        """
+        Collect LP's share of pool fees, excluding pre-entry fees via snapshots.
 
-        return lp_fee0, lp_fee1
+        net = max(gross - snapshot, 0)
+        Only the net portion is subtracted from pool fee arrays.
+
+        Returns:
+            (net_fee0, net_fee1): Arrays of shape (num_trajectories,)
+        """
+        gross_fee0, gross_fee1, lp_share_in_range = self._compute_gross_lp_fees()
+
+        snapshot0 = self.state[LP_FEE_SNAPSHOT0_KEY]
+        snapshot1 = self.state[LP_FEE_SNAPSHOT1_KEY]
+
+        net_fee0 = np.maximum(gross_fee0 - snapshot0, 0.0)
+        net_fee1 = np.maximum(gross_fee1 - snapshot1, 0.0)
+
+        # Compute ratio of net to gross (guarded for zero gross)
+        safe_gross0 = np.where(gross_fee0 > 0, gross_fee0, 1.0)
+        safe_gross1 = np.where(gross_fee1 > 0, gross_fee1, 1.0)
+        net_ratio0 = np.where(gross_fee0 > 0, net_fee0 / safe_gross0, 0.0)
+        net_ratio1 = np.where(gross_fee1 > 0, net_fee1 / safe_gross1, 0.0)
+
+        # Subtract only the net portion from pool fee arrays
+        self.state[FEES0_KEY] -= self.state[FEES0_KEY] * lp_share_in_range * net_ratio0[:, None]
+        self.state[FEES1_KEY] -= self.state[FEES1_KEY] * lp_share_in_range * net_ratio1[:, None]
+
+        # Zero out snapshots after use
+        self.state[LP_FEE_SNAPSHOT0_KEY] = np.zeros(self.num_trajectories, dtype=np.float64)
+        self.state[LP_FEE_SNAPSHOT1_KEY] = np.zeros(self.num_trajectories, dtype=np.float64)
+
+        return net_fee0, net_fee1
 
     def _compute_token0_fraction_vec(self, sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper):
         """
@@ -488,73 +510,23 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
         self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
 
-    def _process_arrivals(self, counts: np.ndarray, xi_index: int, process_fn) -> None:
-        """
-        Iterate over arrival counts, processing one trade per iteration.
-
-        Each trade changes price/tick, so xi is recomputed from the new tick's
-        liquidity before each trade. Trajectories drop out as their count is
-        exhausted.
-
-        Args:
-            counts: Integer array, shape (num_trajectories,) -- per-trajectory arrival count.
-            xi_index: Index into _compute_local_xi() return tuple (0=sell, 1=buy).
-            process_fn: One of _process_sell_single or _process_buy_single.
-        """
-        max_count = int(np.max(counts)) if np.any(counts > 0) else 0
-        for i in range(max_count):
-            active = counts > i
-            if not np.any(active):
-                break
-            xi = self._compute_local_xi()[xi_index]
-            process_fn(active, xi)
-
-    def _process_arrivals_alternating(self, sell_counts: np.ndarray, buy_counts: np.ndarray) -> None:
-        """
-        Process sell and buy arrivals in interleaved rounds with randomized intra-round ordering.
-
-        Each round i:
-        - Trajectories with sell_counts > i execute one sell
-        - Trajectories with buy_counts > i execute one buy
-        - The within-round order (sell-first or buy-first) is chosen randomly each round
-
-        Once one side is exhausted, remaining trades of the other side continue alone.
-        Using self.rng ensures reproducibility via the seed parameter.
-
-        Args:
-            sell_counts: Integer array, shape (num_trajectories,)
-            buy_counts:  Integer array, shape (num_trajectories,)
-        """
-        max_count = int(np.max(np.maximum(sell_counts, buy_counts))) \
-            if np.any((sell_counts > 0) | (buy_counts > 0)) else 0
-        for i in range(max_count):
-            active_sell = sell_counts > i
-            active_buy  = buy_counts  > i
-            sell_first  = bool(self.rng.integers(0, 2))
-            if sell_first:
-                if np.any(active_sell):
-                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
-                if np.any(active_buy):
-                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
-            else:
-                if np.any(active_buy):
-                    self._process_buy_single(active_buy,  self._compute_local_xi()[1])
-                if np.any(active_sell):
-                    self._process_sell_single(active_sell, self._compute_local_xi()[0])
+        # --- Phase 4: Snapshot pre-existing fees in new range ---
+        snapshot0, snapshot1, _ = self._compute_gross_lp_fees()
+        self.state[LP_FEE_SNAPSHOT0_KEY] = snapshot0
+        self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
         Process one timestep: rebalance LP, execute swaps, advance time.
 
-        Args:
-            arrivals: Integer array of shape (num_trajectories, 2)
-                      Column 0: sell_token0 arrival counts (token0 into pool, price decreases)
-                      Column 1: buy_token0 arrival counts (token0 out of pool, price increases)
-            action: Agent action array (for LP positioning, not used in swap)
+        Arrivals are Bernoulli trials: at most one sell and one buy per step.
+        When both arrive simultaneously, execution order is randomized.
 
-        Each arrival count triggers that many individual trades. Each trade uses
-        local xi (current tick's capacity) and may cross one tick boundary,
-        after which xi is recomputed from the new tick's liquidity.
+        Args:
+            arrivals: Boolean array of shape (num_trajectories, 2)
+                      Column 0: sell_token0 arrival (token0 into pool, price decreases)
+                      Column 1: buy_token0 arrival (token0 out of pool, price increases)
+            action: Agent action array (for LP positioning, not used in swap)
         """
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
@@ -562,11 +534,22 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if action is not None:
             self._rebalance(self.validate_action(action))
 
-        # Cap arrival counts to prevent runaway loops
-        sell_counts = np.minimum(arrivals[:, 0].astype(np.int64), self.max_arrivals_per_step)
-        buy_counts = np.minimum(arrivals[:, 1].astype(np.int64), self.max_arrivals_per_step)
+        sell_active = arrivals[:, 0].astype(bool)
+        buy_active = arrivals[:, 1].astype(bool)
 
-        self._process_arrivals_alternating(sell_counts, buy_counts)
+        both = sell_active & buy_active
+        sell_first = bool(self.rng.integers(0, 2)) if np.any(both) else True
+
+        if sell_first:
+            if np.any(sell_active):
+                self._process_sell_single(sell_active, self._compute_local_xi()[0])
+            if np.any(buy_active):
+                self._process_buy_single(buy_active, self._compute_local_xi()[1])
+        else:
+            if np.any(buy_active):
+                self._process_buy_single(buy_active, self._compute_local_xi()[1])
+            if np.any(sell_active):
+                self._process_sell_single(sell_active, self._compute_local_xi()[0])
 
     def get_arrivals(self) -> np.ndarray:
         """
@@ -581,7 +564,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
             # Return no arrivals if no arrival model
             return np.zeros((self.num_trajectories, 2), dtype=bool)
 
-        # No arguments! Uses arrival model's internal state
         return self.arrival_model.get_arrivals()
 
 

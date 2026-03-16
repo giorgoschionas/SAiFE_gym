@@ -20,6 +20,10 @@ LP_TICK_UPPER_KEY = 'lp_tick_upper'         # LP's position upper bound - shape:
 LP_COLLECTED_FEES0_KEY = 'lp_collected_fees_0'  # Cumulative fees collected by LP in token 0 - shape: (num_trajectories,)
 LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees collected by LP in token 1 - shape: (num_trajectories,)
 
+# LP fee snapshots (recorded at position entry to exclude pre-entry fees)
+LP_FEE_SNAPSHOT0_KEY = 'lp_fee_snapshot_0'  # Gross LP fee0 at time of entry - shape: (num_trajectories,)
+LP_FEE_SNAPSHOT1_KEY = 'lp_fee_snapshot_1'  # Gross LP fee1 at time of entry - shape: (num_trajectories,)
+
 
 # Market state (external)
 ASSET_PRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
