@@ -8,7 +8,6 @@ env.bak/
 venv.bak/
 
 # Update notebooks manually, if necessary
-notebooks
 TMP_NOTEBOOKS
 
 # Byte-compiled / optimized / DLL files
