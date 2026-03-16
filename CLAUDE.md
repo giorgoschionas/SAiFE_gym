@@ -2,8 +2,6 @@
 
 SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It is Gymnasium-compatible for training RL agents to act as liquidity providers.
 
-**Current Status**: Active development. Core components implemented but integration is ongoing.
-
 ## Development Setup
 
 ```bash
@@ -78,7 +76,6 @@ The environment follows a standard RL cycle with AMM-specific components:
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
-   - **Dynamic action space**: Only ticks within `2*tau +1` of current price are "active"
    - Processes order flow and updates LP state via `update_state()` method
 
 3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
@@ -156,7 +153,7 @@ The state is a **dictionary** with the following keys:
 
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` implements **local xi + Bernoulli arrivals**. Each step has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
+The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
 
 **Core Principle**: Each trade = one tick of price movement.
 - Trade size (xi) is computed from the **current tick's liquidity only** (`_compute_local_xi()`)
