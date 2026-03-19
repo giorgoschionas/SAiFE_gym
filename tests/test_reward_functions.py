@@ -20,7 +20,8 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
-    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -453,6 +454,7 @@ def _initialize_model_state(model):
         LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
     }
 
 

@@ -21,7 +21,8 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
-    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
@@ -97,6 +98,7 @@ def initialize_state(model, liquidity_value=1e6, mid_tick=True):
         LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
     }
 
 
@@ -490,11 +492,11 @@ class TestActionValidation:
         assert validated[0, 0] < validated[0, 1]
 
     def test_action_space_shape(self):
-        """Action space should be 2-element."""
+        """Action space should be 3-element (lower_offset, upper_offset, hold_flag)."""
         model = create_test_model(tau=5)
         space = model.get_action_space()
 
-        assert space.shape == (2,)
+        assert space.shape == (3,)
 
 
 class TestPositionValueVec:
@@ -910,6 +912,110 @@ class TestRebalancingCost:
 
         actual_cost = W - _get_position_value(model)
         assert np.isclose(actual_cost, expected_cost, rtol=1e-6)
+
+
+class TestHoldAction:
+    """Test hold (no-rebalance) action via the 3rd action dimension."""
+
+    def test_hold_preserves_position(self):
+        """Deploy LP, hold next step -> LP_LIQUIDITY/bounds unchanged, no gas cost."""
+        gas_cost = 10000.0
+        model = create_test_model(initial_wealth=1e6, gas_cost=gas_cost)
+        initialize_state(model, liquidity_value=1e6)
+
+        # First rebalance to establish position (3-col action, hold_flag=-1 = rebalance)
+        action_deploy = np.array([[-2, 2, -1.0]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action_deploy)
+
+        lp_liq_after_deploy = model.state[LP_LIQUIDITY_KEY][0]
+        lp_lower_after = model.state[LP_TICK_LOWER_KEY][0]
+        lp_upper_after = model.state[LP_TICK_UPPER_KEY][0]
+        assert lp_liq_after_deploy > 0
+
+        # Hold action (hold_flag=1.0 > 0 -> hold)
+        action_hold = np.array([[-2, 2, 1.0]], dtype=np.float64)
+        model.update_state(arrivals, action_hold)
+
+        # LP position should be unchanged
+        assert model.state[LP_LIQUIDITY_KEY][0] == lp_liq_after_deploy
+        assert model.state[LP_TICK_LOWER_KEY][0] == lp_lower_after
+        assert model.state[LP_TICK_UPPER_KEY][0] == lp_upper_after
+
+    def test_hold_still_processes_swaps(self):
+        """Hold with sell arrivals -> price moves, fees accumulate in pool."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # Deploy LP
+        action_deploy = np.array([[-2, 2, -1.0]], dtype=np.float64)
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals_none, action_deploy)
+
+        initial_tick = model.state[POOL_CURRENT_TICK_KEY][0]
+
+        # Hold + sell arrival
+        action_hold = np.array([[-2, 2, 1.0]], dtype=np.float64)
+        arrivals_sell = np.array([[1, 0]], dtype=np.int64)
+        model.update_state(arrivals_sell, action_hold)
+
+        # Price should have moved (sell -> tick decreases)
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == initial_tick - 1
+        # Fees should have accumulated
+        assert model.state[FEES0_KEY][0].sum() > 0
+
+    def test_mixed_hold_and_rebalance(self):
+        """2 trajectories: one holds, one rebalances -> independent behavior."""
+        num_traj = 2
+        model = create_test_model(num_trajectories=num_traj, initial_wealth=1e6, gas_cost=1000.0)
+        initialize_state(model, liquidity_value=1e6)
+
+        # Deploy both
+        action_deploy = np.array([[-2, 2, -1.0], [-2, 2, -1.0]], dtype=np.float64)
+        arrivals = np.zeros((num_traj, 2), dtype=np.int64)
+        model.update_state(arrivals, action_deploy)
+
+        lp_liq_0 = model.state[LP_LIQUIDITY_KEY][0]
+        lp_liq_1 = model.state[LP_LIQUIDITY_KEY][1]
+
+        # Trajectory 0: hold (hold_flag=1.0), trajectory 1: rebalance (hold_flag=-1.0)
+        action_mixed = np.array([[-2, 2, 1.0], [-1, 3, -1.0]], dtype=np.float64)
+        model.update_state(arrivals, action_mixed)
+
+        # Trajectory 0 should be unchanged
+        assert model.state[LP_LIQUIDITY_KEY][0] == lp_liq_0
+        assert model.state[LP_TICK_LOWER_KEY][0] == model.state[LP_TICK_LOWER_KEY][0]
+
+        # Trajectory 1 should have rebalanced (different bounds, gas deducted)
+        current_tick = int(model.state[POOL_CURRENT_TICK_KEY][1])
+        assert model.state[LP_TICK_LOWER_KEY][1] == current_tick - 1
+        assert model.state[LP_TICK_UPPER_KEY][1] == current_tick + 3
+
+    def test_first_step_hold_no_deployment(self):
+        """Hold on step 0 -> LP stays undeployed (lp_liq=0, ever_deployed=False)."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        action_hold = np.array([[-2, 2, 1.0]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action_hold)
+
+        assert model.state[LP_LIQUIDITY_KEY][0] == 0.0
+        assert not model.state[LP_EVER_DEPLOYED_KEY][0]
+
+    def test_hold_flag_boundary(self):
+        """hold_flag = 0.0 -> rebalance (condition is <= 0)."""
+        model = create_test_model(initial_wealth=1e6)
+        initialize_state(model, liquidity_value=1e6)
+
+        # hold_flag=0.0 should trigger rebalance
+        action = np.array([[-2, 2, 0.0]], dtype=np.float64)
+        arrivals = np.array([[0, 0]], dtype=np.int64)
+        model.update_state(arrivals, action)
+
+        # LP should be deployed
+        assert model.state[LP_LIQUIDITY_KEY][0] > 0
+        assert model.state[LP_EVER_DEPLOYED_KEY][0]
 
 
 if __name__ == "__main__":

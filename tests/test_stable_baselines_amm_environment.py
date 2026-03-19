@@ -142,7 +142,7 @@ class TestStepWait:
 class TestInfosList:
     def _get_infos(self, env: StableBaselinesAMMEnvironment):
         env.reset()
-        actions = np.zeros((env.num_trajectories, 2), dtype=np.float32)
+        actions = np.zeros((env.num_trajectories, 3), dtype=np.float32)
         env.step_async(actions)
         _, _, _, infos = env.step_wait()
         return infos
@@ -172,7 +172,7 @@ class TestAutoReset:
     def _run_to_done(self, env: StableBaselinesAMMEnvironment):
         """Step until dones.all() is True, return final (obs, dones)."""
         env.reset()
-        actions = np.zeros((env.num_trajectories, 2), dtype=np.float32)
+        actions = np.zeros((env.num_trajectories, 3), dtype=np.float32)
         for _ in range(env.n_steps):
             env.step_async(actions)
             obs, _, dones, _ = env.step_wait()
@@ -198,7 +198,7 @@ class TestAutoReset:
 class TestTerminalObs:
     def _run_episode(self, env: StableBaselinesAMMEnvironment):
         env.reset()
-        actions = np.zeros((env.num_trajectories, 2), dtype=np.float32)
+        actions = np.zeros((env.num_trajectories, 3), dtype=np.float32)
         mid_infos = None
         final_infos = None
         for step in range(env.n_steps):
@@ -265,7 +265,7 @@ class TestMultiTrajectory:
         obs = env.reset()
         assert obs.shape == (num_traj, 8)
 
-        actions = np.zeros((num_traj, 2), dtype=np.float32)
+        actions = np.zeros((num_traj, 3), dtype=np.float32)
         for _ in range(n_steps):
             env.step_async(actions)
             obs, rewards, dones, infos = env.step_wait()
@@ -375,7 +375,7 @@ class TestRelativeObsKeys:
         env.reset()
 
         # Step with action [lower_offset=-3, upper_offset=3]
-        actions = np.array([[-3.0, 3.0]], dtype=np.float32)
+        actions = np.array([[-3.0, 3.0, -1.0]], dtype=np.float32)
         env.step_async(actions)
         obs, _, _, _ = env.step_wait()
 

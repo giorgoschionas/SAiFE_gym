@@ -59,7 +59,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
         self.obs_dim = len(self.obs_keys)
         self.store_terminal_observation_info = store_terminal_observation_info
-        self.actions = np.zeros((amm_env.num_trajectories, 2), dtype=np.float32)
+        self.actions = np.zeros((amm_env.num_trajectories, amm_env.action_space.shape[0]), dtype=np.float32)
 
         for k in self.obs_keys:
             if k in _ARRAY_KEYS:
