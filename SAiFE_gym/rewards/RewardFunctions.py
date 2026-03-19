@@ -4,7 +4,8 @@ from typing import Union
 import numpy as np
 from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, TIME_KEY
+    POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    LP_EVER_DEPLOYED_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
