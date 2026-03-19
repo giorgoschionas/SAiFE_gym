@@ -11,7 +11,7 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
-    ASSET_PRICE_KEY, TIME_KEY
+    ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
@@ -217,6 +217,11 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, initial_price, dtype=np.float64
             ),
             TIME_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+
+            # Environment parameters (constant per episode)
+            GAS_COST_KEY: np.full(
+                self.num_trajectories, self.model_dynamics.gas_cost, dtype=np.float64
+            ),
         }
 
     def seed(self, seed: int = None):

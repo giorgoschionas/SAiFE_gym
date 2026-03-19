@@ -89,12 +89,12 @@ class TestReset:
     def test_shape_single_trajectory(self):
         env = create_sb3_env(num_trajectories=1)
         obs = env.reset()
-        assert obs.shape == (1, 8)
+        assert obs.shape == (1, 9)
 
     def test_shape_multi_trajectory(self):
         env = create_sb3_env(num_trajectories=3)
         obs = env.reset()
-        assert obs.shape == (3, 8)
+        assert obs.shape == (3, 9)
 
     def test_dtype(self):
         env = create_sb3_env(num_trajectories=1)
@@ -119,7 +119,7 @@ class TestStepWait:
         num_traj = 2
         env = create_sb3_env(num_trajectories=num_traj)
         obs, _, _, _ = self._step(env)
-        assert obs.shape == (num_traj, 8)
+        assert obs.shape == (num_traj, 9)
 
     def test_rewards_shape(self):
         num_traj = 2
@@ -188,7 +188,7 @@ class TestAutoReset:
         num_traj = 2
         env = create_sb3_env(num_trajectories=num_traj, n_steps=5)
         obs, _ = self._run_to_done(env)
-        assert obs.shape == (num_traj, 8)
+        assert obs.shape == (num_traj, 9)
 
 
 # ---------------------------------------------------------------------------
@@ -220,7 +220,7 @@ class TestTerminalObs:
     def test_shape_is_1d(self):
         env = create_sb3_env(num_trajectories=1, n_steps=5)
         _, final_infos = self._run_episode(env)
-        assert final_infos[0]["terminal_observation"].shape == (8,)
+        assert final_infos[0]["terminal_observation"].shape == (9,)
 
     def test_absent_before_done(self):
         env = create_sb3_env(num_trajectories=1, n_steps=5)
@@ -263,13 +263,13 @@ class TestMultiTrajectory:
         n_steps = 5
         env = create_sb3_env(num_trajectories=num_traj, n_steps=n_steps)
         obs = env.reset()
-        assert obs.shape == (num_traj, 8)
+        assert obs.shape == (num_traj, 9)
 
         actions = np.zeros((num_traj, 3), dtype=np.float32)
         for _ in range(n_steps):
             env.step_async(actions)
             obs, rewards, dones, infos = env.step_wait()
-            assert obs.shape == (num_traj, 8)
+            assert obs.shape == (num_traj, 9)
             assert rewards.shape == (num_traj,)
             assert dones.shape == (num_traj,)
             assert len(infos) == num_traj

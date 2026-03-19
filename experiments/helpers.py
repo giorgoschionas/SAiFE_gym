@@ -521,6 +521,7 @@ def create_policy_behavior_plot(
     mispricing_range: tuple = (-5.0, 5.0),
     fixed_lp_liquidity: float = 2e8,
     fixed_time: float = 0.5,
+    gas_cost: float = 0.0,
     title: str = "Policy behavior vs mispricing",
     save_figure: bool = False,
     figures_dir: str = "./figures",
@@ -545,6 +546,7 @@ def create_policy_behavior_plot(
         5: LP_COLLECTED_FEES1_KEY
         6: ASSET_PRICE_KEY
         7: TIME_KEY
+        8: GAS_COST_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -557,6 +559,7 @@ def create_policy_behavior_plot(
         np.zeros(n_points),
         np.full(n_points, INITIAL_PRICE),
         np.full(n_points, fixed_time),
+        np.full(n_points, gas_cost),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -602,6 +605,7 @@ def create_time_behavior_plot(
     mispricing_levels: list = None,
     n_time_points: int = 101,
     fixed_lp_liquidity: float = 2e8,
+    gas_cost: float = 0.0,
     title: str = "Policy behavior vs time",
     save_figure: bool = False,
     figures_dir: str = "./figures",
@@ -629,6 +633,7 @@ def create_time_behavior_plot(
         np.zeros(n_total),
         np.full(n_total, INITIAL_PRICE),
         time_tiled,
+        np.full(n_total, gas_cost),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
