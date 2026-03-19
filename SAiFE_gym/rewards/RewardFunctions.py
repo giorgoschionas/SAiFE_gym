@@ -93,7 +93,7 @@ class PnL(RewardFunction):
             sqrt_p_lower, sqrt_p_upper
         )
 
-        return np.where(has_position, pos_value, self.initial_wealth)
+        return np.where(has_position, pos_value, 0)
 
     def calculate(
         self, current_state: dict, action: np.ndarray,

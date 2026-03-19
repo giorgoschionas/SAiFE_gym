@@ -61,8 +61,8 @@ class UniformAllocationAgent(Agent):
 
     def get_action(self, state: dict) -> np.ndarray:
 
-        action = np.array([[-self.tau, self.tau]])
-        action = np.array([[-5, +5]])
+        action = np.array([[-self.tau, -self.tau+1]])
+        action = np.array([[-30, -20]])
         return np.repeat(action, self.env.num_trajectories, axis=0)
 
 class CarteaPLAgent(Agent):
