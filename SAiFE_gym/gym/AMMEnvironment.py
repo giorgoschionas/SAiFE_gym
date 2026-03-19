@@ -10,6 +10,7 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
@@ -207,6 +208,9 @@ class AMMEnvironment(gymnasium.Env):
             # LP fee snapshots (for excluding pre-entry fees)
             LP_FEE_SNAPSHOT0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
             LP_FEE_SNAPSHOT1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+
+            # Deployment flag: False until first position is deployed (never resets to False)
+            LP_EVER_DEPLOYED_KEY: np.zeros(self.num_trajectories, dtype=bool),
 
             # Market state
             ASSET_PRICE_KEY: np.full(

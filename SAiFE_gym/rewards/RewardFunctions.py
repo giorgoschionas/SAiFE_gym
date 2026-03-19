@@ -4,7 +4,8 @@ from typing import Union
 import numpy as np
 from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
-    POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, TIME_KEY
+    POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, TIME_KEY,
+    LP_EVER_DEPLOYED_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
@@ -93,7 +94,12 @@ class PnL(RewardFunction):
             sqrt_p_lower, sqrt_p_upper
         )
 
-        return np.where(has_position, pos_value, self.initial_wealth)
+        # Trajectories with lp_liq == 0 are either:
+        #   - pre-deployment (ever_deployed=False): use initial_wealth as the cash baseline
+        #   - bankrupt      (ever_deployed=True):  wealth is genuinely 0
+        ever_deployed = state.get(LP_EVER_DEPLOYED_KEY, np.zeros_like(lp_liq, dtype=bool))
+        no_position_value = np.where(ever_deployed, 0.0, self.initial_wealth)
+        return np.where(has_position, pos_value, no_position_value)
 
     def calculate(
         self, current_state: dict, action: np.ndarray,

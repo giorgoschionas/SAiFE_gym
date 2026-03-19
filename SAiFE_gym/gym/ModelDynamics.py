@@ -10,7 +10,8 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
-    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
@@ -437,7 +438,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         has_position = lp_liq > 0
 
         # --- Phase 1: Compute wealth ---
-        wealth = np.full(num_traj, self.initial_wealth, dtype=np.float64)
+        # Trajectories that have never deployed get initial_wealth as starting capital.
+        # Trajectories that were previously deployed but are now bankrupt (lp_liq == 0
+        # after gas costs drained their wealth) correctly start at 0, not initial_wealth.
+        ever_deployed = self.state[LP_EVER_DEPLOYED_KEY]
+        wealth = np.where(ever_deployed, 0.0, self.initial_wealth)
         alpha_current = np.zeros(num_traj)
 
         if np.any(has_position):
@@ -509,6 +514,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_LIQUIDITY_KEY] = new_L
         self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
         self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
+        self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---
         snapshot0, snapshot1, _ = self._compute_gross_lp_fees()
