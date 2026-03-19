@@ -10,11 +10,10 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
-    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
-
-
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
 
@@ -32,14 +31,13 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self.rng = default_rng(seed)
         self.seed = seed
 
-        self.state = None 
+        self.state = None
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         pass
 
-    
     def get_arrivals(self, action: np.ndarray):
-        return None, None 
+        return None, None
 
 
     def get_action_space(self) -> gymnasium.spaces.Space:
@@ -102,24 +100,22 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
 
-
-
     def get_action_space(self):
         """
         Return the action space for the agent.
 
-        Action format: [lower_offset, upper_offset]
+        Action format: [lower_offset, upper_offset, hold_flag]
         - lower_offset: Tick offset from current tick (range: -tau to tau-1)
         - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
+        - hold_flag: <= 0 triggers rebalance, > 0 holds current position
 
         Constraint: lower_offset < upper_offset (enforced by validate_action)
         The LP always deploys all available wealth into the specified range.
         """
-
         return gymnasium.spaces.Box(
-            low=np.array([-self.tau, -self.tau + 1], dtype=np.float32),
-            high=np.array([self.tau - 1, self.tau], dtype=np.float32),
-            shape=(2,),
+            low=np.array([-self.tau, -self.tau + 1, -1.0], dtype=np.float32),
+            high=np.array([self.tau - 1, self.tau, 1.0], dtype=np.float32),
+            shape=(3,),
             dtype=np.float32
         )
 
@@ -419,7 +415,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return np.where(above, 0.0, np.where(below, 1.0, alpha_in_range))
 
-    def _rebalance(self, action: np.ndarray):
+    def _rebalance(self, action: np.ndarray, rebalance_mask: np.ndarray = None):
         """
         Rebalance LP position: withdraw old position + fees, deploy into new range.
 
@@ -427,7 +423,26 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         Args:
             action: (num_trajectories, 2) validated action [lower_offset, upper_offset]
+            rebalance_mask: Optional boolean mask (num_trajectories,). If provided,
+                only trajectories where mask is True are rebalanced; others are held.
         """
+        if rebalance_mask is not None and not np.any(rebalance_mask):
+            return
+
+        # Save held trajectories' state so it can be restored after computation.
+        # When all trajectories rebalance (rebalance_mask is None or all True),
+        # no save/restore is needed.
+        has_held = rebalance_mask is not None and not np.all(rebalance_mask)
+        if has_held:
+            hold_mask = ~rebalance_mask
+            _SAVE_KEYS = [
+                LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
+                LP_EVER_DEPLOYED_KEY, LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+                LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+                POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY,
+            ]
+            saved = {k: self.state[k][hold_mask].copy() for k in _SAVE_KEYS}
+
         num_traj = self.num_trajectories
         sqrt_p = self.state[POOL_SQRT_PRICE_KEY]
         external_price = self.state[ASSET_PRICE_KEY]
@@ -437,7 +452,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         has_position = lp_liq > 0
 
         # --- Phase 1: Compute wealth ---
-        wealth = np.full(num_traj, self.initial_wealth, dtype=np.float64)
+        # Trajectories that have never deployed get initial_wealth as starting capital.
+        # Trajectories that were previously deployed but are now bankrupt (lp_liq == 0
+        # after gas costs drained their wealth) correctly start at 0, not initial_wealth.
+        ever_deployed = self.state[LP_EVER_DEPLOYED_KEY]
+        wealth = np.where(ever_deployed, 0.0, self.initial_wealth)
         alpha_current = np.zeros(num_traj)
 
         if np.any(has_position):
@@ -509,11 +528,17 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_LIQUIDITY_KEY] = new_L
         self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
         self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
+        self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---
         snapshot0, snapshot1, _ = self._compute_gross_lp_fees()
         self.state[LP_FEE_SNAPSHOT0_KEY] = snapshot0
         self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
+
+        # Restore held trajectories after computation
+        if has_held:
+            for k, v in saved.items():
+                self.state[k][hold_mask] = v
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
@@ -532,7 +557,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
             raise ValueError("State not initialized. Call reset() first.")
 
         if action is not None:
-            self._rebalance(self.validate_action(action))
+            tick_action = self.validate_action(action[:, :2])
+            rebalance_mask = action[:, 2] <= 0 if action.shape[1] >= 3 else None
+            self._rebalance(tick_action, rebalance_mask)
 
         sell_active = arrivals[:, 0].astype(bool)
         buy_active = arrivals[:, 1].astype(bool)

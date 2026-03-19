@@ -24,7 +24,8 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
-    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY
+    LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+    LP_EVER_DEPLOYED_KEY
 )
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
@@ -92,6 +93,7 @@ def initialize_state_geometric_midpoint(model, liquidity_value=1e6):
         LP_FEE_SNAPSHOT1_KEY:       np.zeros(num_traj),
         ASSET_PRICE_KEY:            np.full(num_traj, initial_price),
         TIME_KEY:                   np.zeros(num_traj),
+        LP_EVER_DEPLOYED_KEY:       np.zeros(num_traj, dtype=bool),
     }
 
 

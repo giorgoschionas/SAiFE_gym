@@ -24,10 +24,17 @@ LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees collected by L
 LP_FEE_SNAPSHOT0_KEY = 'lp_fee_snapshot_0'  # Gross LP fee0 at time of entry - shape: (num_trajectories,)
 LP_FEE_SNAPSHOT1_KEY = 'lp_fee_snapshot_1'  # Gross LP fee1 at time of entry - shape: (num_trajectories,)
 
+# Deployment flag: True once the LP has deployed at least once (never reset to False).
+# Distinguishes "never deployed" (use initial_wealth) from "bankrupt" (use 0).
+LP_EVER_DEPLOYED_KEY = 'lp_ever_deployed'   # shape: (num_trajectories,), dtype bool
+
 
 # Market state (external)
 ASSET_PRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
 TIME_KEY = 'time'                           # Current simulation time - shape: (num_trajectories,)
+
+# Environment parameters (constant per episode, exposed as observations)
+GAS_COST_KEY = 'gas_cost'               # Fixed rebalancing cost in token1 units - shape: (num_trajectories,)
 
 # Derived observation features (computed from state, not stored in state dict)
 MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRICE - sqrt_price²)

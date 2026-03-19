@@ -40,15 +40,17 @@ class RandomAgent(Agent):
         too_close = actions[:, 1] <= actions[:, 0]
         actions[too_close, 1] = actions[too_close, 0] + 1
 
-        return actions.astype(np.float32)
-    
+        # Append hold_flag = -1.0 (always rebalance)
+        hold_col = np.full((self.num_trajectories, 1), -1.0, dtype=np.float32)
+        return np.concatenate([actions.astype(np.float32), hold_col], axis=1)
+
 
 class UniformAllocationAgent(Agent):
     """
     Allocates capital across the full active tick range around the current price.
 
-    Action format: [lower_offset, upper_offset] = [-tau, +tau]
-    This covers 2*tau+1 ticks centered on the current price.
+    Action format: [lower_offset, upper_offset, hold_flag] = [-tau, +tau, -1.0]
+    This covers 2*tau+1 ticks centered on the current price. Always rebalances.
     """
     def __init__(self, env: AMMEnvironment):
         self.env = env
@@ -57,7 +59,7 @@ class UniformAllocationAgent(Agent):
 
     def get_action(self, state: dict) -> np.ndarray:
 
-        action = np.array([[-self.tau, self.tau]])
+        action = np.array([[-self.tau, self.tau, -1.0]])
         return np.repeat(action, self.env.num_trajectories, axis=0)
 
 class CarteaPLAgent(Agent):

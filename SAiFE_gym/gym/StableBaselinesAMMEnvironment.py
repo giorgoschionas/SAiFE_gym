@@ -10,6 +10,7 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
     FEES0_KEY,
     FEES1_KEY,
+    GAS_COST_KEY,
     LP_COLLECTED_FEES0_KEY,
     LP_COLLECTED_FEES1_KEY,
     LP_LIQUIDITY_KEY,
@@ -33,7 +34,8 @@ DEFAULT_OBS_KEYS = [
     LP_COLLECTED_FEES1_KEY,
     ASSET_PRICE_KEY,         # absolute price level (affects fee token amounts)
     TIME_KEY,
-]  # obs_dim = 8
+    GAS_COST_KEY,            # fixed rebalancing cost (informs hold/rebalance decision)
+]  # obs_dim = 9
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 _DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY}
@@ -59,7 +61,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
         self.obs_dim = len(self.obs_keys)
         self.store_terminal_observation_info = store_terminal_observation_info
-        self.actions = np.zeros((amm_env.num_trajectories, 2), dtype=np.float32)
+        self.actions = np.zeros((amm_env.num_trajectories, amm_env.action_space.shape[0]), dtype=np.float32)
 
         for k in self.obs_keys:
             if k in _ARRAY_KEYS:
