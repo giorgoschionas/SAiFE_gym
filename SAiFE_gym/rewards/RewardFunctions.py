@@ -94,7 +94,12 @@ class PnL(RewardFunction):
             sqrt_p_lower, sqrt_p_upper
         )
 
-        return np.where(has_position, pos_value, 0)
+        # Trajectories with lp_liq == 0 are either:
+        #   - pre-deployment (ever_deployed=False): use initial_wealth as the cash baseline
+        #   - bankrupt      (ever_deployed=True):  wealth is genuinely 0
+        ever_deployed = state.get(LP_EVER_DEPLOYED_KEY, np.zeros_like(lp_liq, dtype=bool))
+        no_position_value = np.where(ever_deployed, 0.0, self.initial_wealth)
+        return np.where(has_position, pos_value, no_position_value)
 
     def calculate(
         self, current_state: dict, action: np.ndarray,

@@ -64,6 +64,7 @@ class PolicyGradientAgent(Agent):
         action_std: Union[float, Callable] = 0.1,
         optimizer: torch.optim.Optimizer = None,
         lr_scheduler: _LRScheduler = None,
+        max_grad_norm: float = 1.0,
     ):
         self.env = env
         self.num_trajectories = env.num_trajectories
@@ -78,11 +79,18 @@ class PolicyGradientAgent(Agent):
         self.action_std = action_std
         self.optimizer = optimizer or torch.optim.Adam(self.policy_net.parameters(), lr=1e-3)
         self.lr_scheduler = lr_scheduler or StepLR(self.optimizer, step_size=100, gamma=0.99)
+        self.max_grad_norm = max_grad_norm
         self.proportion_completed: float = 0.0
 
     def _flatten_state(self, state: dict) -> np.ndarray:
         """
         Convert SAiFE_gym's dict state to flattened array for neural network.
+
+        Uses normalized, relative features rather than raw absolute values:
+        - Mispricing (asset_price - pool_price): adverse selection signal
+        - LP lower/upper offset from current tick: relative position info
+        - Time remaining (1 - t/T): horizon awareness
+        - Normalized LP liquidity (lp_liq / initial_wealth): scale-invariant
 
         Args:
             state: Dict with keys like 'sqrt_price', 'current_tick', etc.
@@ -95,31 +103,29 @@ class PolicyGradientAgent(Agent):
             LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY
         )
 
-        # Select key features for the policy (avoid using full liquidity array for now)
         features = []
 
-        # Pool state
-        #features.append(state[POOL_SQRT_PRICE_KEY])  # (num_trajectories,)
-        features.append(state[POOL_CURRENT_TICK_KEY].astype(np.float32))  # (num_trajectories,)
+        # Mispricing: asset_price - pool_price (key signal for asymmetric strategies)
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        mispricing = state[ASSET_PRICE_KEY] - pool_price
+        features.append(mispricing.astype(np.float32))
 
-        # Market state
+        # LP position offsets relative to current tick (small bounded integers)
+        current_tick = state[POOL_CURRENT_TICK_KEY]
+        lower_offset = (current_tick - state[LP_TICK_LOWER_KEY]).astype(np.float32)
+        upper_offset = (state[LP_TICK_UPPER_KEY] - current_tick).astype(np.float32)
+        features.append(lower_offset)
+        features.append(upper_offset)
 
-        #################
-        #features.append(state[ASSET_PRICE_KEY])  # (num_trajectories,)
-        #features.append(state[TIME_KEY])  # (num_trajectories,)
+        # Time remaining (normalized to [0, 1])
+        time_remaining = 1.0 - state[TIME_KEY] / self.env.terminal_time
+        features.append(time_remaining.astype(np.float32))
 
-        # Mispricing signal - key for asymmetric strategies!
-        #pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
-        #mispricing = state[ASSET_PRICE_KEY] - pool_price  # positive = AMM underpriced
-        #features.append(mispricing)  # (num_trajectories,)
-        ############
+        # Normalized LP liquidity
+        initial_wealth = getattr(self.env.model_dynamics, 'initial_wealth', 1.0)
+        norm_liq = state[LP_LIQUIDITY_KEY] / max(initial_wealth, 1.0)
+        features.append(norm_liq.astype(np.float32))
 
-        # LP position state
-        features.append(state[LP_LIQUIDITY_KEY])  # (num_trajectories,)
-        features.append(state[LP_TICK_LOWER_KEY].astype(np.float32))  # (num_trajectories,)
-        features.append(state[LP_TICK_UPPER_KEY].astype(np.float32))  # (num_trajectories,)
-
-        # Stack features: shape (num_features, num_trajectories) -> (num_trajectories, num_features)
         return np.column_stack(features)
 
     def get_action(
@@ -174,17 +180,22 @@ class PolicyGradientAgent(Agent):
             # Convert to tensors
             rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
 
-            # Calculate future rewards for each trajectory separately
+            # Calculate future rewards (returns) for each trajectory
             # Shape: (num_steps, num_trajectories)
             future_rewards = self._calculate_future_rewards(rewards_tensor)
 
-            # Policy gradient loss: -E[log π(a|s) * R]
-            # Sum over action dimensions, mean over trajectories and time
-            policy_loss = -torch.mean(log_probs * future_rewards)
+            # Baseline: mean return across trajectories at each timestep
+            # This reduces variance without introducing bias
+            baseline = future_rewards.mean(dim=1, keepdim=True)
+            advantages = future_rewards - baseline
+
+            # Policy gradient loss: -E[log π(a|s) * A(s,a)]
+            policy_loss = -torch.mean(log_probs * advantages)
 
             # Optimize policy
             self.optimizer.zero_grad()
             policy_loss.backward()
+            torch.nn.utils.clip_grad_norm_(self.policy_net.parameters(), max_norm=self.max_grad_norm)
             self.optimizer.step()
 
             # Logging
