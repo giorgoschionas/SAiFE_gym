@@ -56,6 +56,7 @@ def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
         LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, price, dtype=np.float64),
         TIME_KEY: np.full(num_traj, time, dtype=np.float64),
+        LP_EVER_DEPLOYED_KEY: np.full(num_traj, lp_liquidity > 0, dtype=bool),
     }
 
 

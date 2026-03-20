@@ -14,8 +14,6 @@ from SAiFE_gym.gym.index_names import (
     LP_EVER_DEPLOYED_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
-
-
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
 
@@ -33,14 +31,13 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         self.rng = default_rng(seed)
         self.seed = seed
 
-        self.state = None 
+        self.state = None
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         pass
 
-    
     def get_arrivals(self, action: np.ndarray):
-        return None, None 
+        return None, None
 
 
     def get_action_space(self) -> gymnasium.spaces.Space:
@@ -103,20 +100,18 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
 
-
-
     def get_action_space(self):
         """
         Return the action space for the agent.
 
-        Action format: [lower_offset, upper_offset]
+        Action format: [lower_offset, upper_offset, hold_flag]
         - lower_offset: Tick offset from current tick (range: -tau to tau-1)
         - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
+        - hold_flag: <= 0 triggers rebalance, > 0 holds current position
 
         Constraint: lower_offset < upper_offset (enforced by validate_action)
         The LP always deploys all available wealth into the specified range.
         """
-
         return gymnasium.spaces.Box(
             low=np.array([-self.tau, -self.tau + 1, -1.0], dtype=np.float32),
             high=np.array([self.tau - 1, self.tau, 1.0], dtype=np.float32),
@@ -434,9 +429,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if rebalance_mask is not None and not np.any(rebalance_mask):
             return
 
-        # Save held trajectories' state before computation
-        hold_mask = None
-        if rebalance_mask is not None and not np.all(rebalance_mask):
+        # Save held trajectories' state so it can be restored after computation.
+        # When all trajectories rebalance (rebalance_mask is None or all True),
+        # no save/restore is needed.
+        has_held = rebalance_mask is not None and not np.all(rebalance_mask)
+        if has_held:
             hold_mask = ~rebalance_mask
             _SAVE_KEYS = [
                 LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
@@ -539,7 +536,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
 
         # Restore held trajectories after computation
-        if hold_mask is not None:
+        if has_held:
             for k, v in saved.items():
                 self.state[k][hold_mask] = v
 
@@ -560,11 +557,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
             raise ValueError("State not initialized. Call reset() first.")
 
         if action is not None:
-            if action.shape[1] >= 3:
-                rebalance_mask = action[:, 2] <= 0
-                self._rebalance(self.validate_action(action[:, :2]), rebalance_mask)
-            else:
-                self._rebalance(self.validate_action(action))
+            tick_action = self.validate_action(action[:, :2])
+            rebalance_mask = action[:, 2] <= 0 if action.shape[1] >= 3 else None
+            self._rebalance(tick_action, rebalance_mask)
 
         sell_active = arrivals[:, 0].astype(bool)
         buy_active = arrivals[:, 1].astype(bool)
