@@ -11,7 +11,7 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
-    ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY
+    ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
@@ -25,11 +25,13 @@ class AMMEnvironment(gymnasium.Env):
         n_steps: int = 200,
         reward_function: RewardFunction = None,
         model_dynamics: ModelDynamics = None,
+        initial_wealth: float = 1e6,
         num_trajectories: int = 1,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
+        self.initial_wealth = initial_wealth
         self.num_trajectories = num_trajectories
         self._step_size = self.terminal_time / self.n_steps
 
@@ -221,6 +223,9 @@ class AMMEnvironment(gymnasium.Env):
             # Environment parameters (constant per episode)
             GAS_COST_KEY: np.full(
                 self.num_trajectories, self.model_dynamics.gas_cost, dtype=np.float64
+            ),
+            INITIAL_WEALTH_KEY: np.full(
+                self.num_trajectories, self.initial_wealth, dtype=np.float64
             ),
         }
 

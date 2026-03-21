@@ -21,7 +21,7 @@ from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY
 )
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
@@ -42,11 +42,11 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
         midprice_model=midprice_model, arrival_model=arrival_model,
         num_trajectories=num_trajectories, fee_tier=0.003, tau=tau,
         num_ticks=num_ticks, exponential_value=1.0001,
-        initial_wealth=initial_wealth, seed=42
+        seed=42
     )
 
 
-def initialize_state(model, liquidity_value=1e6):
+def initialize_state(model, liquidity_value=1e6, initial_wealth=1e6):
     num_traj = model.num_trajectories
     num_ticks = model.num_ticks
     initial_price = model.initial_price
@@ -73,6 +73,7 @@ def initialize_state(model, liquidity_value=1e6):
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
+        INITIAL_WEALTH_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
     }
 
 
