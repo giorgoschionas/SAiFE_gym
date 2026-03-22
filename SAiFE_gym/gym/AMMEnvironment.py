@@ -11,9 +11,10 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
-    ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY
+    ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
+    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY,
 )
-from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
+from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick, get_position_value_vec
 
 
 
@@ -147,6 +148,18 @@ class AMMEnvironment(gymnasium.Env):
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
+
+            # Derived observation features
+            PORTFOLIO_VALUE_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
+            LP_ALPHA_KEY: gymnasium.spaces.Box(
+                low=0.0, high=1.0,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
         })
 
     def _initial_v3_state(self) -> dict:
@@ -227,6 +240,12 @@ class AMMEnvironment(gymnasium.Env):
             INITIAL_WEALTH_KEY: np.full(
                 self.num_trajectories, self.initial_wealth, dtype=np.float64
             ),
+
+            # Derived observation features (updated each step)
+            PORTFOLIO_VALUE_KEY: np.full(
+                self.num_trajectories, self.initial_wealth, dtype=np.float64
+            ),
+            LP_ALPHA_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
         }
 
     def seed(self, seed: int = None):
@@ -294,6 +313,26 @@ class AMMEnvironment(gymnasium.Env):
         info = self._calculate_infos(current_state, action, rewards)
         return next_state, rewards, terminated, truncated, info
 
+    def _compute_derived_obs(self):
+        """Compute portfolio_value and lp_alpha from current state and store in state dict."""
+        state = self.model_dynamics.state
+        md = self.model_dynamics
+
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        has_position = lp_liq > 0
+        ever_deployed = state[LP_EVER_DEPLOYED_KEY]
+
+        sqrt_p = state[POOL_SQRT_PRICE_KEY]
+        sqrt_p_lower = np.sqrt(md.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
+        sqrt_p_upper = np.sqrt(md.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
+
+        pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
+        no_pos_value = np.where(ever_deployed, 0.0, md.initial_wealth)
+        state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value, no_pos_value)
+
+        alpha = md._compute_token0_fraction_vec(sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper)
+        state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
+
     def _update_state(self, action: np.ndarray):
         # Step 1: Get arrivals from current model state (intensity at t)
         arrivals = self.model_dynamics.get_arrivals()
@@ -304,6 +343,9 @@ class AMMEnvironment(gymnasium.Env):
         # Step 3: Advance all stochastic processes
         self._update_market_state(arrivals, action)
         self.model_dynamics.state[TIME_KEY] += self.step_size
+
+        # Step 4: Update derived observation features
+        self._compute_derived_obs()
 
         return self.model_dynamics.state
 
