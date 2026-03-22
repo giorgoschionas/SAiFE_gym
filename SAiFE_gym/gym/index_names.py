@@ -41,6 +41,10 @@ MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRIC
 LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
 LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
 
+# Derived state features (computed each step from primary state variables)
+PORTFOLIO_VALUE_KEY = 'portfolio_value'  # Mark-to-market LP position value in token1 - shape: (num_trajectories,)
+LP_ALPHA_KEY        = 'lp_alpha'         # LP's token0 fraction α ∈ [0,1] (composition/inventory) - shape: (num_trajectories,)
+
 
 # ============================================================================
 # Legacy Array-based Indices (for backwards compatibility)

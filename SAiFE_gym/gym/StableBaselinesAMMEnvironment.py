@@ -11,6 +11,7 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY,
     FEES1_KEY,
     GAS_COST_KEY,
+    LP_ALPHA_KEY,
     LP_COLLECTED_FEES0_KEY,
     LP_COLLECTED_FEES1_KEY,
     LP_LIQUIDITY_KEY,
@@ -22,6 +23,7 @@ from SAiFE_gym.gym.index_names import (
     POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     POOL_SQRT_PRICE_KEY,
+    PORTFOLIO_VALUE_KEY,
     TIME_KEY,
 )
 
@@ -35,7 +37,9 @@ DEFAULT_OBS_KEYS = [
     ASSET_PRICE_KEY,         # absolute price level (affects fee token amounts)
     TIME_KEY,
     GAS_COST_KEY,            # fixed rebalancing cost (informs hold/rebalance decision)
-]  # obs_dim = 9
+    PORTFOLIO_VALUE_KEY,     # mark-to-market position value (calibrates cost/benefit of rebalancing)
+    LP_ALPHA_KEY,            # token0 fraction α ∈ [0,1] (composition/inventory state)
+]  # obs_dim = 11
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 _DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY}
