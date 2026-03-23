@@ -49,7 +49,7 @@ def generate_trajectory(env, agent, include_log_probs=False):
     rewards = np.array(rewards)  # Shape: (num_steps, num_trajectories)
 
     if include_log_probs:
-        # Stack log probs - shape: (num_steps, num_trajectories, action_dim)
+        # Stack log probs - shape: (num_steps, num_trajectories)
         log_probs = torch.stack(log_probs) if log_probs else None
         return observations, actions, rewards, log_probs
 
@@ -65,10 +65,11 @@ class PolicyGradientAgent(Agent):
         optimizer: torch.optim.Optimizer = None,
         lr_scheduler: _LRScheduler = None,
         max_grad_norm: float = 1.0,
+        gamma: float = 0.99,
     ):
         self.env = env
         self.num_trajectories = env.num_trajectories
-        self.action_size = env.action_space.shape[0]  # Should be 2 for [lower_offset, upper_offset]
+        self.action_size = env.action_space.shape[0]  # 3 for [lower_offset, upper_offset, hold_flag]
 
         # Get input size by creating a dummy state and flattening it
         dummy_state, _ = env.reset()
@@ -80,17 +81,24 @@ class PolicyGradientAgent(Agent):
         self.optimizer = optimizer or torch.optim.Adam(self.policy_net.parameters(), lr=1e-3)
         self.lr_scheduler = lr_scheduler or StepLR(self.optimizer, step_size=100, gamma=0.99)
         self.max_grad_norm = max_grad_norm
+        self.gamma = gamma
         self.proportion_completed: float = 0.0
+
+        # Check if policy supports squashed Gaussian (transform + log_prob_correction)
+        self._squashed = (
+            hasattr(self.policy_net, 'transform')
+            and hasattr(self.policy_net, 'log_prob_correction')
+        )
 
     def _flatten_state(self, state: dict) -> np.ndarray:
         """
         Convert SAiFE_gym's dict state to flattened array for neural network.
 
-        Uses normalized, relative features rather than raw absolute values:
-        - Mispricing (asset_price - pool_price): adverse selection signal
-        - LP lower/upper offset from current tick: relative position info
-        - Time remaining (1 - t/T): horizon awareness
-        - Normalized LP liquidity (lp_liq / initial_wealth): scale-invariant
+        All features are normalized to roughly similar scales:
+        - Relative mispricing (asset - pool) / pool: dimensionless, O(0.01)
+        - LP offsets / tau: normalized to ~[-1, 1]
+        - Time remaining: [0, 1]
+        - Normalized LP liquidity: lp_liq / initial_wealth
 
         Args:
             state: Dict with keys like 'sqrt_price', 'current_tick', etc.
@@ -103,17 +111,18 @@ class PolicyGradientAgent(Agent):
             LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY
         )
 
+        tau = self.env.model_dynamics.tau
         features = []
 
-        # Mispricing: asset_price - pool_price (key signal for asymmetric strategies)
+        # Relative mispricing: (asset_price - pool_price) / pool_price
         pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
-        mispricing = state[ASSET_PRICE_KEY] - pool_price
+        mispricing = (state[ASSET_PRICE_KEY] - pool_price) / np.maximum(pool_price, 1e-8)
         features.append(mispricing.astype(np.float32))
 
-        # LP position offsets relative to current tick (small bounded integers)
+        # LP position offsets normalized by tau → roughly [-1, 1]
         current_tick = state[POOL_CURRENT_TICK_KEY]
-        lower_offset = (current_tick - state[LP_TICK_LOWER_KEY]).astype(np.float32)
-        upper_offset = (state[LP_TICK_UPPER_KEY] - current_tick).astype(np.float32)
+        lower_offset = (current_tick - state[LP_TICK_LOWER_KEY]).astype(np.float32) / tau
+        upper_offset = (state[LP_TICK_UPPER_KEY] - current_tick).astype(np.float32) / tau
         features.append(lower_offset)
         features.append(upper_offset)
 
@@ -137,27 +146,40 @@ class PolicyGradientAgent(Agent):
         flat_state = self._flatten_state(state)
         state_tensor = torch.tensor(flat_state, dtype=torch.float32, requires_grad=False)
 
-        # Get action means from policy network: shape (num_trajectories, action_dim)
-        mean_actions = self.policy_net(state_tensor)
+        # Get raw output from policy network: shape (num_trajectories, action_dim)
+        raw_output = self.policy_net(state_tensor)
 
         # Get current action std (potentially decaying)
         std = self.action_std(self.proportion_completed) if callable(self.action_std) else self.action_std
 
-        if deterministic:
-            # Return deterministic action (no noise)
-            return mean_actions.detach().numpy()
+        if self._squashed:
+            # --- Squashed Gaussian: noise in raw space, then transform ---
+            if deterministic:
+                return self.policy_net.transform(raw_output).detach().numpy()
 
-        # Sample from Gaussian policy
-        action_dist = torch.distributions.Normal(loc=mean_actions, scale=std)
-        sampled_actions = action_dist.sample()
+            dist = torch.distributions.Normal(raw_output, std)
+            raw_samples = dist.sample()
+            actions = self.policy_net.transform(raw_samples)
 
-        if include_log_probs:
-            # Get log probs for the sampled actions
-            log_probs = action_dist.log_prob(sampled_actions).sum(dim=-1)  # Sum over action dimensions
-            return sampled_actions.detach().numpy(), log_probs
+            if include_log_probs:
+                log_probs = dist.log_prob(raw_samples).sum(dim=-1)
+                log_probs = log_probs - self.policy_net.log_prob_correction(raw_samples)
+                return actions.detach().numpy(), log_probs
 
-        return sampled_actions.detach().numpy()
+            return actions.detach().numpy()
+        else:
+            # --- Legacy: noise directly on bounded outputs ---
+            if deterministic:
+                return raw_output.detach().numpy()
 
+            dist = torch.distributions.Normal(loc=raw_output, scale=std)
+            sampled_actions = dist.sample()
+
+            if include_log_probs:
+                log_probs = dist.log_prob(sampled_actions).sum(dim=-1)
+                return sampled_actions.detach().numpy(), log_probs
+
+            return sampled_actions.detach().numpy()
 
     def train(self, num_epochs: int = 1, reporting_freq: int = 100):
         learning_losses = []
@@ -180,7 +202,7 @@ class PolicyGradientAgent(Agent):
             # Convert to tensors
             rewards_tensor = torch.tensor(rewards, dtype=torch.float32)
 
-            # Calculate future rewards (returns) for each trajectory
+            # Calculate discounted future rewards (returns) for each trajectory
             # Shape: (num_steps, num_trajectories)
             future_rewards = self._calculate_future_rewards(rewards_tensor)
 
@@ -188,6 +210,9 @@ class PolicyGradientAgent(Agent):
             # This reduces variance without introducing bias
             baseline = future_rewards.mean(dim=1, keepdim=True)
             advantages = future_rewards - baseline
+
+            # Normalize advantages (zero-mean, unit-variance) for stable gradients
+            advantages = (advantages - advantages.mean()) / (advantages.std() + 1e-8)
 
             # Policy gradient loss: -E[log π(a|s) * A(s,a)]
             policy_loss = -torch.mean(log_probs * advantages)
@@ -208,10 +233,11 @@ class PolicyGradientAgent(Agent):
 
         return learning_losses, learning_rewards
 
-    @staticmethod
-    def _calculate_future_rewards(rewards: torch.Tensor) -> torch.Tensor:
+    def _calculate_future_rewards(self, rewards: torch.Tensor) -> torch.Tensor:
         """
-        Calculate future rewards (returns) for REINFORCE algorithm.
+        Calculate discounted future rewards (returns) for REINFORCE.
+
+        G_t = r_t + γ·r_{t+1} + γ²·r_{t+2} + … + γ^(T-t)·r_T
 
         Args:
             rewards: Shape (num_steps, num_trajectories)
@@ -219,7 +245,9 @@ class PolicyGradientAgent(Agent):
         Returns:
             future_rewards: Shape (num_steps, num_trajectories)
         """
-        # Flip along time dimension, compute cumsum, then flip back
-        flipped_rewards = torch.flip(rewards, dims=(0,))  # Flip along time axis
-        cumulative_flipped = torch.cumsum(flipped_rewards, dim=0)
-        return torch.flip(cumulative_flipped, dims=(0,))
+        T = rewards.shape[0]
+        future = torch.zeros_like(rewards)
+        future[-1] = rewards[-1]
+        for t in range(T - 2, -1, -1):
+            future[t] = rewards[t] + self.gamma * future[t + 1]
+        return future

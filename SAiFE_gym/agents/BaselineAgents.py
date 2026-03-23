@@ -10,6 +10,7 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
+    LP_EVER_DEPLOYED_KEY,
     TIME_KEY,
     FEES0_KEY,
     FEES1_KEY
@@ -63,9 +64,34 @@ class UniformAllocationAgent(Agent):
 
     def get_action(self, state: dict) -> np.ndarray:
 
-        action = np.array([[-self.tau, self.tau]])
-        #action = np.array([[-30, 30]])
+        #action = np.array([[-self.tau, self.tau]])
+        action = np.array([[-1, 1]])
         return np.repeat(action, self.env.num_trajectories, axis=0)
+
+class DeployOnceAgent(Agent):
+    """
+    Deploys liquidity once at the full active tick range and holds for the entire episode.
+
+    On the first step (LP not yet deployed), emits hold_flag = -1 to trigger
+    deployment at [-tau, +tau]. On all subsequent steps, emits hold_flag = +1
+    to hold the existing position without rebalancing.
+    """
+    def __init__(self, env: AMMEnvironment):
+        self.env = env
+        self.tau = env.model_dynamics.tau
+
+    def get_action(self, state: dict) -> np.ndarray:
+        n = self.env.num_trajectories
+        lower = np.full(n, -self.tau, dtype=np.float32)
+        upper = np.full(n, self.tau, dtype=np.float32)
+        #lower = np.full(n, -35, dtype=np.float32)
+        #upper = np.full(n, 70, dtype=np.float32)
+        # hold_flag: -1 (rebalance) if never deployed, +1 (hold) otherwise
+        ever_deployed = state[LP_EVER_DEPLOYED_KEY]
+        hold_flag = np.where(ever_deployed, 1.0, -1.0).astype(np.float32)
+
+        return np.column_stack([lower, upper, hold_flag])
+
 
 class CarteaPLAgent(Agent):
     """
