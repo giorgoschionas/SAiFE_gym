@@ -41,6 +41,9 @@ MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRIC
 LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
 LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
 
+BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset) — distance to nearest boundary
+POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
+
 
 # ============================================================================
 # Legacy Array-based Indices (for backwards compatibility)

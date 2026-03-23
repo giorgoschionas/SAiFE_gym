@@ -8,6 +8,7 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvO
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
+    BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
     GAS_COST_KEY,
@@ -22,23 +23,27 @@ from SAiFE_gym.gym.index_names import (
     POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     POOL_SQRT_PRICE_KEY,
+    POSITION_WIDTH_KEY,
     TIME_KEY,
 )
 
 DEFAULT_OBS_KEYS = [
-    MISPRICING_KEY,          # external - AMM price gap (adverse selection signal)
-    LP_LOWER_OFFSET_KEY,     # current_tick - lp_tick_lower
-    LP_UPPER_OFFSET_KEY,     # lp_tick_upper - current_tick
-    LP_LIQUIDITY_KEY,
-    LP_COLLECTED_FEES0_KEY,
-    LP_COLLECTED_FEES1_KEY,
-    ASSET_PRICE_KEY,         # absolute price level (affects fee token amounts)
-    TIME_KEY,
-    GAS_COST_KEY,            # fixed rebalancing cost (informs hold/rebalance decision)
-]  # obs_dim = 9
+    MISPRICING_KEY,            # adverse selection signal
+    BOUNDARY_PROXIMITY_KEY,    # min(lower_offset, upper_offset) — distance to nearest boundary
+    POSITION_WIDTH_KEY,        # lower_offset + upper_offset — position concentration
+    # LP_LOWER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
+    # LP_UPPER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
+    # LP_LIQUIDITY_KEY,        # not directly actionable for hold/rebalance
+    # LP_COLLECTED_FEES0_KEY,  # cumulative, not actionable
+    # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
+    # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
+    TIME_KEY,                  # remaining time to recoup gas cost
+    GAS_COST_KEY,              # rebalancing cost
+]  # obs_dim = 5
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
-_DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY}
+_DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
+                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY}
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -87,13 +92,17 @@ class StableBaselinesAMMEnvironment(VecEnv):
 
     def _compute_derived(self, state_dict: dict) -> dict:
         """Compute derived observation features from raw state."""
+        lower_offset = (state_dict[POOL_CURRENT_TICK_KEY]
+                        - state_dict[LP_TICK_LOWER_KEY])
+        upper_offset = (state_dict[LP_TICK_UPPER_KEY]
+                        - state_dict[POOL_CURRENT_TICK_KEY])
         return {
-            MISPRICING_KEY:      state_dict[ASSET_PRICE_KEY]
-                                 - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
-            LP_LOWER_OFFSET_KEY: state_dict[POOL_CURRENT_TICK_KEY]
-                                 - state_dict[LP_TICK_LOWER_KEY],
-            LP_UPPER_OFFSET_KEY: state_dict[LP_TICK_UPPER_KEY]
-                                 - state_dict[POOL_CURRENT_TICK_KEY],
+            MISPRICING_KEY:          state_dict[ASSET_PRICE_KEY]
+                                     - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
+            LP_LOWER_OFFSET_KEY:     lower_offset,
+            LP_UPPER_OFFSET_KEY:     upper_offset,
+            BOUNDARY_PROXIMITY_KEY:  np.minimum(lower_offset, upper_offset),
+            POSITION_WIDTH_KEY:      lower_offset + upper_offset,
         }
 
     def _flatten_obs(self, state_dict: dict) -> np.ndarray:
