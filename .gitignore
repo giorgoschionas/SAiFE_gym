@@ -19,3 +19,4 @@ __pycache__/
 prompts/
 
 .claude/settings.local.json
+.trees/
