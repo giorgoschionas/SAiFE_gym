@@ -283,6 +283,9 @@ class AMMEnvironment(gymnasium.Env):
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
 
+        # Recompute derived obs from fresh state
+        self._compute_derived_obs()
+
         return self.model_dynamics.state, {}
 
 
@@ -327,7 +330,7 @@ class AMMEnvironment(gymnasium.Env):
         sqrt_p_upper = np.sqrt(md.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
 
         pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
-        no_pos_value = np.where(ever_deployed, 0.0, md.initial_wealth)
+        no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
         state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value, no_pos_value)
 
         alpha = md._compute_token0_fraction_vec(sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper)

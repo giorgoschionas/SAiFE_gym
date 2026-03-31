@@ -21,7 +21,7 @@ from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -117,12 +117,10 @@ class TestPnLInitialWealth:
 class TestPnLRebalancingCost:
     def test_reward_reflects_rebalancing_cost(self):
         initial_wealth = 1e6
-        model_no_cost = _create_test_model(initial_wealth=initial_wealth,
-                                            gas_cost=0.0)
-        model_with_cost = _create_test_model(initial_wealth=initial_wealth,
-                                              gas_cost=10.0)
-        _initialize_model_state(model_no_cost)
-        _initialize_model_state(model_with_cost)
+        model_no_cost = _create_test_model(gas_cost=0.0)
+        model_with_cost = _create_test_model(gas_cost=10.0)
+        _initialize_model_state(model_no_cost, initial_wealth=initial_wealth)
+        _initialize_model_state(model_with_cost, initial_wealth=initial_wealth)
 
         action = np.array([[-2, 2]], dtype=np.float64)
         arrivals = np.array([[0, 0]], dtype=np.int64)
@@ -407,7 +405,7 @@ class TestCjCriterionAlias:
 # Helpers for integration tests using ModelDynamics
 # =====================================================================
 
-def _create_test_model(num_trajectories=1, initial_wealth=1e6, gas_cost=0.0):
+def _create_test_model(num_trajectories=1, gas_cost=0.0):
     midprice_model = BrownianMotionMidpriceModel(
         drift=0.0, volatility=0.0, initial_price=100.0,
         terminal_time=1.0, step_size=0.005,
@@ -423,13 +421,12 @@ def _create_test_model(num_trajectories=1, initial_wealth=1e6, gas_cost=0.0):
         num_trajectories=num_trajectories,
         fee_tier=0.003, tau=5, num_ticks=100,
         exponential_value=EXPONENTIAL_VALUE,
-        initial_wealth=initial_wealth,
         gas_cost=gas_cost,
         seed=42
     )
 
 
-def _initialize_model_state(model):
+def _initialize_model_state(model, initial_wealth=1e6):
     num_traj = model.num_trajectories
     num_ticks = model.num_ticks
     initial_price = model.initial_price
@@ -456,6 +453,7 @@ def _initialize_model_state(model):
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
+        INITIAL_WEALTH_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
     }
 
 
