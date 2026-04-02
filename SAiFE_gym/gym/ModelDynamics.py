@@ -60,10 +60,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
 
 class UniswapV3ModelDynamics(ModelDynamics):
     """
-    Uniswap V3 Model Dynamics with Concentrated Liquidity.
-
-    The agent (LP) can choose to allocate liquidity in specific price ranges.
-    The action space is DISCRETE - agents specify position bounds and liquidity fraction.
+    Uniswap V3 Model Dynamics: Constant Product Market Maker with Concentrated Liquidity.
 
     """
 
@@ -173,7 +170,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Compute trade size from current tick's liquidity (one tick's capacity).
 
-        Each trade moves the price by at most one tick. Trade size is determined
+        Each trade moves the price by one tick. Trade size is determined
         by the liquidity at the current tick only, not a global minimum.
 
         Returns:
