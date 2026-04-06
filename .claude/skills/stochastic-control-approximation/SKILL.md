@@ -12,4 +12,4 @@ All the stochastic processes (midprice, order arrivals, etc.) are discretized fo
 
 2. **Arrival Process**: The order arrival process is mainly modeled as a non-homogeneous Poisson process, where the arrival rate can vary over time based on state variables. For small enough `intensity * step_size`, e.g., $\le 0.01$, at each step, we can approximate the Poisson counts with a Bernoulli random variable, with as success probability `p = intensity * step_size`. This means that at each step, there can be at most one buy and one sell arrival, which simplifies the simulation while still capturing the stochastic nature of order arrivals. 
 
-3. **AMM Price Process**: The price impact is fixed and deterministic. Each trade moves the price by one tick, and so the trade size is determined by the liquidity at the current tick. So, the AMM price process is continuous-time jump process. 
+3. **AMM Price Process**: The price impact is fixed and deterministic. Each trade moves the price by one tick, and so the trade size is determined by the liquidity at the current tick. So, the AMM price process is a continuous-time jump process. 
