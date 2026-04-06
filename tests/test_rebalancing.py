@@ -22,7 +22,7 @@ from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
@@ -56,7 +56,6 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
         tau=tau,
         num_ticks=num_ticks,
         exponential_value=1.0001,
-        initial_wealth=initial_wealth,
         gas_cost=gas_cost,
         swap_fee_rate=swap_fee_rate,
         seed=42
@@ -65,7 +64,7 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
     return model
 
 
-def initialize_state(model, liquidity_value=1e6, mid_tick=True):
+def initialize_state(model, liquidity_value=1e6, mid_tick=True, initial_wealth=1e6):
     """Initialize model state with uniform liquidity and no LP position."""
     num_traj = model.num_trajectories
     num_ticks = model.num_ticks
@@ -99,6 +98,7 @@ def initialize_state(model, liquidity_value=1e6, mid_tick=True):
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
+        INITIAL_WEALTH_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
     }
 
 
@@ -134,8 +134,8 @@ class TestFirstRebalance:
     def test_first_rebalance_position_value_matches_wealth(self):
         """After first rebalance, position value should equal initial_wealth."""
         wealth = 5e5
-        model = create_test_model(initial_wealth=wealth)
-        initialize_state(model, liquidity_value=1e6)
+        model = create_test_model()
+        initialize_state(model, liquidity_value=1e6, initial_wealth=wealth)
 
         action = np.array([[-3, 3]], dtype=np.float64)
         arrivals = np.array([[0, 0]], dtype=np.int64)
@@ -306,8 +306,8 @@ class TestFeeCollection:
 
     def test_fee_share_proportional_to_liquidity(self):
         """LP's fee share should be proportional to their liquidity fraction."""
-        model = create_test_model(initial_wealth=1e5)  # Smaller than base liquidity
-        initialize_state(model, liquidity_value=1e6)
+        model = create_test_model()  # Smaller than base liquidity
+        initialize_state(model, liquidity_value=1e6, initial_wealth=1e5)
 
         # First rebalance
         action1 = np.array([[-2, 2]], dtype=np.float64)

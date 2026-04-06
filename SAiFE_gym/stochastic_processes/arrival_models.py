@@ -95,7 +95,7 @@ class PoissonLinearArrivalModel(ArrivalModel):
     """
     State-dependent Poisson arrival model with linear intensity.
 
-    Following the mbt_gym pattern, this model OWNS its internal intensity state which is
+    This model OWNS its internal intensity state which is
     updated via update() based on external AMM state.
 
     Formula:

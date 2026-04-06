@@ -35,11 +35,16 @@ TIME_KEY = 'time'                           # Current simulation time - shape: (
 
 # Environment parameters (constant per episode, exposed as observations)
 GAS_COST_KEY = 'gas_cost'               # Fixed rebalancing cost in token1 units - shape: (num_trajectories,)
+INITIAL_WEALTH_KEY = 'initial_wealth'   # LP's starting wealth before first deployment - shape: (num_trajectories,)
 
 # Derived observation features (computed from state, not stored in state dict)
 MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRICE - sqrt_price²)
 LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
 LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
+
+# Derived state features (computed each step from primary state variables)
+PORTFOLIO_VALUE_KEY = 'portfolio_value'  # Mark-to-market LP position value in token1 - shape: (num_trajectories,)
+LP_ALPHA_KEY        = 'lp_alpha'         # LP's token0 fraction α ∈ [0,1] (composition/inventory) - shape: (num_trajectories,)
 
 
 # ============================================================================

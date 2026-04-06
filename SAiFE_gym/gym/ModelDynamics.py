@@ -11,7 +11,7 @@ from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY,
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
@@ -60,10 +60,7 @@ class ModelDynamics(metaclass=abc.ABCMeta):
 
 class UniswapV3ModelDynamics(ModelDynamics):
     """
-    Uniswap V3 Model Dynamics with Concentrated Liquidity.
-
-    The agent (LP) can choose to allocate liquidity in specific price ranges.
-    The action space is DISCRETE - agents specify position bounds and liquidity fraction.
+    Uniswap V3 Model Dynamics: Constant Product Market Maker with Concentrated Liquidity.
 
     """
 
@@ -76,7 +73,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 2000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
-        initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
         gas_cost: float = 0.0,            # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
@@ -93,7 +89,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.exponential_value = exponential_value
         self.tick_factor = np.sqrt(exponential_value) - 1.0
         self.exp_quarter = exponential_value ** 0.25
-        self.initial_wealth = initial_wealth
         self.gas_cost = gas_cost
         self.swap_fee_rate = swap_fee_rate
 
@@ -175,7 +170,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Compute trade size from current tick's liquidity (one tick's capacity).
 
-        Each trade moves the price by at most one tick. Trade size is determined
+        Each trade moves the price by one tick. Trade size is determined
         by the liquidity at the current tick only, not a global minimum.
 
         Returns:
@@ -456,7 +451,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Trajectories that were previously deployed but are now bankrupt (lp_liq == 0
         # after gas costs drained their wealth) correctly start at 0, not initial_wealth.
         ever_deployed = self.state[LP_EVER_DEPLOYED_KEY]
-        wealth = np.where(ever_deployed, 0.0, self.initial_wealth)
+        wealth = np.where(ever_deployed, 0.0, self.state[INITIAL_WEALTH_KEY])
         alpha_current = np.zeros(num_traj)
 
         if np.any(has_position):
