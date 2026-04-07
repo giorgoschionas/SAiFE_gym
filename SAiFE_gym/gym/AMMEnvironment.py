@@ -369,6 +369,9 @@ class AMMEnvironment(gymnasium.Env):
             'active_liquidity': active_liq,
             'amm_price': md.state[POOL_SQRT_PRICE_KEY] ** 2,
             'midprice': md.state[ASSET_PRICE_KEY],
+            'liquidity_array': md.state[POOL_LIQUIDITY_ARRAY_KEY],
+            'current_tick': md.state[POOL_CURRENT_TICK_KEY],
+            'tick_lower_global': md.tick_lower_global,
         }
         md.arrival_model.update(arrivals, None, action, context)
 
