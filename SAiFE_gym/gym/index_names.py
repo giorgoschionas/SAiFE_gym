@@ -2,7 +2,8 @@
 # Dict-based State Keys for Full Pool Representation
 # ============================================================================
 # Use these keys to access state components in the new Dict-based state structure
-
+PORTFOLIO_VALUE_KEY = 'portfolio_value'
+LP_ALPHA_KEY = 'lp_alpha'
 POOL_SQRT_PRICE_KEY = 'sqrt_price'          # Current pool sqrt(price) - shape: (num_trajectories,)
 POOL_CURRENT_TICK_KEY = 'current_tick'      # Current tick index - shape: (num_trajectories,)
 POOL_LIQUIDITY_ARRAY_KEY = 'liquidity_array'  # Liquidity per tick - shape: (num_trajectories, num_ticks)

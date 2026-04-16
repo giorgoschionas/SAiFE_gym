@@ -13,6 +13,7 @@ from SAiFE_gym.gym.index_names import (
     FEES1_KEY,
     GAS_COST_KEY,
     LP_ALPHA_KEY,
+    PORTFOLIO_VALUE_KEY,
     LP_COLLECTED_FEES0_KEY,
     LP_COLLECTED_FEES1_KEY,
     LP_LIQUIDITY_KEY,
