@@ -77,7 +77,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         num_ticks: int = 2000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
         initial_wealth: float = 1e6,       # LP's initial wealth for first rebalance
-        gas_cost: float = 2.163,            # Fixed cost per rebalance in token1 units
+        gas_cost: float = 1.0815*2,      # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
     ):

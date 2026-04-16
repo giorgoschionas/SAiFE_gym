@@ -65,7 +65,7 @@ class UniformAllocationAgent(Agent):
     def get_action(self, state: dict) -> np.ndarray:
 
         #action = np.array([[-self.tau, self.tau]])
-        action = np.array([[-1, 1]])
+        action = np.array([[-0.4, 0.4]])
         return np.repeat(action, self.env.num_trajectories, axis=0)
 
 class DeployOnceAgent(Agent):

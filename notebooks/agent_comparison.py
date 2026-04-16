@@ -1,6 +1,6 @@
 """
 Holistic comparison of LP agents:
-  Uniform, DeployOnce, Cartea, REINFORCE (PolicyGradient), PPO, SAC, DQN.
+  Uniform, DeployOnce, CarteaDrissiMonga, REINFORCE (PolicyGradient), PPO, SAC, DQN.
 
 Phases:
   1. Train enabled RL agents
@@ -13,8 +13,10 @@ Toggle agents on/off via the ENABLE_AGENTS dict.
 
 import sys
 import os
+import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-
+job_id = os.environ.get("SLURM_JOB_ID", "local")
+#job_id=1
 import gymnasium
 import numpy as np
 import matplotlib.pyplot as plt
@@ -54,18 +56,18 @@ LIQUIDITY_SCALE = 1e4
 
 INITIAL_PRICE = 100.0
 DRIFT = 0
-VOLATILITY = 0.1
+VOLATILITY = 0.01
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
 
 ALPHA0 = np.array([10.0, 10.0])
-ALPHA1 = np.array([150.0, 150.0])
+ALPHA1 = np.array([0.0, 0.0])
 ALPHA2 = np.array([0.0, 0.0])
-ALPHA3 = np.array([5000.0, 5000.0])
+ALPHA3 = np.array([2000.0, 2000.0])
 
 GAMMA_CARTEA = 0.000005
 
-REINFORCE_EPOCHS = 250
+REINFORCE_EPOCHS = 0#100#250
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.7
 
@@ -80,7 +82,7 @@ FIGURES_DIR = os.path.join(os.path.dirname(__file__), 'figures')
 ENABLE_AGENTS = {
     'Uniform':    True,
     'DeployOnce': True,
-    'Cartea':     True,
+    'CarteaDrissiMonga': True,
     'REINFORCE':  False,
     'PPO':        True,
     'SAC':        False,
@@ -91,7 +93,7 @@ AGENT_NAMES = [name for name, on in ENABLE_AGENTS.items() if on]
 AGENT_COLORS = {
     'Uniform':    '#1f77b4',
     'DeployOnce': '#9467bd',
-    'Cartea':     '#ff7f0e',
+    'CarteaDrissiMonga': '#ff7f0e',
     'REINFORCE':  '#2ca02c',
     'PPO':        '#d62728',
     'SAC':        '#17becf',
@@ -336,26 +338,29 @@ def collect_single_trajectory(env, get_action_fn):
 # ============================================================================
 
 def plot_pnl_distribution(pnl_results):
-    """Box-plot + histogram of cumulative PnL across evaluated trajectories."""
+    """Box-plot and histogram of cumulative PnL, saved as separate figures."""
     agents = [n for n in AGENT_NAMES if n in pnl_results]
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(14, 5))
-    fig.suptitle(
-        f'PnL Distribution — {NUM_TRAJECTORIES_EVAL} Trajectories',
-        fontsize=14, fontweight='bold',
-    )
 
     # Box plot
+    fig1, ax1 = plt.subplots(figsize=(8, 5))
     box_data = [pnl_results[n] for n in agents]
     bp = ax1.boxplot(box_data, labels=agents, patch_artist=True, notch=False)
     for patch, name in zip(bp['boxes'], agents):
         patch.set_facecolor(AGENT_COLORS[name])
         patch.set_alpha(0.6)
     ax1.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-    ax1.set_ylabel('Cumulative PnL')
-    ax1.set_title('PnL Distribution')
+    ax1.set_ylabel('Cumulative PnL', fontsize=16)
+    ax1.tick_params(axis='both', labelsize=14)
+    #ax1.set_title('PnL Distribution')
     ax1.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path1 = os.path.join(FIGURES_DIR, f'pnl_boxplot_{job_id}.png')
+    fig1.savefig(path1, dpi=150, bbox_inches='tight')
+    plt.close(fig1)
+    print(f"  Saved: {path1}")
 
     # Histogram
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
     all_pnl = np.concatenate(list(pnl_results.values()))
     lo, hi = np.percentile(all_pnl, [1, 99])
     bins = np.linspace(lo, hi, 50)
@@ -370,17 +375,17 @@ def plot_pnl_distribution(pnl_results):
             color=AGENT_COLORS[name], linestyle='--', linewidth=1.5,
         )
     ax2.axvline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
-    ax2.set_xlabel('Cumulative PnL')
-    ax2.set_ylabel('Density')
-    ax2.set_title('PnL Histogram')
-    ax2.legend(fontsize=8)
+    ax2.set_xlabel('Cumulative PnL', fontsize=16)
+    ax2.set_ylabel('Density', fontsize=16)
+    ax2.tick_params(axis='both', labelsize=14)
+    #ax2.set_title('PnL Histogram')
+    ax2.legend(fontsize=16, loc='upper left')
     ax2.grid(True, alpha=0.3)
-
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'pnl_distribution.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
-    plt.close(fig)
-    print(f"  Saved: {path}")
+    path2 = os.path.join(FIGURES_DIR, f'pnl_histogram_{job_id}.png')
+    fig2.savefig(path2, dpi=150, bbox_inches='tight')
+    plt.close(fig2)
+    print(f"  Saved: {path2}")
 
 
 def plot_price_evolution(single_data):
@@ -390,17 +395,16 @@ def plot_price_evolution(single_data):
     """
     agents = [n for n in AGENT_NAMES if n in single_data]
     n_agents = len(agents)
-    ncols = 3
+    ncols = 2
     nrows = (n_agents + ncols - 1) // ncols
-    fig, axes = plt.subplots(nrows, ncols, figsize=(16, 5 * nrows))
-    if n_agents == 1:
-        axes = np.array([axes])
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows))
+    axes = np.atleast_2d(axes)
     n_sims = max(len(v) for v in single_data.values())
     title_suffix = f'{n_sims} Simulation{"s" if n_sims > 1 else ""}'
-    fig.suptitle(
-        f'Price Evolution with LP Position Ranges — {title_suffix}',
-        fontsize=14, fontweight='bold',
-    )
+    #fig.suptitle(
+    #    f'Price Evolution with LP Position Ranges — {title_suffix}',
+    #    fontsize=14, fontweight='bold',
+    #)
     # Hide unused subplot(s)
     for ax in axes.flat[n_agents:]:
         ax.set_visible(False)
@@ -437,28 +441,76 @@ def plot_price_evolution(single_data):
                         ax.axvline(rebalance_times[0], color='red', alpha=0.3,
                                    linewidth=0.5, label='Rebalance')
 
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Price')
+        ax.set_xlabel('Time', fontsize=16)
+        ax.set_ylabel('Price', fontsize=16)
+        ax.tick_params(axis='both', labelsize=14)
+        ax.ticklabel_format(axis='y', useOffset=False, style='plain')
         ax.set_title(name)
-        ax.legend(fontsize=7, loc='best')
+        ax.legend(fontsize=14, loc='upper left')
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'price_evolution.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
+    path = os.path.join(FIGURES_DIR, f'price_evolution_{job_id}.png')
+    fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
+
+    # Save standalone figure per trained RL agent (all sims overlaid)
+    rl_agents = [n for n in agents if n in ('REINFORCE', 'PPO', 'SAC', 'DQN')]
+    for name in rl_agents:
+        fig_rl, ax_rl = plt.subplots(figsize=(8, 5))
+        color = AGENT_COLORS[name]
+        sim_alpha = max(0.15, 0.8 / len(single_data[name]))
+        for si, d in enumerate(single_data[name]):
+            lbl_price = 'Pool Price' if si == 0 else None
+            lbl_mid = 'Midprice' if si == 0 else None
+            lbl_range = f'{name} Range' if si == 0 else None
+            ax_rl.plot(d['time'], d['pool_price'], 'k-', linewidth=1.0,
+                       alpha=sim_alpha, label=lbl_price)
+            ax_rl.plot(d['time'], d['midprice'], color='gray', linewidth=0.8,
+                       alpha=sim_alpha * 0.7, label=lbl_mid)
+            ax_rl.fill_between(
+                d['time'], d['position_lower_price'], d['position_upper_price'],
+                alpha=sim_alpha * 0.3, color=color, label=lbl_range,
+            )
+            ax_rl.plot(d['time'], d['position_lower_price'], '--', color=color,
+                       alpha=sim_alpha * 0.6, linewidth=0.8)
+            ax_rl.plot(d['time'], d['position_upper_price'], '--', color=color,
+                       alpha=sim_alpha * 0.6, linewidth=0.8)
+
+            has_hold_flag = not np.all(d['hold_flag'] == -1.0)
+            if has_hold_flag:
+                rebalance_mask = d['hold_flag'] <= 0
+                rebalance_times = d['time'][rebalance_mask]
+                if len(rebalance_times) > 0:
+                    for rt in rebalance_times:
+                        ax_rl.axvline(rt, color='red', alpha=0.1, linewidth=0.5)
+                    if si == 0:
+                        ax_rl.axvline(rebalance_times[0], color='red', alpha=0.3,
+                                      linewidth=0.5, label='Rebalance')
+
+        ax_rl.set_xlabel('Time', fontsize=16)
+        ax_rl.set_ylabel('Price', fontsize=16)
+        ax_rl.tick_params(axis='both', labelsize=14)
+        ax_rl.ticklabel_format(axis='y', useOffset=False, style='plain')
+        ax_rl.set_title(name)
+        ax_rl.legend(fontsize=16, loc='lower right')
+        ax_rl.grid(True, alpha=0.3)
+        plt.tight_layout()
+        path_rl = os.path.join(FIGURES_DIR, f'price_evolution_{name.lower()}_{job_id}.png')
+        fig_rl.savefig(path_rl, dpi=200, bbox_inches='tight')
+        plt.close(fig_rl)
+        print(f"  Saved: {path_rl}")
 
     # Save individual per-simulation plots
     if n_sims > 1:
         for si in range(n_sims):
-            fig_i, axes_i = plt.subplots(nrows, ncols, figsize=(16, 5 * nrows))
-            if n_agents == 1:
-                axes_i = np.array([axes_i])
-            fig_i.suptitle(
-                f'Price Evolution with LP Position Ranges — Simulation {si + 1}',
-                fontsize=14, fontweight='bold',
-            )
+            fig_i, axes_i = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows))
+            axes_i = np.atleast_2d(axes_i)
+            #fig_i.suptitle(
+            #    f'Price Evolution with LP Position Ranges — Simulation {si + 1}',
+            #    fontsize=14, fontweight='bold',
+            #)
             for ax in axes_i.flat[n_agents:]:
                 ax.set_visible(False)
 
@@ -489,14 +541,16 @@ def plot_price_evolution(single_data):
                         ax.axvline(rebalance_times[0], color='red', alpha=0.3,
                                    linewidth=0.5, label='Rebalance')
 
-                ax.set_xlabel('Time')
-                ax.set_ylabel('Price')
+                ax.set_xlabel('Time', fontsize=16)
+                ax.set_ylabel('Price', fontsize=16)
+                ax.tick_params(axis='both', labelsize=14)
+                ax.ticklabel_format(axis='y', useOffset=False, style='plain')
                 ax.set_title(name)
-                ax.legend(fontsize=7, loc='best')
+                ax.legend(fontsize=14, loc='lower right')
                 ax.grid(True, alpha=0.3)
 
             plt.tight_layout()
-            path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}.png')
+            path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}_{job_id}.png')
             fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
             plt.close(fig_i)
             print(f"  Saved: {path_i}")
@@ -522,14 +576,15 @@ def plot_pnl_evolution(single_data):
                 color=color, linewidth=1.5, alpha=sim_alpha, label=label,
             )
     ax.axhline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
-    ax.set_xlabel('Time')
-    ax.set_ylabel('Cumulative PnL')
+    ax.set_xlabel('Time', fontsize=16)
+    ax.set_ylabel('Cumulative PnL', fontsize=16)
+    ax.tick_params(axis='both', labelsize=14)
     title_suffix = f'{n_sims} Simulation{"s" if n_sims > 1 else ""}'
-    ax.set_title(f'PnL Evolution — {title_suffix}', fontsize=14, fontweight='bold')
-    ax.legend()
+    #ax.set_title(f'PnL Evolution — {title_suffix}', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=16, loc='upper left')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'pnl_evolution.png')
+    path = os.path.join(FIGURES_DIR, f'pnl_evolution_{job_id}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -556,13 +611,14 @@ def plot_training_rewards(rl_rewards: dict):
         ax.plot(smoothed, color=color, linewidth=2, label=name)
         ax.plot(rewards, color=color, alpha=0.15, linewidth=0.8)
 
-    ax.set_xlabel('Epoch / Rollout')
-    ax.set_ylabel('Mean Episode Reward')
-    ax.set_title('RL Training Rewards', fontsize=14, fontweight='bold')
-    ax.legend()
+    ax.set_xlabel('Epoch / Rollout', fontsize=16)
+    ax.set_ylabel('Mean Episode Reward', fontsize=16)
+    ax.tick_params(axis='both', labelsize=14)
+    #ax.set_title('RL Training Rewards', fontsize=14, fontweight='bold')
+    ax.legend(fontsize=16, loc='lower right')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'training_rewards.png')
+    path = os.path.join(FIGURES_DIR, f'training_rewards_{job_id}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -600,14 +656,15 @@ def plot_position_offsets(single_data):
             ax.plot(d['time'], d['actual_upper_offset'], '-', color=color,
                     linewidth=1.5, alpha=sim_alpha, label=lbl_hi)
         ax.axhline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
-        ax.set_xlabel('Time')
-        ax.set_ylabel('Tick Offset from Current Price')
+        ax.set_xlabel('Time', fontsize=16)
+        ax.set_ylabel('Tick Offset from Current Price', fontsize=16)
+        ax.tick_params(axis='both', labelsize=14)
         ax.set_title(name)
         ax.legend(fontsize=8)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'position_offsets.png')
+    path = os.path.join(FIGURES_DIR, f'position_offsets_{job_id}.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -660,9 +717,11 @@ def main():
             action_std=action_std_decay, optimizer=optimizer,
             lr_scheduler=scheduler, max_grad_norm=1.0,
         )
+        t0 = time.time()
         _, reinforce_rewards = reinforce_agent.train(
             num_epochs=REINFORCE_EPOCHS, reporting_freq=50,
         )
+        print(f"  REINFORCE training time: {time.time() - t0:.1f}s")
 
     if ENABLE_AGENTS.get('PPO'):
         print("\n" + "=" * 60)
@@ -683,7 +742,9 @@ def main():
             verbose=1, seed=SEED,
         )
         ppo_reward_cb = EpisodeRewardCallback()
+        t0 = time.time()
         ppo_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_reward_cb)
+        print(f"  PPO training time: {time.time() - t0:.1f}s")
 
     if ENABLE_AGENTS.get('SAC'):
         print("\n" + "=" * 60)
@@ -706,7 +767,9 @@ def main():
             verbose=1, seed=SEED,
         )
         sac_reward_cb = EpisodeRewardCallback()
+        t0 = time.time()
         sac_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=sac_reward_cb)
+        print(f"  SAC training time: {time.time() - t0:.1f}s")
 
     if ENABLE_AGENTS.get('DQN'):
         print("\n" + "=" * 60)
@@ -733,7 +796,9 @@ def main():
             verbose=1, seed=SEED,
         )
         dqn_reward_cb = EpisodeRewardCallback()
+        t0 = time.time()
         dqn_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=dqn_reward_cb)
+        print(f"  DQN training time: {time.time() - t0:.1f}s")
 
     # ==================================================================
     # Phase 2: Evaluate enabled agents on eval trajectories
@@ -757,9 +822,9 @@ def main():
             env, DeployOnceAgent(env).get_action,
         )
 
-    if ENABLE_AGENTS.get('Cartea'):
+    if ENABLE_AGENTS.get('CarteaDrissiMonga'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['Cartea'] = evaluate_on_trajectories(
+        pnl_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
             env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action,
         )
 
@@ -835,9 +900,9 @@ def main():
             single_data.setdefault('DeployOnce', []).append(
                 collect_single_trajectory(env, DeployOnceAgent(env).get_action))
 
-        if ENABLE_AGENTS.get('Cartea'):
+        if ENABLE_AGENTS.get('CarteaDrissiMonga'):
             env = create_environment(1, sim_seed)
-            single_data.setdefault('Cartea', []).append(
+            single_data.setdefault('CarteaDrissiMonga', []).append(
                 collect_single_trajectory(env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action))
 
         if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
