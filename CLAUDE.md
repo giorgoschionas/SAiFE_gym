@@ -131,24 +131,27 @@ The state is a **dictionary** with the following keys:
 
 **Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
-### Action Space - 2D Offset Format
+### Action Space - 3D Offset Format
 
-**Action format**: `[lower_offset, upper_offset]` - tick offsets relative to current tick.
+**Action format**: `[lower_offset, upper_offset, hold_flag]` - tick offsets relative to current tick plus a hold/rebalance flag.
 
-**Action space shape**: `Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))`
+**Action space**: `Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,))`
+
+| Index | Name | Bounds | Description |
+|-------|------|--------|-------------|
+| `[0]` | `lower_offset` | `[-tau, tau-1]` | Tick offset of position lower bound from current tick |
+| `[1]` | `upper_offset` | `[-tau+1, tau]` | Tick offset of position upper bound from current tick |
+| `[2]` | `hold_flag` | `[-1.0, 1.0]` | `<= 0` → rebalance; `> 0` → hold current position |
 
 **Key Concept:**
-- **Tau (τ)**: Hyperparameter defining the active tick window
-- **Active ticks**: 2τ+1 consecutive price ticks centered on the current price
-  - τ ticks below current price
-  - 1 tick containing current price (center tick at index τ)
-  - τ ticks above current price
-- **Action space shape**: `Box(low=0, high=1, shape=(2*tau+1,))`
+- **Tau (τ)**: Hyperparameter defining the maximum tick window on each side of current price
+- Constraint: `lower_offset < upper_offset` (enforced by `validate_action`)
+- `hold_flag` allows the agent to stay idle (no rebalance, no gas cost) for a step
 
-**tick Structure:**
-- Each tick: `{'p_low': lower_price, 'p_high': upper_price}`
-- tick endpoints use exponential spacing: `base^tick_id` (default base=1.0001, matching Uniswap V3)
-- ticks are created on-demand based on current price using helper functions
+**`validate_action` behaviour** (applied to `action[:, :2]` only):
+- Rounds offsets to integers (continuous actions from PPO snap to tick grid)
+- Clips to box bounds
+- Enforces `lower_offset < upper_offset`: if violated, sets `upper = lower + 1` then re-clips
 
 
 ### State Update Mechanism
@@ -214,8 +217,12 @@ price = np.where(active, update_price(price, amount), price)
 When creating `UniswapV3ModelDynamics`:
 - **Must provide `tau`** parameter (number of ticks on each side of current price)
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
-- The action space is automatically set to `Box(shape=(2,))` with bounds `[-tau, tau]`
+- The action space is automatically set to `Box(shape=(3,))` with bounds described above
 - Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
+
+When creating `AMMEnvironment`:
+- **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
+- **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
 
 
 

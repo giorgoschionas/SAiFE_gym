@@ -120,7 +120,6 @@ def get_amm_env(
         tau=tau,
         num_ticks=NUM_TICKS,
         exponential_value=1.0001,
-        initial_wealth=INITIAL_WEALTH,
         gas_cost=gas_cost,
         swap_fee_rate=swap_fee_rate,
         seed=seed + 2,
@@ -130,6 +129,7 @@ def get_amm_env(
         n_steps=n_steps,
         model_dynamics=model_dynamics,
         reward_function=reward_function or PnL(initial_wealth=INITIAL_WEALTH),
+        initial_wealth=INITIAL_WEALTH,
         num_trajectories=num_trajectories,
         seed=seed,
     )

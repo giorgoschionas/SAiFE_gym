@@ -35,6 +35,7 @@ TIME_KEY = 'time'                           # Current simulation time - shape: (
 
 # Environment parameters (constant per episode, exposed as observations)
 GAS_COST_KEY = 'gas_cost'               # Fixed rebalancing cost in token1 units - shape: (num_trajectories,)
+INITIAL_WEALTH_KEY = 'initial_wealth'   # LP's starting wealth before first deployment - shape: (num_trajectories,)
 
 # Derived observation features (computed from state, not stored in state dict)
 MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRICE - sqrt_price²)
