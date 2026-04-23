@@ -51,16 +51,4 @@ BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset)
 POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
 
 
-# ============================================================================
-# Legacy Array-based Indices (for backwards compatibility)
-# ============================================================================
-# These are used with legacy flat-array state representations
-# TODO: Remove these once all code is migrated to dict-based state
-
-LIQUIDITY_INDEX = 0
-AMM_PRICE_INDEX = 1
-ASSET_PRICE_INDEX = 2
-FEES_TOKEN_A_INDEX = 3
-FEES_TOKEN_B_INDEX = 4
-TIME_INDEX = 5
 
