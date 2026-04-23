@@ -20,6 +20,7 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY
 )
@@ -52,6 +53,8 @@ def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
         LP_TICK_UPPER_KEY: np.full(num_traj, lp_upper_tick, dtype=np.float64),
         LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_UNCLAIMED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_UNCLAIMED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_FEE_SNAPSHOT0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, price, dtype=np.float64),
@@ -137,6 +140,51 @@ class TestPnLRebalancingCost:
         reward_no_cost = reward_fn.calculate(state_before_no_cost, action, model_no_cost.state)
         reward_with_cost = reward_fn.calculate(state_before_with_cost, action, model_with_cost.state)
         assert reward_with_cost[0] < reward_no_cost[0]
+
+
+class TestPnLHoldStepRewardsFees:
+    """On a hold step, fees that accrue in the pool must surface in the reward
+    without waiting for the next rebalance. This guards the idle-action fix.
+    """
+
+    def test_hold_step_reward_matches_unclaimed_fees(self):
+        initial_wealth = 1e6
+        model = _create_test_model(gas_cost=0.0)
+        _initialize_model_state(model, initial_wealth=initial_wealth)
+
+        rebalance_action = np.array([[-5, 5, -1.0]], dtype=np.float64)
+        hold_action = np.array([[-5, 5, 1.0]], dtype=np.float64)
+        arrivals_none = np.array([[0, 0]], dtype=np.int64)
+        arrivals_both = np.array([[1, 1]], dtype=np.int64)
+
+        # Deploy a position (rebalance; hold_flag is the 3rd column).
+        model.update_state(arrivals_none, rebalance_action)
+
+        state_before = {k: v.copy() for k, v in model.state.items()}
+
+        # Hold step with both a sell and a buy arrival: the external asset price is
+        # pinned (volatility=0) and a matched sell/buy pair keeps the pool close to
+        # its starting sqrt-price, so any reward comes from fee accrual.
+        model.update_state(arrivals_both, hold_action)
+
+        # Position liquidity must not have changed on a hold step.
+        assert np.array_equal(
+            state_before[LP_LIQUIDITY_KEY], model.state[LP_LIQUIDITY_KEY]
+        )
+
+        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE, initial_wealth=initial_wealth)
+        reward = reward_fn.calculate(state_before, hold_action, model.state)[0]
+
+        unclaimed_value = (
+            model.state[LP_UNCLAIMED_FEES0_KEY][0] * model.state[ASSET_PRICE_KEY][0]
+            + model.state[LP_UNCLAIMED_FEES1_KEY][0]
+        )
+        assert unclaimed_value > 0, "test needs fees to actually accrue this step"
+        # Reward captures fee accrual (dominant term) even without a rebalance.
+        assert reward > 0
+        # The fee surfacing is the leading contribution — tolerate a small pos_value
+        # drift from the two swaps but require the same order of magnitude.
+        assert abs(reward - unclaimed_value) < 0.5 * unclaimed_value
 
 
 class TestPnLVectorized:
@@ -448,6 +496,8 @@ def _initialize_model_state(model, initial_wealth=1e6):
         LP_TICK_UPPER_KEY: np.full(num_traj, initial_tick + model.tau, dtype=np.float64),
         LP_COLLECTED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_COLLECTED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_UNCLAIMED_FEES0_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_UNCLAIMED_FEES1_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_FEE_SNAPSHOT0_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_FEE_SNAPSHOT1_KEY: np.zeros(num_traj, dtype=np.float64),
         ASSET_PRICE_KEY: np.full(num_traj, initial_price, dtype=np.float64),

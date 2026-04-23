@@ -10,6 +10,7 @@ from SAiFE_gym.gym.index_names import (
     FEES0_KEY, FEES1_KEY, ASSET_PRICE_KEY,
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY,
 )
@@ -193,7 +194,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         xi_buy = np.where(L > 0, L * self.tick_factor * sqrt_p_high, 0.0)
         return xi_sell, xi_buy
 
-    def _process_sell_single(self, active: np.ndarray, xi_sell: np.ndarray) -> None:
+    def _process_sell(self, active: np.ndarray, xi_sell: np.ndarray) -> None:
         """
         Process a single sell arrival per trajectory and update state in place.
 
@@ -260,7 +261,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             crosses, self.fee_multiplier * x_from_boundary, 0.0
         )
 
-    def _process_buy_single(self, active: np.ndarray, xi_buy: np.ndarray) -> None:
+    def _process_buy(self, active: np.ndarray, xi_buy: np.ndarray) -> None:
         """
         Process a single buy arrival per trajectory and update state in place.
 
@@ -390,6 +391,29 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return net_fee0, net_fee1
 
+    def _accrue_lp_fees(self):
+        """Refresh LP_UNCLAIMED_FEES and roll the per-step delta into LP_COLLECTED_FEES.
+
+        Called at the end of every update_state (after swaps). Read-only with respect
+        to pool fee arrays and snapshots — this is pure bookkeeping so the reward
+        function can see fee income on hold steps, without interfering with the
+        rebalance-time collection path.
+
+        Delta is clamped at zero so that a rebalance (which drops unclaimed back to 0)
+        does not subtract from the cumulative lifetime counter.
+        """
+        gross0, gross1, _ = self._compute_gross_lp_fees()
+        snap0 = self.state[LP_FEE_SNAPSHOT0_KEY]
+        snap1 = self.state[LP_FEE_SNAPSHOT1_KEY]
+        new_unclaimed0 = np.maximum(gross0 - snap0, 0.0)
+        new_unclaimed1 = np.maximum(gross1 - snap1, 0.0)
+        delta0 = new_unclaimed0 - self.state[LP_UNCLAIMED_FEES0_KEY]
+        delta1 = new_unclaimed1 - self.state[LP_UNCLAIMED_FEES1_KEY]
+        self.state[LP_COLLECTED_FEES0_KEY] += np.maximum(delta0, 0.0)
+        self.state[LP_COLLECTED_FEES1_KEY] += np.maximum(delta1, 0.0)
+        self.state[LP_UNCLAIMED_FEES0_KEY] = new_unclaimed0
+        self.state[LP_UNCLAIMED_FEES1_KEY] = new_unclaimed1
+
     def _compute_token0_fraction_vec(self, sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper):
         """
         Compute fraction of position value held in token0 (vectorized).
@@ -434,6 +458,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             _SAVE_KEYS = [
                 LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
                 LP_EVER_DEPLOYED_KEY, LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+                LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
                 LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
                 POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY,
             ]
@@ -464,12 +489,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             pos_value = get_position_value_vec(lp_liq, external_price, sqrt_p, sqrt_p_lower, sqrt_p_upper)
 
-            # Collect LP's share of fees
+            # Collect LP's share of fees (subtracts net portion from pool arrays,
+            # zeros snapshots). Cumulative LP_COLLECTED_FEES is updated per-step by
+            # _accrue_lp_fees, so we do NOT re-add here — the delta between pre- and
+            # post-rebalance unclaimed is already baked into the cumulative counter.
             fee0, fee1 = self._collect_lp_fees()
-
-            # Accumulate in LP_COLLECTED_FEES for reward tracking
-            self.state[LP_COLLECTED_FEES0_KEY] += fee0
-            self.state[LP_COLLECTED_FEES1_KEY] += fee1
 
             # Convert fee0 (token0) to token1 value using external price
             fee_value = fee0 * external_price + fee1
@@ -531,6 +555,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_FEE_SNAPSHOT0_KEY] = snapshot0
         self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
 
+        # Unclaimed bucket is absorbed into the new position; reset to zero so the next
+        # per-step accrual measures only post-rebalance fee earnings.
+        self.state[LP_UNCLAIMED_FEES0_KEY] = np.zeros(num_traj, dtype=np.float64)
+        self.state[LP_UNCLAIMED_FEES1_KEY] = np.zeros(num_traj, dtype=np.float64)
+
         # Restore held trajectories after computation
         if has_held:
             for k, v in saved.items():
@@ -565,14 +594,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         if sell_first:
             if np.any(sell_active):
-                self._process_sell_single(sell_active, self._compute_local_xi()[0])
+                self._process_sell(sell_active, self._compute_local_xi()[0])
             if np.any(buy_active):
-                self._process_buy_single(buy_active, self._compute_local_xi()[1])
+                self._process_buy(buy_active, self._compute_local_xi()[1])
         else:
             if np.any(buy_active):
-                self._process_buy_single(buy_active, self._compute_local_xi()[1])
+                self._process_buy(buy_active, self._compute_local_xi()[1])
             if np.any(sell_active):
-                self._process_sell_single(sell_active, self._compute_local_xi()[0])
+                self._process_sell(sell_active, self._compute_local_xi()[0])
+
+        self._accrue_lp_fees()
 
     def get_arrivals(self) -> np.ndarray:
         """

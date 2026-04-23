@@ -6,6 +6,7 @@ from SAiFE_gym.gym.index_names import (
     LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     POOL_SQRT_PRICE_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_EVER_DEPLOYED_KEY,
+    LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 
@@ -72,10 +73,12 @@ class RewardFunction(metaclass=abc.ABCMeta):
 class PnL(RewardFunction):
     """Mark-to-market PnL reward: change in LP portfolio value between steps.
 
-    Portfolio value is the position's mark-to-market value via get_position_value_vec.
-    Fees earned are already folded into LP_LIQUIDITY during rebalancing, so no
-    separate fee term is needed. When LP_LIQUIDITY == 0 (before first deployment),
-    portfolio value equals initial_wealth.
+    Portfolio value = position mark-to-market via get_position_value_vec + LP's
+    currently-unclaimed fees (tracked per-step in LP_UNCLAIMED_FEES0/1). Including
+    the unclaimed bucket makes fee income visible on hold steps; on rebalance steps
+    the unclaimed drop cancels the LP_LIQUIDITY jump so there is no double-count.
+    When LP_LIQUIDITY == 0 (before first deployment), portfolio value equals
+    initial_wealth.
     """
 
     def __init__(self, exponential_value: float = 1.0001, initial_wealth: float = 1e6):
@@ -94,12 +97,17 @@ class PnL(RewardFunction):
             sqrt_p_lower, sqrt_p_upper
         )
 
+        unclaimed_value = (
+            state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
+            + state[LP_UNCLAIMED_FEES1_KEY]
+        )
+
         # Trajectories with lp_liq == 0 are either:
         #   - pre-deployment (ever_deployed=False): use initial_wealth as the cash baseline
         #   - bankrupt      (ever_deployed=True):  wealth is genuinely 0
         ever_deployed = state.get(LP_EVER_DEPLOYED_KEY, np.zeros_like(lp_liq, dtype=bool))
         no_position_value = np.where(ever_deployed, 0.0, self.initial_wealth)
-        return np.where(has_position, pos_value, no_position_value)
+        return np.where(has_position, pos_value + unclaimed_value, no_position_value)
 
     def calculate(
         self, current_state: dict, action: np.ndarray,
