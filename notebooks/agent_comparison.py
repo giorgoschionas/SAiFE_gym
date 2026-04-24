@@ -16,7 +16,6 @@ import os
 import time
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 job_id = os.environ.get("SLURM_JOB_ID", "local")
-#job_id=1
 import gymnasium
 import numpy as np
 import matplotlib.pyplot as plt
@@ -31,7 +30,7 @@ from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
+from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent
 from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
@@ -49,25 +48,25 @@ SEED = 123
 TERMINAL_TIME = 1.0
 N_STEPS = 200
 NUM_TRAJECTORIES_TRAIN = 200
-NUM_TRAJECTORIES_EVAL = 1000
+NUM_TRAJECTORIES_EVAL = 1#000
 INITIAL_WEALTH = 1000
 TAU = 20
 LIQUIDITY_SCALE = 1e4
 
 INITIAL_PRICE = 100.0
 DRIFT = 0
-VOLATILITY = 0.01
+VOLATILITY = 0.1
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
 
 ALPHA0 = np.array([10.0, 10.0])
 ALPHA1 = np.array([0.0, 0.0])
-ALPHA2 = np.array([0.0, 0.0])
+ALPHA2 = np.array([5.0, 5.0])
 ALPHA3 = np.array([2000.0, 2000.0])
 
 GAMMA_CARTEA = 0.000005
 
-REINFORCE_EPOCHS = 0#100#250
+REINFORCE_EPOCHS = 0#250
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.7
 
@@ -113,9 +112,9 @@ def create_environment(num_trajectories: int, seed: int = None):
         terminal_time=TERMINAL_TIME, step_size=step_size,
         num_trajectories=num_trajectories, seed=seed,
     )
-    arrival_model = PoissonLinearArrivalModel(
-        alpha=alpha, liquidity_scale=LIQUIDITY_SCALE, step_size=step_size,
-        num_trajectories=num_trajectories,
+    arrival_model = LiquidityKernelArrivalModel(
+        alpha=alpha, beta=8, K=10, liquidity_scale=LIQUIDITY_SCALE,
+        step_size=step_size, num_trajectories=num_trajectories,
         seed=seed + 1 if seed else None,
     )
     model_dynamics = UniswapV3ModelDynamics(

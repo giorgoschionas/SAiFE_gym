@@ -89,6 +89,8 @@ class DeployOnceAgent(Agent):
         # hold_flag: -1 (rebalance) if never deployed, +1 (hold) otherwise
         ever_deployed = state[LP_EVER_DEPLOYED_KEY]
         hold_flag = np.where(ever_deployed, 1.0, -1.0).astype(np.float32)
+        
+        # at the final episode rebalance to collect fees
 
         return np.column_stack([lower, upper, hold_flag])
 
