@@ -17,9 +17,13 @@ LP_LIQUIDITY_KEY = 'lp_liquidity'           # LP's position liquidity - shape: (
 LP_TICK_LOWER_KEY = 'lp_tick_lower'         # LP's position lower bound - shape: (num_trajectories,)
 LP_TICK_UPPER_KEY = 'lp_tick_upper'         # LP's position upper bound - shape: (num_trajectories,)
 
-# LP cumulative fee tracking (across all rebalances, for reward function reference)
-LP_COLLECTED_FEES0_KEY = 'lp_collected_fees_0'  # Cumulative fees collected by LP in token 0 - shape: (num_trajectories,)
-LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees collected by LP in token 1 - shape: (num_trajectories,)
+# LP cumulative fee tracking (lifetime earnings, refreshed every step)
+LP_COLLECTED_FEES0_KEY = 'lp_collected_fees_0'  # Cumulative fees earned by LP in token 0 - shape: (num_trajectories,)
+LP_COLLECTED_FEES1_KEY = 'lp_collected_fees_1'  # Cumulative fees earned by LP in token 1 - shape: (num_trajectories,)
+
+# LP currently-unclaimed fees (accrued since last rebalance; reset at rebalance)
+LP_UNCLAIMED_FEES0_KEY = 'lp_unclaimed_fees_0'  # Unclaimed LP fees in token 0 - shape: (num_trajectories,)
+LP_UNCLAIMED_FEES1_KEY = 'lp_unclaimed_fees_1'  # Unclaimed LP fees in token 1 - shape: (num_trajectories,)
 
 # LP fee snapshots (recorded at position entry to exclude pre-entry fees)
 LP_FEE_SNAPSHOT0_KEY = 'lp_fee_snapshot_0'  # Gross LP fee0 at time of entry - shape: (num_trajectories,)
@@ -47,16 +51,4 @@ BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset)
 POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
 
 
-# ============================================================================
-# Legacy Array-based Indices (for backwards compatibility)
-# ============================================================================
-# These are used with legacy flat-array state representations
-# TODO: Remove these once all code is migrated to dict-based state
-
-LIQUIDITY_INDEX = 0
-AMM_PRICE_INDEX = 1
-ASSET_PRICE_INDEX = 2
-FEES_TOKEN_A_INDEX = 3
-FEES_TOKEN_B_INDEX = 4
-TIME_INDEX = 5
 

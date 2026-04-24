@@ -9,7 +9,7 @@ SAiFE_gym is a Reinforcement Learning environment for simulating Automated Marke
 pip install -r requirements.txt
 
 # The project uses Python 3.12 with a virtual environment (venv/)
-source venv/bin/activate  # On Windows: venv\Scripts\activate
+source venv/bin/activate   
 ```
 
 ## Architecture Philosophy

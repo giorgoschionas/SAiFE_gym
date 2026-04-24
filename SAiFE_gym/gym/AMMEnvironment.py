@@ -9,6 +9,7 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
     FEES0_KEY, FEES1_KEY, LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
@@ -137,6 +138,18 @@ class AMMEnvironment(gymnasium.Env):
                 dtype=np.float32
             ),
 
+            # LP unclaimed fee bucket (accrued since last rebalance)
+            LP_UNCLAIMED_FEES0_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
+            LP_UNCLAIMED_FEES1_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
+
             # Market state
             ASSET_PRICE_KEY: gymnasium.spaces.Box(
                 low=0.0, high=np.inf,
@@ -216,9 +229,13 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, initial_tick + self.model_dynamics.tau, dtype=np.int64
             ),
 
-            # LP cumulative fee tracking (across all rebalances)
+            # LP cumulative fee tracking (lifetime earnings, updated every step)
             LP_COLLECTED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
             LP_COLLECTED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+
+            # LP unclaimed fee bucket (accrued-but-not-yet-absorbed; reset at rebalance)
+            LP_UNCLAIMED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_UNCLAIMED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
 
             # LP fee snapshots (for excluding pre-entry fees)
             LP_FEE_SNAPSHOT0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
@@ -330,8 +347,12 @@ class AMMEnvironment(gymnasium.Env):
         sqrt_p_upper = np.sqrt(md.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
 
         pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
+        unclaimed_value = (
+            state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
+            + state[LP_UNCLAIMED_FEES1_KEY]
+        )
         no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
-        state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value, no_pos_value)
+        state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
 
         alpha = md._compute_token0_fraction_vec(sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper)
         state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
