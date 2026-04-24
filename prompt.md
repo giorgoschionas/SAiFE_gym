@@ -1,0 +1,5 @@
+I believe the code in UniswapV3ModelDynamics class at  @SAiFE_gym/gym/ModelDynamics.py can be significantly simplified in the following way. The AMM price will live in a grid with lattice-style dynamics. The AMM price is defined by `AMM[i] = sqrt(exponential_value^i)`
+The the AMM can only move from `AMM[i]` to `AMM[i+1]` if we have a buy trade while if we have a sell, the price will move from `AMM[i]` to `AMM[i-1]`. The index i is the the current tick. If the price move from tick `i` to `i+1`, the active tick range is `[i, i+1]`. If the price move from tick `i` to tick `i-1`, the active tick range is `[i-1,i]`
+Moreover, the liquidity array `L[i]` stores the liquidity in the tick range `[i, i+1]`.
+The size of the trade will be calculated based on /uniswap-mechanics. 
+The size of the trade is after fees, so the fees will computed again by /uniswap-mechanics. 

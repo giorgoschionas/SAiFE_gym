@@ -12,10 +12,7 @@ Tests:
 8. Mispricing composability
 """
 import numpy as np
-import sys
 import pytest
-
-sys.path.insert(0, '/home/gchionas/Programming/Blockchain/Ethereum/defi-trading/SAiFE_gym/.trees/new-arrivals')
 
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 
