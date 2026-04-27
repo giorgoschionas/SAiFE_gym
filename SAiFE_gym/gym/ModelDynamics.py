@@ -138,11 +138,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         Returns:
             Validated action with same shape, rounded to integers.
-
-        Ensures:
-        - Values are rounded to integers (tick offsets must be whole numbers)
-        - All values are within box bounds
-        - lower_offset < upper_offset (minimum width of 1 tick)
         """
         action = action.copy()
 
@@ -165,7 +160,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         return action
 
     def _get_current_tick_liquidity(self):
-        """Look up the liquidity at the current tick for each trajectory.
+        """
 
         Returns:
             (tick_array_idx, L_current):
@@ -186,7 +181,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """Process a sell arrival per trajectory (lattice model).
 
         At tick `i` with price `AMM[i]`, a sell uses liquidity `L[i-1]` (tick range
-        `[i-1, i]`) and moves the price one lattice step down to `AMM[i-1]`:
+        `[i-1, i]`) and moves the price to `AMM[i-1]`:
 
             dx = L[i-1] * (1/AMM[i-1] - 1/AMM[i])     # uniswap-mechanics
             fee = fee_multiplier * dx                  # added to FEES0[i-1]
@@ -200,25 +195,29 @@ class UniswapV3ModelDynamics(ModelDynamics):
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         idx = current_tick - self.tick_lower_global
 
-        idx_clipped = np.clip(idx, 0, self.num_ticks)
-        prev_idx_clipped = np.clip(idx - 1, 0, self.num_ticks - 1)
 
-        sqrt_p_i = self.sqrt_grid[idx_clipped]
-        sqrt_p_prev = self.sqrt_grid[np.clip(idx - 1, 0, self.num_ticks)]
+        assert idx.min() >= 1 and idx.max() <= self.num_ticks, (
+            f"_process_sell: tick out of array window. "
+            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
+            f"valid [{self.tick_lower_global + 1}, {self.tick_lower_global + self.num_ticks}]. "
+            f"Increase num_ticks."
+        )
+
+        sqrt_p_i = self.sqrt_grid[idx]
+        sqrt_p_prev = self.sqrt_grid[idx - 1]
 
         traj = np.arange(self.num_trajectories)
-        L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, prev_idx_clipped]
+        L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx - 1]
 
         # After-fee token0 amount needed to traverse the full tick [i-1, i] from AMM[i] down to AMM[i-1].
         dx = L_prev * (1.0 / sqrt_p_prev - 1.0 / sqrt_p_i)
         fee = self.fee_multiplier * dx
 
-        self.state[FEES0_KEY][traj, prev_idx_clipped] += np.where(active, fee, 0.0)
+        self.state[FEES0_KEY][traj, idx - 1] += np.where(active, fee, 0.0)
 
         new_tick = np.where(active, current_tick - 1, current_tick)
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        new_idx = np.clip(new_tick - self.tick_lower_global, 0, self.num_ticks)
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_idx]
+        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
     def _process_buy(self, active: np.ndarray) -> None:
         """Process a buy arrival per trajectory (lattice model).
@@ -238,25 +237,29 @@ class UniswapV3ModelDynamics(ModelDynamics):
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         idx = current_tick - self.tick_lower_global
 
-        idx_clipped = np.clip(idx, 0, self.num_ticks - 1)
-        next_idx_clipped = np.clip(idx + 1, 0, self.num_ticks)
 
-        sqrt_p_i = self.sqrt_grid[np.clip(idx, 0, self.num_ticks)]
-        sqrt_p_next = self.sqrt_grid[next_idx_clipped]
+        assert idx.min() >= 0 and idx.max() <= self.num_ticks - 1, (
+            f"_process_buy: tick out of array window. "
+            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
+            f"valid [{self.tick_lower_global}, {self.tick_lower_global + self.num_ticks - 1}]. "
+            f"Increase num_ticks."
+        )
+
+        sqrt_p_i = self.sqrt_grid[idx]
+        sqrt_p_next = self.sqrt_grid[idx + 1]
 
         traj = np.arange(self.num_trajectories)
-        L_i = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx_clipped]
+        L_i = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx]
 
         # After-fee token1 amount needed to traverse the full tick [i, i+1] from AMM[i] up to AMM[i+1].
         dy = L_i * (sqrt_p_next - sqrt_p_i)
         fee = self.fee_multiplier * dy
 
-        self.state[FEES1_KEY][traj, idx_clipped] += np.where(active, fee, 0.0)
+        self.state[FEES1_KEY][traj, idx] += np.where(active, fee, 0.0)
 
         new_tick = np.where(active, current_tick + 1, current_tick)
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        new_idx = np.clip(new_tick - self.tick_lower_global, 0, self.num_ticks)
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_idx]
+        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
     def _compute_gross_lp_fees(self):
         """
