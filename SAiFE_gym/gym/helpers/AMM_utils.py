@@ -44,6 +44,7 @@ def get_position_value_vec(L, external_p_current, sqrt_p_current, sqrt_p_lower, 
 
     Args:
         L: Liquidity amount, array-like shape (num_trajectories,)
+        external_p_current: Current price of the asset (not sqrt), array-like shape (num_trajectories,)
         sqrt_p_current: Current sqrt(price), array-like shape (num_trajectories,)
         sqrt_p_lower: Lower bound sqrt(price), array-like shape (num_trajectories,)
         sqrt_p_upper: Upper bound sqrt(price), array-like shape (num_trajectories,)

@@ -7,13 +7,16 @@ step, derive the break-even gas cost, then ask how the answer changes when the
 arrival process itself depends on liquidity.
 
 All numbers below use the experiment defaults from `experiments/helpers.py`
-unless stated otherwise:
+unless stated otherwise. **Notation:** $S$ denotes the *external* market
+midprice (the mark-to-market reference); $P$ denotes the *AMM* price
+(`POOL_SQRT_PRICE_KEY ** 2`). At episode start they coincide ($S_0 = P_0 = 100$).
 
 | Parameter | Symbol | Value |
 |---|---|---|
 | Initial wealth | $W$ | $10^6$ token-1 |
-| Initial price | $P$ | $100$ |
-| Initial $\sqrt p$ | $\sqrt p$ | $10$ |
+| Initial external midprice | $S_0$ | $100$ |
+| Initial AMM price | $P_0$ | $100$ |
+| Initial $\sqrt P$ | $\sqrt P_0$ | $10$ |
 | Fee tier | $f$ | $0.003$ |
 | Tick base | $r$ | $1.0001$ |
 | Tick factor | $\delta = \sqrt r - 1$ | $\approx 5\times 10^{-5}$ |
@@ -33,20 +36,24 @@ first time the LP deploys (`gym/ModelDynamics.py:413-414`).
 Inside `update_state()` (`gym/ModelDynamics.py:467-472`):
 
 ```python
-value_per_L = get_position_value_vec(1, P, sqrt_p, sqrt_p_low, sqrt_p_up)
+value_per_L = get_position_value_vec(1, S, sqrt_P, sqrt_P_low, sqrt_P_up)
 new_L       = wealth / value_per_L
 ```
+
+(In the source the second argument is `external_p_current`, i.e. the external
+midprice $S$ — not the AMM price.)
 
 For an in-range position (`get_position_value_vec`, `gym/helpers/AMM_utils.py:68`):
 
 $$
-v_{\text{per L}} \;=\; \frac{P}{\sqrt p} + \sqrt p - \sqrt p_{\text{low}} - \frac{P}{\sqrt p_{\text{up}}}.
+v_{\text{per L}} \;=\; \frac{S}{\sqrt P} + \sqrt P - \sqrt P_{\text{low}} - \frac{S}{\sqrt P_{\text{up}}}.
 $$
 
-For action `[-d, +d]` symmetric of width $w = 2d$:
+For action `[-d, +d]` symmetric of width $w = 2d$, evaluated at deployment
+when $S=P$:
 
 $$
-v_{\text{per L}} \;\approx\; w\cdot \delta\cdot \sqrt p \;=\; w\cdot 5\times 10^{-4} \;\;\text{(at } P=100\text{).}
+v_{\text{per L}} \;\approx\; w\cdot \delta\cdot \sqrt P \;=\; w\cdot 5\times 10^{-4} \;\;\text{(at } S=P=100\text{).}
 $$
 
 A few canonical widths:
@@ -68,16 +75,17 @@ range halves $L$.
 
 ## 2. Fees per step under the narrow-band strategy
 
-Each arrival moves price by exactly one tick, so the LP captures the full
-trade fee provided the next tick is in range. Using `xi_buy = L\cdot\delta\cdot\sqrt p$
-from `_process_buy` and `xi_sell = L\cdot\delta/\sqrt p$ from `_process_sell`:
+Each arrival moves the AMM price by exactly one tick, so the LP captures the
+full trade fee provided the next tick is in range. Using
+$\xi_{\text{buy}} = L\cdot\delta\cdot\sqrt P$ from `_process_buy` and
+$\xi_{\text{sell}} = L\cdot\delta/\sqrt P$ from `_process_sell`:
 
 $$
-\text{fee per arrival} \;\approx\; f\cdot L\cdot \delta\cdot \sqrt p \quad\text{(token-1 valued).}
+\text{fee per arrival} \;\approx\; f\cdot L\cdot \delta\cdot \sqrt P \quad\text{(token-1 valued).}
 $$
 
-Sells produce the same value via $f\cdot L\cdot \delta/\sqrt p$ token-0 marked
-at $P$. With $L=10^9$ for the centered width-2 position:
+Sells produce the same value via $f\cdot L\cdot \delta/\sqrt P$ token-0 marked
+at $S$. With $L=10^9$ for the centered width-2 position:
 
 $$
 \text{fee per arrival} \;=\; 0.003\cdot 10^9\cdot 5\times 10^{-5}\cdot 10 \;=\; \mathbf{1{,}500\;\text{token-1}.}
@@ -149,7 +157,7 @@ $\sim 1{,}500$.
 
 **Caveats glossed over:**
 - *Impermanent loss / inventory drift.* Brownian midprice with `vol=2.0` over
-  $T=1$ has $\sigma_P \approx 2$ ($\sim 200$ ticks). The narrow LP tracks this
+  $T=1$ has $\sigma_S \approx 2$ ($\sim 200$ ticks). The narrow LP tracks this
   by rebalancing every step, but each rebalance after a 1-tick move swaps
   $\sim 50\%$ of one token through the external price reference — non-zero
   `swap_fee_rate` would eat into the 1,500/step budget linearly.
@@ -172,7 +180,7 @@ sharply different.
 
 ```python
 L = state['active_liquidity'] / liquidity_scale
-linear_part = α₁ + α₂·L  ±  α₃·(S - Z)
+linear_part = α₁ + α₂·L  ±  α₃·(S - P)     # source uses (S - Z); Z ≡ P here
 intensity   = max(α₀, linear_part)
 ```
 
@@ -223,7 +231,7 @@ Properties that change everything:
   | $d$ | 1 | 2 | 3 | 5 | 10 | $\infty$ |
   |---|---:|---:|---:|---:|---:|---:|
   | $w(d) = e^{-\beta d}$ | 0.61 | 0.37 | 0.22 | 0.082 | 0.0067 | 0 |
-  | cumulative $S(d)$ | 0.61 | 0.98 | 1.20 | 1.41 | 1.55 | $\approx 1.54$ |
+  | cumulative $\Sigma(d) = \sum_{k=1}^{d} w(k)$ | 0.61 | 0.98 | 1.20 | 1.41 | 1.55 | $\approx 1.54$ |
 
   ~75% of kernel mass sits in the first 3 ticks; depth past $d\approx 6$ is
   ignored.
@@ -232,7 +240,7 @@ Properties that change everything:
 
 | Factor | Linear model | Kernel model |
 |---|---|---|
-| **(A) Fee per trade** | $f\cdot L_{\text{active}}\cdot\delta\sqrt p$, narrower $\Rightarrow$ bigger | **Identical.** A trade is still local to one tick. |
+| **(A) Fee per trade** | $f\cdot L_{\text{active}}\cdot\delta\sqrt P$, narrower $\Rightarrow$ bigger | **Identical.** A trade is still local to one tick. |
 | **(B) Arrival rate** | $\alpha_1 + \alpha_2 L_{\text{active}}/\text{scale}$ — same scalar as (A); narrower $\Rightarrow$ bigger on both sides | $\lambda_{\text{buy}}$ reads ticks above, $\lambda_{\text{sell}}$ reads ticks below; **liquidity at `cur` contributes zero**; boost requires the position to **straddle `cur` on the trade side**. |
 
 In the linear model, A and B are the same lever; in the kernel model they
@@ -264,20 +272,20 @@ Two consequences:
 
 ### 4.5 Joint expected fees under the kernel
 
-For symmetric reach $d$, action `[-d, +d+1]`, width $w = 2d+1$, write
-$S(d) = \sum_{k=1}^{d} e^{-\beta k}$. Then
+For symmetric reach $d$, action `[-d, +d+1]`, width $w = 2d+1$, with the
+cumulative kernel weight $\Sigma(d) = \sum_{k=1}^{d} e^{-\beta k}$ from §4.2:
 
 $$
 \mathbb E[\text{fee/step}]
 \;\approx\;
-2\Delta t\,\Big(\alpha_1 + \alpha_2\cdot \tfrac{L\,S(d)}{\text{scale}}\Big)\cdot f\,L\,\delta\sqrt p.
+2\Delta t\,\Big(\alpha_1 + \alpha_2\cdot \tfrac{L\,\Sigma(d)}{\text{scale}}\Big)\cdot f\,L\,\delta\sqrt P.
 $$
 
 Two terms:
 
 - A *baseline-flow* term $\propto L \propto 1/w$, maximised at the narrowest $w$.
-- A *feedback* term $\propto L^2 S(d) \propto S(d)/w^2$, maximised at the
-  $d$ that maximises $S(d)/(2d+1)^2$ — for $\beta=0.5$ that is $d=1$
+- A *feedback* term $\propto L^2 \Sigma(d) \propto \Sigma(d)/w^2$, maximised at
+  the $d$ that maximises $\Sigma(d)/(2d+1)^2$ — for $\beta=0.5$ that is $d=1$
   (width 3).
 
 With the in-file defaults `α₁=100, α₂=50, β=0.5, K=10` and $W=10^6$, the
