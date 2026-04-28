@@ -49,7 +49,7 @@ ALPHA2 = np.array([0.0, 0.0])     # Liquidity coefficient (disabled)
 ALPHA3 = np.array([5000.0, 5000.0])  # Arbitrage coefficient
 
 # Training parameters
-NUM_EPOCHS = 250
+NUM_EPOCHS = 2
 LEARNING_RATE = 2e-4
 ACTION_STD_INIT = 1.8  # Higher std for exploration
 ACTION_STD_DECAY = lambda t: max(0.3, ACTION_STD_INIT * (0.998 ** (t * 200)))  # Much slower decay
@@ -177,15 +177,11 @@ def create_environment(num_trajectories: int, tau: int, seed: int = None):
         num_trajectories=num_trajectories,
         tau=tau,
         fee_tier=FEE_TIER,
-        initial_wealth=INITIAL_WEALTH,
         seed=seed
     )
 
     # Reward function (basic PnL - change in portfolio value)
-    reward_function = PnL(
-        exponential_value=1.0001,
-        initial_wealth=INITIAL_WEALTH
-    )
+    reward_function = PnL()
 
     # Environment
     env = AMMEnvironment(
@@ -194,6 +190,7 @@ def create_environment(num_trajectories: int, tau: int, seed: int = None):
         reward_function=reward_function,
         model_dynamics=model_dynamics,
         num_trajectories=num_trajectories,
+        initial_wealth=INITIAL_WEALTH,
         seed=seed
     )
 
@@ -246,7 +243,30 @@ def main():
         lr_scheduler=scheduler
     )
 
+    # ---- PnL sanity check ----
+    from SAiFE_gym.gym.index_names import (
+        LP_LIQUIDITY_KEY, LP_EVER_DEPLOYED_KEY, PORTFOLIO_VALUE_KEY,
+    )
+
+    state, _ = env.reset()
+    v0 = state[PORTFOLIO_VALUE_KEY]
+    print(f"V(reset)  -> mean={v0.mean():.2f}  min={v0.min():.2f}  max={v0.max():.2f}")
+
+    for t in range(5):
+        action = agent.get_action(state, deterministic=True)
+        state, r, *_ = env.step(action)
+        v = state[PORTFOLIO_VALUE_KEY]
+        deployed_now = (state[LP_LIQUIDITY_KEY] > 0)
+        ever = state.get(LP_EVER_DEPLOYED_KEY, np.zeros_like(deployed_now, dtype=bool))
+        print(
+            f"step {t+1}: V mean={v.mean():.2f} min={v.min():.2f} max={v.max():.2f} | "
+            f"r mean={r.mean():.2f} min={r.min():.2f} max={r.max():.2f} | "
+            f"deployed={deployed_now.mean():.2f} ever={ever.mean():.2f}"
+        )
+    # ---- end check ----
+
     print("Starting training...")
+    sys.exit(0)
 
     # Train agent
     losses, rewards = agent.train(num_epochs=NUM_EPOCHS, reporting_freq=50)

@@ -13,10 +13,46 @@ from SAiFE_gym.gym.index_names import (
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
-    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY,
+    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick, get_position_value_vec
 
+
+def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
+    """Compute portfolio_value, lp_alpha, and lp_token0_amount in-place on `state`.
+
+    Centralized helper so the env, tests, and any other code that bypasses
+    AMMEnvironment.step (e.g. driving model_dynamics directly) can keep the
+    derived observation keys consistent with the rest of the state.
+    """
+    lp_liq = state[LP_LIQUIDITY_KEY]
+    has_position = lp_liq > 0
+    ever_deployed = state[LP_EVER_DEPLOYED_KEY]
+
+    sqrt_p = state[POOL_SQRT_PRICE_KEY]
+    sqrt_p_lower = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
+    sqrt_p_upper = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
+
+    pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
+    unclaimed_value = (
+        state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
+        + state[LP_UNCLAIMED_FEES1_KEY]
+    )
+    no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
+    state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
+
+    alpha = model_dynamics._compute_token0_fraction_vec(
+        sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper
+    )
+    state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
+
+    # Absolute token0 holdings (LP risky-asset inventory) — three-region V3 formula.
+    x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+    x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+    above = sqrt_p >= sqrt_p_upper
+    below = sqrt_p <= sqrt_p_lower
+    x = np.where(above, 0.0, np.where(below, x_below, x_in))
+    state[LP_TOKEN0_AMOUNT_KEY] = np.where(has_position, x, 0.0)
 
 
 class AMMEnvironment(gymnasium.Env):
@@ -173,6 +209,11 @@ class AMMEnvironment(gymnasium.Env):
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
+            LP_TOKEN0_AMOUNT_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
         })
 
     def _initial_v3_state(self) -> dict:
@@ -270,6 +311,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, self.initial_wealth, dtype=np.float64
             ),
             LP_ALPHA_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_TOKEN0_AMOUNT_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
         }
 
     def seed(self, seed: int = None):
@@ -341,28 +383,8 @@ class AMMEnvironment(gymnasium.Env):
         return next_state, rewards, terminated, truncated, info
 
     def _compute_derived_obs(self):
-        """Compute portfolio_value and lp_alpha from current state and store in state dict."""
-        state = self.model_dynamics.state
-        md = self.model_dynamics
-
-        lp_liq = state[LP_LIQUIDITY_KEY]
-        has_position = lp_liq > 0
-        ever_deployed = state[LP_EVER_DEPLOYED_KEY]
-
-        sqrt_p = state[POOL_SQRT_PRICE_KEY]
-        sqrt_p_lower = np.sqrt(md.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
-        sqrt_p_upper = np.sqrt(md.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
-
-        pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
-        unclaimed_value = (
-            state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
-            + state[LP_UNCLAIMED_FEES1_KEY]
-        )
-        no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
-        state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
-
-        alpha = md._compute_token0_fraction_vec(sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper)
-        state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
+        """Compute portfolio_value, lp_alpha, and lp_token0_amount, store in state dict."""
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
 
     def _update_state(self, action: np.ndarray):
         # Step 1: Get arrivals from current model state (intensity at t)
