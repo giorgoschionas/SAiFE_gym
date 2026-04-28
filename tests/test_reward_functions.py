@@ -480,10 +480,9 @@ def _initialize_model_state(model, initial_wealth=1e6):
     initial_price = model.initial_price
     initial_tick = int(np.floor(np.log(initial_price) / np.log(model.exponential_value)))
     model.tick_lower_global = initial_tick - num_ticks // 2
+    model._build_sqrt_grid()
 
-    p_low = model.exponential_value ** initial_tick
-    p_high = model.exponential_value ** (initial_tick + 1)
-    initial_sqrt_price = np.sqrt((p_low + p_high) / 2)
+    initial_sqrt_price = model.sqrt_grid[initial_tick - model.tick_lower_global]
 
     model.state = {
         POOL_SQRT_PRICE_KEY: np.full(num_traj, initial_sqrt_price, dtype=np.float64),

@@ -192,9 +192,16 @@ class AMMEnvironment(gymnasium.Env):
         initial_price = self.model_dynamics.initial_price
         initial_tick = price_to_tick(initial_price)
 
-        # Set tick_lower_global to center the array around initial price
+        # Set tick_lower_global to center the array around initial price, then
+        # build the AMM lattice so POOL_SQRT_PRICE_KEY can be read straight off the grid.
         num_ticks = self.model_dynamics.num_ticks
         self.model_dynamics.tick_lower_global = initial_tick - num_ticks // 2
+        self.model_dynamics._build_sqrt_grid()
+
+        # Snap the pool sqrt_price to the lattice point AMM[initial_tick]. The external
+        # midprice (ASSET_PRICE_KEY) is unchanged — only the on-chain pool price lives
+        # on the lattice.
+        initial_sqrt_price = self.model_dynamics.sqrt_grid[initial_tick - self.model_dynamics.tick_lower_global]
 
         # Initial liquidity (uniform distribution across all ticks)
         # This can be customized based on specific requirements
@@ -203,7 +210,7 @@ class AMMEnvironment(gymnasium.Env):
         return {
             # Pool state
             POOL_SQRT_PRICE_KEY: np.full(
-                self.num_trajectories, np.sqrt(initial_price), dtype=np.float64
+                self.num_trajectories, initial_sqrt_price, dtype=np.float64
             ),
             POOL_CURRENT_TICK_KEY: np.full(
                 self.num_trajectories, initial_tick, dtype=np.int64

@@ -110,7 +110,7 @@ class TestStepWait:
     def _step(self, env: StableBaselinesAMMEnvironment):
         env.reset()
         action = env.action_space.sample()
-        # action_space.sample() returns shape (2,); replicate for all trajectories
+        # action_space.sample() returns shape (3,); replicate for all trajectories
         actions = np.tile(action, (env.num_trajectories, 1))
         env.step_async(actions)
         return env.step_wait()

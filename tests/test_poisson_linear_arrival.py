@@ -11,10 +11,7 @@ Tests:
 7. reset() restores baseline intensity
 """
 import numpy as np
-import sys
 import pytest
-
-sys.path.insert(0, '/home/gchionas/Programming/Blockchain/Ethereum/defi-trading/SAiFE_gym')
 
 from SAiFE_gym.stochastic_processes.arrival_models import (
     PoissonLinearArrivalModel,

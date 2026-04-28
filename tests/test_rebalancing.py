@@ -66,20 +66,21 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
 
 
 def initialize_state(model, liquidity_value=1e6, mid_tick=True, initial_wealth=1e6):
-    """Initialize model state with uniform liquidity and no LP position."""
+    """Initialize model state with uniform liquidity and no LP position.
+
+    The `mid_tick` flag is retained for backward-compatible call sites but, under the
+    lattice model, the pool price always lives on AMM[initial_tick]. Both branches
+    now return the same lattice value.
+    """
     num_traj = model.num_trajectories
     num_ticks = model.num_ticks
     initial_price = model.initial_price
 
     initial_tick = int(np.floor(np.log(initial_price) / np.log(model.exponential_value)))
     model.tick_lower_global = initial_tick - num_ticks // 2
+    model._build_sqrt_grid()
 
-    if mid_tick:
-        p_low = model.exponential_value ** initial_tick
-        p_high = model.exponential_value ** (initial_tick + 1)
-        initial_sqrt_price = np.sqrt((p_low + p_high) / 2)
-    else:
-        initial_sqrt_price = np.sqrt(initial_price)
+    initial_sqrt_price = model.sqrt_grid[initial_tick - model.tick_lower_global]
 
     liquidity_array = np.full((num_traj, num_ticks), liquidity_value, dtype=np.float64)
 
