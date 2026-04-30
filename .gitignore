@@ -20,3 +20,7 @@ prompts/
 
 .claude/settings.local.json
 .trees/
+
+# Generated artifacts (plots, experiment outputs)
+figures/
+notebooks/results/
