@@ -367,13 +367,18 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         return self.current_state
 
     def get_arrivals(self) -> np.ndarray:
-        """Generate boolean arrival indicators via Bernoulli trials (uses internal state).
+        """Generate boolean arrival indicators via the exact Poisson P(>=1 arrival).
+
+        Uses 1 - exp(-lambda * dt) instead of the linear Bernoulli approximation
+        so probabilities remain valid (and bounded by 1) even when lambda*dt is
+        not small. Still truncates to at most one arrival per step per side.
 
         Returns:
             np.ndarray: Boolean arrival indicators of shape (num_trajectories, 2) for [SELL, BUY]
         """
         unif = self.rng.uniform(size=(self.num_trajectories, 2))
-        return unif < np.maximum(self.current_state * self.step_size, 0.0)
+        prob = 1.0 - np.exp(-np.maximum(self.current_state * self.step_size, 0.0))
+        return unif < prob
 
     def reset(self):
         """Reset internal state to baseline intensity (alpha_1)."""

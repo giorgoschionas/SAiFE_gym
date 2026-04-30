@@ -51,7 +51,7 @@ N_STEPS = 300
 NUM_TRAJECTORIES_TRAIN = 300
 NUM_TRAJECTORIES_EVAL = 1000
 INITIAL_WEALTH = 1000
-TAU = 50
+TAU = 100
 LIQUIDITY_SCALE = 1e6
 
 INITIAL_PRICE = 200.0
@@ -60,14 +60,16 @@ VOLATILITY = 2.0
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
 
-ALPHA0 = np.array([10.0, 10.0])
-ALPHA1 = np.array([150.0, 150.0])
-ALPHA2 = np.array([0.0, 0.0])
-ALPHA3 = np.array([5000.0, 5000.0])
+ALPHA0 = np.array([5.0, 5.0])
+ALPHA1 = np.array([20.0, 20.0])
+ALPHA2 = np.array([300.0, 300.0])
+ALPHA3 = np.array([10.0, 10.0])
+KERNEL_BETA = 0.1
+KERNEL_K = 50
 
 GAMMA_CARTEA = 0.000005
 
-REINFORCE_EPOCHS = 0
+REINFORCE_EPOCHS = 200
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.8
 
@@ -115,6 +117,7 @@ def create_environment(num_trajectories: int, seed: int = None):
     )
     arrival_model = LiquidityKernelArrivalModel(
         alpha=alpha, liquidity_scale=LIQUIDITY_SCALE, step_size=step_size,
+        beta=KERNEL_BETA, K=KERNEL_K,
         num_trajectories=num_trajectories,
         seed=seed + 1 if seed else None,
     )
