@@ -31,7 +31,6 @@ source venv/bin/activate
 - Liquidity represented as NumPy arrays indexed by tick: `liquidity_array[tick_idx]`
 - Price movements tracked per trajectory: `sqrt_price_current.shape = (num_trajectories,)`
 - Active trajectory masking eliminates branching in hot loops
-- Out-of-bounds ticks treated as zero liquidity (no dict lookups)
 
 ### Liquidity Array Indexing
 
@@ -62,7 +61,6 @@ array_index = absolute_tick - tick_lower
 **Key Properties:**
 - `tick_lower` is set once at environment initialization and remains **fixed** throughout simulation
 - Array size `num_ticks` determines the supported price range
-- Out-of-bounds ticks (index < 0 or ≥ num_ticks) are treated as zero liquidity
 - Shape: `(num_ticks,)` for shared liquidity, `(num_trajectories, num_ticks)` for per-trajectory
 
 ### Core Data Flow
@@ -129,7 +127,6 @@ The state is a **dictionary** with the following keys:
 - Entry `[traj, i]` corresponds to tick `[tick_lower + i, tick_lower + i + 1)`
 - See "Liquidity Array Indexing" section above for conversion formulas
 
-**Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
 ### Action Space - 3D Offset Format
 
@@ -159,22 +156,15 @@ The state is a **dictionary** with the following keys:
 The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
 
 **Core Principle**: Each trade = one tick of price movement.
-- Trade size (xi) is computed from the **current tick's liquidity only** (`_compute_local_xi()`)
-- `xi_sell = L * tick_factor / sqrt_p_low`, `xi_buy = L * tick_factor * sqrt_p_high`
+- The square root of the AMM price is stored in grid `AMM[i]`. Each trade moves the price by one entry in the grid. 
 - Arrivals are Bernoulli trials (boolean arrays): `P(arrival) = intensity * step_size`
 - When both sell and buy arrive simultaneously, execution order is randomized via coin flip
 - On crossing, sqrt_price snaps to the **geometric midpoint** of the new tick to prevent drift
 
-**Crossing Behavior**:
-- With mid-tick price and local xi (full tick capacity), xi > x_to_boundary → crossing occurs
-- Zero-liquidity ticks are always crossed (no resistance)
-- On crossing, `sqrt_price = sqrt_p_boundary / exp_quarter` (sell) or `sqrt_p_boundary * exp_quarter` (buy)
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
 - `exponential_value` (default: 1.0001): Tick spacing base
-- `tick_factor`: Precomputed `sqrt(exponential_value) - 1`
-- `exp_quarter`: Precomputed `exponential_value ** 0.25` (for midpoint snap)
 
 ## Important Implementation Details
 
