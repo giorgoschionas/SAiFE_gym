@@ -17,7 +17,7 @@ import torch.nn as nn
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
+from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
 from SAiFE_gym.rewards.RewardFunctions import PnL, RunningInventoryPenalty
 
@@ -49,7 +49,7 @@ ALPHA2 = np.array([0.0, 0.0])     # Liquidity coefficient (disabled)
 ALPHA3 = np.array([5000.0, 5000.0])  # Arbitrage coefficient
 
 # Training parameters
-NUM_EPOCHS = 2
+NUM_EPOCHS = 200
 LEARNING_RATE = 2e-4
 ACTION_STD_INIT = 1.8  # Higher std for exploration
 ACTION_STD_DECAY = lambda t: max(0.3, ACTION_STD_INIT * (0.998 ** (t * 200)))  # Much slower decay
@@ -58,14 +58,14 @@ ACTION_STD_DECAY = lambda t: max(0.3, ACTION_STD_INIT * (0.998 ** (t * 200)))  #
 # Neural Network Architecture
 # ============================================================================
 
-def create_policy_network(input_size: int, hidden_size: int = 256, action_size: int = 2):
+def create_policy_network(input_size: int, hidden_size: int = 256, action_size: int = 3):
     """
     Create a deeper feedforward policy network for more sophisticated strategies.
 
     Args:
         input_size: Number of flattened state features
         hidden_size: Hidden layer size
-        action_size: Output action dimensions (2 for [lower_offset, upper_offset])
+        action_size: Output action dimensions (3 for [lower_offset, upper_offset, hold_flag])
     """
     return nn.Sequential(
         nn.Linear(input_size, hidden_size),
@@ -108,9 +108,9 @@ class UnbiasedTwoStagePolicyNetwork(nn.Module):
         self.tau = tau
 
     def forward(self, x):
-        # Base network outputs raw values in [-inf, +inf]
+        # Base network outputs raw values in [-inf, +inf]; expects 3 outputs.
         raw_output = self.base_network(x)
-        sigmoid_output = torch.sigmoid(raw_output)
+        sigmoid_output = torch.sigmoid(raw_output[:, :2])
 
         # Stage 1: Uniform width sampling [1, 2*tau]
         # Maps sigmoid[0] ∈ [0,1] → width ∈ [1, 2*tau]
@@ -143,7 +143,10 @@ class UnbiasedTwoStagePolicyNetwork(nn.Module):
         lower_offset = center - half_width  # Will be < 0
         upper_offset = center + half_width  # Will be > 0
 
-        return torch.stack([lower_offset, upper_offset], dim=1)
+        # Hold flag in [-1, 1]: env reads sign — > 0 = hold, <= 0 = rebalance.
+        hold_flag = torch.tanh(raw_output[:, 2])
+
+        return torch.stack([lower_offset, upper_offset, hold_flag], dim=1)
 
 # ============================================================================
 # Environment Setup
@@ -163,7 +166,7 @@ def create_environment(num_trajectories: int, tau: int, seed: int = None):
         seed=seed
     )
 
-    arrival_model = PoissonLinearArrivalModel(
+    arrival_model = LiquidityKernelArrivalModel(
         alpha=np.column_stack([ALPHA0, ALPHA1, ALPHA2, ALPHA3]).T,
         step_size=TERMINAL_TIME / N_STEPS,
         num_trajectories=num_trajectories,
@@ -223,7 +226,7 @@ def main():
     print(f"Training on {NUM_TRAJECTORIES} parallel trajectories")
 
     # Create policy network with UNBIASED two-stage parameterization
-    base_network = create_policy_network(input_size, hidden_size=256, action_size=2)
+    base_network = create_policy_network(input_size, hidden_size=256, action_size=3)
     policy_network = UnbiasedTwoStagePolicyNetwork(base_network, tau=TAU)
 
     # Alternative: Use original biased network
@@ -266,7 +269,6 @@ def main():
     # ---- end check ----
 
     print("Starting training...")
-    sys.exit(0)
 
     # Train agent
     losses, rewards = agent.train(num_epochs=NUM_EPOCHS, reporting_freq=50)
