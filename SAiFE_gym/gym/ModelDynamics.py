@@ -158,24 +158,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return action
 
-    def _get_current_tick_liquidity(self):
-        """
-
-        Returns:
-            (tick_array_idx, L_current):
-                tick_array_idx: Clipped array index, shape (num_trajectories,)
-                L_current: Liquidity at current tick, shape (num_trajectories,)
-        """
-        current_tick = self.state[POOL_CURRENT_TICK_KEY]
-        tick_array_idx = np.clip(
-            (current_tick - self.tick_lower_global).astype(np.int64),
-            0, self.num_ticks - 1,
-        )
-        L_current = self.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(self.num_trajectories), tick_array_idx
-        ]
-        return tick_array_idx, L_current
-
     def _process_sell(self, active: np.ndarray) -> None:
         """Process a sell arrival per trajectory (lattice model).
 
