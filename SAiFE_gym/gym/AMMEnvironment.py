@@ -341,10 +341,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.model_dynamics.arrival_model.reset()
 
         # Reset state
-        if isinstance(self._initial_state, dict):
-            self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
-        else:
-            self.model_dynamics.state = self._initial_state.copy() if self._initial_state is not None else None
+        self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
 
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
@@ -363,11 +360,7 @@ class AMMEnvironment(gymnasium.Env):
             terminated: episode reached its natural end (trading horizon elapsed).
             truncated: always False (no external time-limit truncation).
         """
-        # Copy current state (handle both Dict and array)
-        if isinstance(self.model_dynamics.state, dict):
-            current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
-        else:
-            current_state = self.model_dynamics.state.copy()
+        current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
 
         # Update state
         next_state = self._update_state(action)
@@ -427,10 +420,7 @@ class AMMEnvironment(gymnasium.Env):
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""
-        if isinstance(self.model_dynamics.state, dict):
-            done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
-        else:
-            done = self.model_dynamics.state[0, -1] >= self.terminal_time - self._step_size / 2
+        done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
         return np.full((self.num_trajectories,), done, dtype=bool)
 
     def _calculate_infos(self, current_state, action, rewards):
