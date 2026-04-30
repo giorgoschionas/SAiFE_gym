@@ -128,7 +128,7 @@ def get_amm_env(
         terminal_time=terminal_time,
         n_steps=n_steps,
         model_dynamics=model_dynamics,
-        reward_function=reward_function or PnL(initial_wealth=INITIAL_WEALTH),
+        reward_function=reward_function or PnL(),
         initial_wealth=INITIAL_WEALTH,
         num_trajectories=num_trajectories,
         seed=seed,

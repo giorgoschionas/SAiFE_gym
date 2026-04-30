@@ -132,7 +132,7 @@ def make_env(alpha3: float, num_trajectories: int, seed: int) -> AMMEnvironment:
     return AMMEnvironment(
         terminal_time=TERMINAL_TIME, n_steps=N_STEPS,
         model_dynamics=model_dynamics,
-        reward_function=PnL(initial_wealth=INITIAL_WEALTH),
+        reward_function=PnL(),
         num_trajectories=num_trajectories, seed=seed,
     )
 

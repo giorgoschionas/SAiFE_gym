@@ -125,7 +125,7 @@ def create_environment(num_trajectories: int, seed: int = None):
         initial_wealth=INITIAL_WEALTH,
         seed=seed + 2 if seed else None,
     )
-    reward_function = PnL(exponential_value=EXP_VALUE, initial_wealth=INITIAL_WEALTH)
+    reward_function = PnL()
     return AMMEnvironment(
         terminal_time=TERMINAL_TIME, n_steps=N_STEPS,
         reward_function=reward_function, model_dynamics=model_dynamics,
