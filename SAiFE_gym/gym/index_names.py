@@ -4,6 +4,7 @@
 # Use these keys to access state components in the new Dict-based state structure
 PORTFOLIO_VALUE_KEY = 'portfolio_value'
 LP_ALPHA_KEY = 'lp_alpha'
+LP_TOKEN0_AMOUNT_KEY = 'lp_token0_amount'  # LP's absolute token0 holdings (risky-asset inventory) - shape: (num_trajectories,)
 POOL_SQRT_PRICE_KEY = 'sqrt_price'          # Current pool sqrt(price) - shape: (num_trajectories,)
 POOL_CURRENT_TICK_KEY = 'current_tick'      # Current tick index - shape: (num_trajectories,)
 POOL_LIQUIDITY_ARRAY_KEY = 'liquidity_array'  # Liquidity per tick - shape: (num_trajectories, num_ticks)

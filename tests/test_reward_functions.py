@@ -5,7 +5,13 @@ Tests verify:
 1. PnL: zero reward, positive reward, initial wealth, rebalancing cost, vectorized
 2. ExponentialUtility: zero per-step, negative terminal, risk aversion scaling
 3. RunningInventoryPenalty: zero aversion = PnL, penalty reduces reward, terminal penalty
-4. _token0_amount: correct computation in-range, above, below
+
+Note: reward functions are pure functions of state — they read the env-published
+derived keys (PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY) directly. The
+`make_state` helper below populates those derived keys so reward functions can
+be exercised without spinning up a full env. Integration tests that drive
+`model_dynamics.update_state` directly call `compute_derived_obs` to refresh
+the derived keys after each model step.
 """
 
 import numpy as np
@@ -13,7 +19,6 @@ import pytest
 
 from SAiFE_gym.rewards.RewardFunctions import (
     PnL, ExponentialUtility, RunningInventoryPenalty, CjCriterion,
-    _token0_amount
 )
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
@@ -22,9 +27,11 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY,
+    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
+from SAiFE_gym.gym.AMMEnvironment import compute_derived_obs
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
@@ -34,15 +41,19 @@ EXPONENTIAL_VALUE = 1.0001
 
 
 def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
-               lp_upper_tick=None, num_ticks=100, time=0.0):
-    """Build a minimal dict state for testing the reward function."""
+               lp_upper_tick=None, num_ticks=100, time=0.0, initial_wealth=1e6):
+    """Build a minimal dict state for testing reward functions.
+
+    Populates the env-published derived keys (PORTFOLIO_VALUE_KEY,
+    LP_TOKEN0_AMOUNT_KEY) so reward functions can read them directly.
+    """
     tick = int(np.floor(np.log(price) / np.log(EXPONENTIAL_VALUE)))
     if lp_lower_tick is None:
         lp_lower_tick = tick - 5
     if lp_upper_tick is None:
         lp_upper_tick = tick + 5
 
-    return {
+    state = {
         POOL_SQRT_PRICE_KEY: np.full(num_traj, np.sqrt(price), dtype=np.float64),
         POOL_CURRENT_TICK_KEY: np.full(num_traj, tick, dtype=np.float64),
         POOL_LIQUIDITY_ARRAY_KEY: np.full((num_traj, num_ticks), 1e6, dtype=np.float64),
@@ -60,7 +71,32 @@ def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
         ASSET_PRICE_KEY: np.full(num_traj, price, dtype=np.float64),
         TIME_KEY: np.full(num_traj, time, dtype=np.float64),
         LP_EVER_DEPLOYED_KEY: np.full(num_traj, lp_liquidity > 0, dtype=bool),
+        INITIAL_WEALTH_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
     }
+
+    # Inline the V3 derivations needed by reward functions.
+    sqrt_p = state[POOL_SQRT_PRICE_KEY]
+    sqrt_p_lower = np.sqrt(EXPONENTIAL_VALUE ** state[LP_TICK_LOWER_KEY].astype(np.float64))
+    sqrt_p_upper = np.sqrt(EXPONENTIAL_VALUE ** state[LP_TICK_UPPER_KEY].astype(np.float64))
+    lp_liq_arr = state[LP_LIQUIDITY_KEY]
+    has_position = lp_liq_arr > 0
+
+    pos_value = get_position_value_vec(
+        lp_liq_arr, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper
+    )
+    no_pos_value = np.where(state[LP_EVER_DEPLOYED_KEY], 0.0, state[INITIAL_WEALTH_KEY])
+    state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value, no_pos_value)
+
+    x_in = lp_liq_arr * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+    x_below = lp_liq_arr * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+    above = sqrt_p >= sqrt_p_upper
+    below = sqrt_p <= sqrt_p_lower
+    x = np.where(above, 0.0, np.where(below, x_below, x_in))
+    state[LP_TOKEN0_AMOUNT_KEY] = np.where(has_position, x, 0.0)
+
+    state[LP_ALPHA_KEY] = np.zeros(num_traj, dtype=np.float64)
+
+    return state
 
 
 # =====================================================================
@@ -69,7 +105,7 @@ def make_state(num_traj=1, price=100.0, lp_liquidity=1e6, lp_lower_tick=None,
 
 class TestPnLZeroReward:
     def test_zero_reward_no_price_change(self):
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE)
+        reward_fn = PnL()
         state = make_state(price=100.0, lp_liquidity=1e6)
         reward = reward_fn.calculate(state, None, state)
         assert np.isclose(reward[0], 0.0, atol=1e-10)
@@ -77,7 +113,7 @@ class TestPnLZeroReward:
 
 class TestPnLPositiveReward:
     def test_positive_reward_price_increase_in_range(self):
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE)
+        reward_fn = PnL()
         state_before = make_state(price=100.0, lp_liquidity=1e6)
         state_after = make_state(price=101.0, lp_liquidity=1e6,
                                  lp_lower_tick=int(state_before[LP_TICK_LOWER_KEY][0]),
@@ -88,16 +124,18 @@ class TestPnLPositiveReward:
 
 class TestPnLInitialWealth:
     def test_initial_state_uses_initial_wealth(self):
+        """No-position state should publish PORTFOLIO_VALUE = initial_wealth."""
         initial_wealth = 5e5
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE, initial_wealth=initial_wealth)
-        state_no_pos = make_state(price=100.0, lp_liquidity=0.0)
-        value = reward_fn._portfolio_value(state_no_pos)
-        assert np.isclose(value[0], initial_wealth)
+        state_no_pos = make_state(price=100.0, lp_liquidity=0.0,
+                                  initial_wealth=initial_wealth)
+        assert np.isclose(state_no_pos[PORTFOLIO_VALUE_KEY][0], initial_wealth)
 
     def test_reward_first_deployment(self):
+        """First deploy where pos_value matches initial_wealth → zero PnL."""
         initial_wealth = 1e6
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE, initial_wealth=initial_wealth)
-        state_before = make_state(price=100.0, lp_liquidity=0.0)
+        reward_fn = PnL()
+        state_before = make_state(price=100.0, lp_liquidity=0.0,
+                                  initial_wealth=initial_wealth)
 
         tick = int(state_before[POOL_CURRENT_TICK_KEY][0])
         lp_lower, lp_upper = tick - 5, tick + 5
@@ -112,7 +150,8 @@ class TestPnLInitialWealth:
         lp_liq = initial_wealth / v_per_unit
 
         state_after = make_state(price=100.0, lp_liquidity=lp_liq,
-                                 lp_lower_tick=lp_lower, lp_upper_tick=lp_upper)
+                                 lp_lower_tick=lp_lower, lp_upper_tick=lp_upper,
+                                 initial_wealth=initial_wealth)
         reward = reward_fn.calculate(state_before, None, state_after)
         assert np.isclose(reward[0], 0.0, atol=1e-6)
 
@@ -127,15 +166,15 @@ class TestPnLRebalancingCost:
 
         action = np.array([[-2, 2]], dtype=np.float64)
         arrivals = np.array([[0, 0]], dtype=np.int64)
-        model_no_cost.update_state(arrivals, action)
-        model_with_cost.update_state(arrivals, action)
+        _step_model(model_no_cost, arrivals, action)
+        _step_model(model_with_cost, arrivals, action)
 
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE, initial_wealth=initial_wealth)
+        reward_fn = PnL()
         state_before_no_cost = {k: v.copy() for k, v in model_no_cost.state.items()}
         state_before_with_cost = {k: v.copy() for k, v in model_with_cost.state.items()}
 
-        model_no_cost.update_state(arrivals, action)
-        model_with_cost.update_state(arrivals, action)
+        _step_model(model_no_cost, arrivals, action)
+        _step_model(model_with_cost, arrivals, action)
 
         reward_no_cost = reward_fn.calculate(state_before_no_cost, action, model_no_cost.state)
         reward_with_cost = reward_fn.calculate(state_before_with_cost, action, model_with_cost.state)
@@ -158,21 +197,21 @@ class TestPnLHoldStepRewardsFees:
         arrivals_both = np.array([[1, 1]], dtype=np.int64)
 
         # Deploy a position (rebalance; hold_flag is the 3rd column).
-        model.update_state(arrivals_none, rebalance_action)
+        _step_model(model, arrivals_none, rebalance_action)
 
         state_before = {k: v.copy() for k, v in model.state.items()}
 
         # Hold step with both a sell and a buy arrival: the external asset price is
         # pinned (volatility=0) and a matched sell/buy pair keeps the pool close to
         # its starting sqrt-price, so any reward comes from fee accrual.
-        model.update_state(arrivals_both, hold_action)
+        _step_model(model, arrivals_both, hold_action)
 
         # Position liquidity must not have changed on a hold step.
         assert np.array_equal(
             state_before[LP_LIQUIDITY_KEY], model.state[LP_LIQUIDITY_KEY]
         )
 
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE, initial_wealth=initial_wealth)
+        reward_fn = PnL()
         reward = reward_fn.calculate(state_before, hold_action, model.state)[0]
 
         unclaimed_value = (
@@ -189,81 +228,34 @@ class TestPnLHoldStepRewardsFees:
 
 class TestPnLVectorized:
     def test_reward_vectorized(self):
-        reward_fn = PnL(exponential_value=EXPONENTIAL_VALUE)
+        reward_fn = PnL()
         tick_100 = int(np.floor(np.log(100.0) / np.log(EXPONENTIAL_VALUE)))
         lp_lower, lp_upper = tick_100 - 10, tick_100 + 10
 
         state_before = make_state(num_traj=3, price=100.0, lp_liquidity=1e6,
                                   lp_lower_tick=lp_lower, lp_upper_tick=lp_upper)
+        # Build state_after from scratch with per-trajectory prices so the
+        # derived PORTFOLIO_VALUE_KEY reflects each trajectory's price.
+        prices_after = np.array([101.0, 100.0, 99.0])
         state_after = make_state(num_traj=3, price=100.0, lp_liquidity=1e6,
                                  lp_lower_tick=lp_lower, lp_upper_tick=lp_upper)
-        state_after[ASSET_PRICE_KEY] = np.array([101.0, 100.0, 99.0])
-        state_after[POOL_SQRT_PRICE_KEY] = np.sqrt(state_after[ASSET_PRICE_KEY])
+        # Override per-trajectory price-dependent quantities and recompute pos_value.
+        state_after[ASSET_PRICE_KEY] = prices_after
+        state_after[POOL_SQRT_PRICE_KEY] = np.sqrt(prices_after)
+        sqrt_p = state_after[POOL_SQRT_PRICE_KEY]
+        sqrt_p_lower = np.sqrt(EXPONENTIAL_VALUE ** state_after[LP_TICK_LOWER_KEY].astype(np.float64))
+        sqrt_p_upper = np.sqrt(EXPONENTIAL_VALUE ** state_after[LP_TICK_UPPER_KEY].astype(np.float64))
+        pos_value = get_position_value_vec(
+            state_after[LP_LIQUIDITY_KEY], state_after[ASSET_PRICE_KEY],
+            sqrt_p, sqrt_p_lower, sqrt_p_upper
+        )
+        state_after[PORTFOLIO_VALUE_KEY] = pos_value
 
         reward = reward_fn.calculate(state_before, None, state_after)
         assert reward.shape == (3,)
         assert reward[0] > 0
         assert np.isclose(reward[1], 0.0, atol=1e-10)
         assert reward[2] < 0
-
-
-# =====================================================================
-# _token0_amount tests
-# =====================================================================
-
-class TestToken0Amount:
-    """Test the LP inventory (token0 holdings) computation."""
-
-    def test_in_range_positive(self):
-        """Price in range: LP holds some token0."""
-        state = make_state(price=100.0, lp_liquidity=1e6)
-        x = _token0_amount(state, EXPONENTIAL_VALUE)
-        assert x[0] > 0
-
-    def test_above_range_zero(self):
-        """Price above range: LP holds no token0 (100% token1)."""
-        tick = int(np.floor(np.log(100.0) / np.log(EXPONENTIAL_VALUE)))
-        # Position range is [tick-5, tick+5], price at tick+10 → way above
-        state = make_state(price=100.0, lp_liquidity=1e6,
-                           lp_lower_tick=tick - 15, lp_upper_tick=tick - 10)
-        x = _token0_amount(state, EXPONENTIAL_VALUE)
-        assert np.isclose(x[0], 0.0)
-
-    def test_below_range_max(self):
-        """Price below range: LP holds maximum token0."""
-        tick = int(np.floor(np.log(100.0) / np.log(EXPONENTIAL_VALUE)))
-        # Position range is [tick+10, tick+15], price at tick → below
-        state = make_state(price=100.0, lp_liquidity=1e6,
-                           lp_lower_tick=tick + 10, lp_upper_tick=tick + 15)
-        x = _token0_amount(state, EXPONENTIAL_VALUE)
-        # Should equal L * (1/sqrt_p_lower - 1/sqrt_p_upper)
-        sqrt_p_l = np.sqrt(EXPONENTIAL_VALUE ** (tick + 10))
-        sqrt_p_u = np.sqrt(EXPONENTIAL_VALUE ** (tick + 15))
-        expected = 1e6 * (1.0 / sqrt_p_l - 1.0 / sqrt_p_u)
-        assert np.isclose(x[0], expected, rtol=1e-10)
-
-    def test_zero_liquidity(self):
-        """No position: token0 amount is zero."""
-        state = make_state(price=100.0, lp_liquidity=0.0)
-        x = _token0_amount(state, EXPONENTIAL_VALUE)
-        assert np.isclose(x[0], 0.0)
-
-    def test_vectorized_mixed(self):
-        """Multiple trajectories in different regimes."""
-        tick = int(np.floor(np.log(100.0) / np.log(EXPONENTIAL_VALUE)))
-        state = make_state(num_traj=3, price=100.0, lp_liquidity=1e6)
-        # Trajectory 0: in range (default)
-        # Trajectory 1: above range (shrink upper bound below current price)
-        state[LP_TICK_LOWER_KEY][1] = tick - 15
-        state[LP_TICK_UPPER_KEY][1] = tick - 10
-        # Trajectory 2: below range (push lower bound above current price)
-        state[LP_TICK_LOWER_KEY][2] = tick + 10
-        state[LP_TICK_UPPER_KEY][2] = tick + 15
-
-        x = _token0_amount(state, EXPONENTIAL_VALUE)
-        assert x[0] > 0         # in range
-        assert np.isclose(x[1], 0.0)  # above range
-        assert x[2] > x[0]      # below range → max exposure
 
 
 # =====================================================================
@@ -275,24 +267,21 @@ class TestExponentialUtility:
 
     def test_zero_reward_non_terminal(self):
         """Non-terminal steps should return 0."""
-        reward_fn = ExponentialUtility(risk_aversion=0.1,
-                                       exponential_value=EXPONENTIAL_VALUE)
+        reward_fn = ExponentialUtility(risk_aversion=0.1)
         state = make_state(price=100.0, lp_liquidity=1e6)
         reward = reward_fn.calculate(state, None, state, is_terminal_step=False)
         assert np.all(reward == 0.0)
 
     def test_negative_reward_terminal(self):
         """Terminal step should return -exp(-a * W_T) < 0."""
-        reward_fn = ExponentialUtility(risk_aversion=0.1,
-                                       exponential_value=EXPONENTIAL_VALUE)
+        reward_fn = ExponentialUtility(risk_aversion=0.1)
         state = make_state(price=100.0, lp_liquidity=1e6)
         reward = reward_fn.calculate(state, None, state, is_terminal_step=True)
         assert reward[0] < 0
 
     def test_concavity(self):
         """Risk-averse utility is concave: gain from +delta < loss from -delta."""
-        rf = ExponentialUtility(risk_aversion=1e-6,
-                                exponential_value=EXPONENTIAL_VALUE)
+        rf = ExponentialUtility(risk_aversion=1e-6)
 
         state_mid = make_state(price=100.0, lp_liquidity=1e6)
         state_high = make_state(price=101.0, lp_liquidity=1e6,
@@ -311,8 +300,7 @@ class TestExponentialUtility:
 
     def test_higher_wealth_less_negative(self):
         """Higher portfolio value → less negative terminal reward (closer to 0)."""
-        rf = ExponentialUtility(risk_aversion=1e-6,
-                                exponential_value=EXPONENTIAL_VALUE)
+        rf = ExponentialUtility(risk_aversion=1e-6)
 
         state_low = make_state(price=100.0, lp_liquidity=1e5)
         state_high = make_state(price=100.0, lp_liquidity=1e6)
@@ -325,8 +313,7 @@ class TestExponentialUtility:
 
     def test_vectorized(self):
         """Multiple trajectories produce per-trajectory rewards."""
-        rf = ExponentialUtility(risk_aversion=1e-6,
-                                exponential_value=EXPONENTIAL_VALUE)
+        rf = ExponentialUtility(risk_aversion=1e-6)
         state = make_state(num_traj=3, price=100.0, lp_liquidity=1e6)
         reward = rf.calculate(state, None, state, is_terminal_step=True)
         assert reward.shape == (3,)
@@ -342,11 +329,10 @@ class TestRunningInventoryPenalty:
 
     def test_zero_aversion_equals_pnl(self):
         """With zero aversion, RunningInventoryPenalty == PnL."""
-        pnl_fn = PnL(exponential_value=EXPONENTIAL_VALUE)
+        pnl_fn = PnL()
         rip_fn = RunningInventoryPenalty(
             per_step_inventory_aversion=0.0,
             terminal_inventory_aversion=0.0,
-            exponential_value=EXPONENTIAL_VALUE
         )
 
         state_before = make_state(price=100.0, lp_liquidity=1e6, time=0.0)
@@ -364,11 +350,8 @@ class TestRunningInventoryPenalty:
         # Wide range so price 100.1 stays well within [tick-500, tick+500]
         lp_lower, lp_upper = tick - 500, tick + 500
 
-        pnl_fn = PnL(exponential_value=EXPONENTIAL_VALUE)
-        rip_fn = RunningInventoryPenalty(
-            per_step_inventory_aversion=100.0,
-            exponential_value=EXPONENTIAL_VALUE
-        )
+        pnl_fn = PnL()
+        rip_fn = RunningInventoryPenalty(per_step_inventory_aversion=100.0)
 
         state_before = make_state(price=100.0, lp_liquidity=1e6, time=0.0,
                                   lp_lower_tick=lp_lower, lp_upper_tick=lp_upper)
@@ -384,7 +367,6 @@ class TestRunningInventoryPenalty:
         rip_fn = RunningInventoryPenalty(
             per_step_inventory_aversion=0.0,
             terminal_inventory_aversion=1.0,
-            exponential_value=EXPONENTIAL_VALUE
         )
 
         state_before = make_state(price=100.0, lp_liquidity=1e6, time=0.0)
@@ -407,7 +389,6 @@ class TestRunningInventoryPenalty:
         rip_fn = RunningInventoryPenalty(
             per_step_inventory_aversion=1.0,
             terminal_inventory_aversion=1.0,
-            exponential_value=EXPONENTIAL_VALUE
         )
 
         state_before = make_state(price=100.0, lp_liquidity=0.0, time=0.0)
@@ -422,10 +403,7 @@ class TestRunningInventoryPenalty:
         tick = int(np.floor(np.log(100.0) / np.log(EXPONENTIAL_VALUE)))
         lp_lower, lp_upper = tick - 500, tick + 500
 
-        rip_fn = RunningInventoryPenalty(
-            per_step_inventory_aversion=100.0,
-            exponential_value=EXPONENTIAL_VALUE
-        )
+        rip_fn = RunningInventoryPenalty(per_step_inventory_aversion=100.0)
 
         # Both before & after have same liquidity per trajectory (no PnL from liq change)
         state_before = make_state(num_traj=2, price=100.0, lp_liquidity=1e6,
@@ -434,9 +412,14 @@ class TestRunningInventoryPenalty:
         state_after = make_state(num_traj=2, price=100.0, lp_liquidity=1e6,
                                  lp_lower_tick=lp_lower, lp_upper_tick=lp_upper,
                                  time=0.005)
-        # Give trajectory 1 higher liquidity in BOTH states → same PnL but more penalty
-        state_before[LP_LIQUIDITY_KEY][1] = 1e7
-        state_after[LP_LIQUIDITY_KEY][1] = 1e7
+        # Give trajectory 1 higher liquidity in BOTH states → same PnL but more penalty.
+        # Need to also recompute LP_TOKEN0_AMOUNT_KEY for the overridden trajectory.
+        for state in (state_before, state_after):
+            state[LP_LIQUIDITY_KEY][1] = 1e7
+            sqrt_p = state[POOL_SQRT_PRICE_KEY][1]
+            sqrt_p_lower = np.sqrt(EXPONENTIAL_VALUE ** float(state[LP_TICK_LOWER_KEY][1]))
+            sqrt_p_upper = np.sqrt(EXPONENTIAL_VALUE ** float(state[LP_TICK_UPPER_KEY][1]))
+            state[LP_TOKEN0_AMOUNT_KEY][1] = 1e7 * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
 
         r = rip_fn.calculate(state_before, None, state_after)
         assert r.shape == (2,)
@@ -480,10 +463,9 @@ def _initialize_model_state(model, initial_wealth=1e6):
     initial_price = model.initial_price
     initial_tick = int(np.floor(np.log(initial_price) / np.log(model.exponential_value)))
     model.tick_lower_global = initial_tick - num_ticks // 2
+    model._build_sqrt_grid()
 
-    p_low = model.exponential_value ** initial_tick
-    p_high = model.exponential_value ** (initial_tick + 1)
-    initial_sqrt_price = np.sqrt((p_low + p_high) / 2)
+    initial_sqrt_price = model.sqrt_grid[initial_tick - model.tick_lower_global]
 
     model.state = {
         POOL_SQRT_PRICE_KEY: np.full(num_traj, initial_sqrt_price, dtype=np.float64),
@@ -504,7 +486,16 @@ def _initialize_model_state(model, initial_wealth=1e6):
         TIME_KEY: np.zeros(num_traj, dtype=np.float64),
         LP_EVER_DEPLOYED_KEY: np.zeros(num_traj, dtype=bool),
         INITIAL_WEALTH_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
+        PORTFOLIO_VALUE_KEY: np.full(num_traj, initial_wealth, dtype=np.float64),
+        LP_ALPHA_KEY: np.zeros(num_traj, dtype=np.float64),
+        LP_TOKEN0_AMOUNT_KEY: np.zeros(num_traj, dtype=np.float64),
     }
+
+
+def _step_model(model, arrivals, action):
+    """Drive model.update_state and refresh derived obs (env-side responsibility)."""
+    model.update_state(arrivals, action)
+    compute_derived_obs(model.state, model)
 
 
 if __name__ == "__main__":

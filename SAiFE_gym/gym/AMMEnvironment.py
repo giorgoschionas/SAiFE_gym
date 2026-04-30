@@ -13,10 +13,46 @@ from SAiFE_gym.gym.index_names import (
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
-    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY,
+    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick, get_position_value_vec
 
+
+def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
+    """Compute portfolio_value, lp_alpha, and lp_token0_amount in-place on `state`.
+
+    Centralized helper so the env, tests, and any other code that bypasses
+    AMMEnvironment.step (e.g. driving model_dynamics directly) can keep the
+    derived observation keys consistent with the rest of the state.
+    """
+    lp_liq = state[LP_LIQUIDITY_KEY]
+    has_position = lp_liq > 0
+    ever_deployed = state[LP_EVER_DEPLOYED_KEY]
+
+    sqrt_p = state[POOL_SQRT_PRICE_KEY]
+    sqrt_p_lower = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
+    sqrt_p_upper = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
+
+    pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
+    unclaimed_value = (
+        state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
+        + state[LP_UNCLAIMED_FEES1_KEY]
+    )
+    no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
+    state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
+
+    alpha = model_dynamics._compute_token0_fraction_vec(
+        sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper
+    )
+    state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
+
+    # Absolute token0 holdings (LP risky-asset inventory) — three-region V3 formula.
+    x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+    x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+    above = sqrt_p >= sqrt_p_upper
+    below = sqrt_p <= sqrt_p_lower
+    x = np.where(above, 0.0, np.where(below, x_below, x_in))
+    state[LP_TOKEN0_AMOUNT_KEY] = np.where(has_position, x, 0.0)
 
 
 class AMMEnvironment(gymnasium.Env):
@@ -173,6 +209,11 @@ class AMMEnvironment(gymnasium.Env):
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
+            LP_TOKEN0_AMOUNT_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
         })
 
     def _initial_v3_state(self) -> dict:
@@ -192,9 +233,16 @@ class AMMEnvironment(gymnasium.Env):
         initial_price = self.model_dynamics.initial_price
         initial_tick = price_to_tick(initial_price)
 
-        # Set tick_lower_global to center the array around initial price
+        # Set tick_lower_global to center the array around initial price, then
+        # build the AMM lattice so POOL_SQRT_PRICE_KEY can be read straight off the grid.
         num_ticks = self.model_dynamics.num_ticks
         self.model_dynamics.tick_lower_global = initial_tick - num_ticks // 2
+        self.model_dynamics._build_sqrt_grid()
+
+        # Snap the pool sqrt_price to the lattice point AMM[initial_tick]. The external
+        # midprice (ASSET_PRICE_KEY) is unchanged — only the on-chain pool price lives
+        # on the lattice.
+        initial_sqrt_price = self.model_dynamics.sqrt_grid[initial_tick - self.model_dynamics.tick_lower_global]
 
         # Initial liquidity (uniform distribution across all ticks)
         # This can be customized based on specific requirements
@@ -203,7 +251,7 @@ class AMMEnvironment(gymnasium.Env):
         return {
             # Pool state
             POOL_SQRT_PRICE_KEY: np.full(
-                self.num_trajectories, np.sqrt(initial_price), dtype=np.float64
+                self.num_trajectories, initial_sqrt_price, dtype=np.float64
             ),
             POOL_CURRENT_TICK_KEY: np.full(
                 self.num_trajectories, initial_tick, dtype=np.int64
@@ -263,6 +311,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, self.initial_wealth, dtype=np.float64
             ),
             LP_ALPHA_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_TOKEN0_AMOUNT_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
         }
 
     def seed(self, seed: int = None):
@@ -292,10 +341,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.model_dynamics.arrival_model.reset()
 
         # Reset state
-        if isinstance(self._initial_state, dict):
-            self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
-        else:
-            self.model_dynamics.state = self._initial_state.copy() if self._initial_state is not None else None
+        self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
 
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
@@ -314,11 +360,7 @@ class AMMEnvironment(gymnasium.Env):
             terminated: episode reached its natural end (trading horizon elapsed).
             truncated: always False (no external time-limit truncation).
         """
-        # Copy current state (handle both Dict and array)
-        if isinstance(self.model_dynamics.state, dict):
-            current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
-        else:
-            current_state = self.model_dynamics.state.copy()
+        current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
 
         # Update state
         next_state = self._update_state(action)
@@ -334,28 +376,8 @@ class AMMEnvironment(gymnasium.Env):
         return next_state, rewards, terminated, truncated, info
 
     def _compute_derived_obs(self):
-        """Compute portfolio_value and lp_alpha from current state and store in state dict."""
-        state = self.model_dynamics.state
-        md = self.model_dynamics
-
-        lp_liq = state[LP_LIQUIDITY_KEY]
-        has_position = lp_liq > 0
-        ever_deployed = state[LP_EVER_DEPLOYED_KEY]
-
-        sqrt_p = state[POOL_SQRT_PRICE_KEY]
-        sqrt_p_lower = np.sqrt(md.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
-        sqrt_p_upper = np.sqrt(md.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
-
-        pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
-        unclaimed_value = (
-            state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
-            + state[LP_UNCLAIMED_FEES1_KEY]
-        )
-        no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
-        state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
-
-        alpha = md._compute_token0_fraction_vec(sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper)
-        state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
+        """Compute portfolio_value, lp_alpha, and lp_token0_amount, store in state dict."""
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
 
     def _update_state(self, action: np.ndarray):
         # Step 1: Get arrivals from current model state (intensity at t)
@@ -398,10 +420,7 @@ class AMMEnvironment(gymnasium.Env):
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""
-        if isinstance(self.model_dynamics.state, dict):
-            done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
-        else:
-            done = self.model_dynamics.state[0, -1] >= self.terminal_time - self._step_size / 2
+        done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
         return np.full((self.num_trajectories,), done, dtype=bool)
 
     def _calculate_infos(self, current_state, action, rewards):

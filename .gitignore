@@ -14,8 +14,13 @@ TMP_NOTEBOOKS
 __pycache__/
 *.py[cod]
 *$py.class
+*.pth
 
 prompts/
 
 .claude/settings.local.json
 .trees/
+
+# Generated artifacts (plots, experiment outputs)
+figures/
+notebooks/results/
