@@ -32,7 +32,7 @@ class PnL(RewardFunction):
     """Mark-to-market PnL reward: change in LP portfolio value between steps.
 
     Reads `PORTFOLIO_VALUE_KEY` from state, which the env computes in
-    `AMMEnvironment._compute_derived_obs`. No reward-side parameters.
+    `AMMEnvironment._compute_derived_obs`.
     """
 
     def calculate(
