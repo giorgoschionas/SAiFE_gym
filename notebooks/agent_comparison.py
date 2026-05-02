@@ -31,7 +31,9 @@ from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
-from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent
+from SAiFE_gym.agents.BaselineAgents import (
+    UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent, ArrivalRebalanceAgent,
+)
 from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
 from SAiFE_gym.rewards.RewardFunctions import PnL
@@ -50,21 +52,29 @@ N_STEPS = 200
 NUM_TRAJECTORIES_TRAIN = 200
 NUM_TRAJECTORIES_EVAL = 1000
 INITIAL_WEALTH = 1000
-TAU = 20
-LIQUIDITY_SCALE = 1e4
+TAU = 155
+LIQUIDITY_SCALE = 1e5
 
 INITIAL_PRICE = 100.0
+INITIAL_POOL_PRICE = 98.5  # None → pool starts at INITIAL_PRICE; set a float to seed a mispricing
 DRIFT = 0
-VOLATILITY = 0.1
-FEE_TIER = 0.003
+VOLATILITY = 0
+FEE_TIER = 0.007
 EXP_VALUE = 1.0001
 
 ALPHA0 = np.array([10.0, 10.0])
 ALPHA1 = np.array([0.0, 0.0])
 ALPHA2 = np.array([5.0, 5.0])
-ALPHA3 = np.array([2000.0, 2000.0])
+ALPHA3 = np.array([1000.0, 1000.0])
 
 GAMMA_CARTEA = 0.000005
+
+ARRIVAL_REBALANCE_EVERY = 50
+ARRIVAL_REBALANCE_WIDTH = 20
+
+# DeployOnce quote bounds (None → defaults to symmetric [-TAU, +TAU])
+DEPLOYONCE_LOWER = -1
+DEPLOYONCE_UPPER = TAU
 
 REINFORCE_EPOCHS = 0#350
 REINFORCE_LR = 2e-4
@@ -79,11 +89,12 @@ FIGURES_DIR = os.path.join(os.path.dirname(__file__), 'figures')
 
 # ── Agent toggles (set to False to skip training / evaluation) ──────
 ENABLE_AGENTS = {
-    'Uniform':    True,
+    'Uniform':    False,
     'DeployOnce': True,
-    'CarteaDrissiMonga': True,
+    'ArrivalRebalance': False,
+    'CarteaDrissiMonga': False,
     'REINFORCE':  False,
-    'PPO':        True,
+    'PPO':        False,
     'SAC':        False,
     'DQN':        False,
 }
@@ -92,6 +103,7 @@ AGENT_NAMES = [name for name, on in ENABLE_AGENTS.items() if on]
 AGENT_COLORS = {
     'Uniform':    '#1f77b4',
     'DeployOnce': '#9467bd',
+    'ArrivalRebalance': '#e377c2',
     'CarteaDrissiMonga': '#ff7f0e',
     'REINFORCE':  '#2ca02c',
     'PPO':        '#d62728',
@@ -121,14 +133,16 @@ def create_environment(num_trajectories: int, seed: int = None):
         midprice_model=midprice_model, arrival_model=arrival_model,
         num_trajectories=num_trajectories, fee_tier=FEE_TIER, tau=TAU,
         num_ticks=3000, exponential_value=EXP_VALUE,
-        initial_wealth=INITIAL_WEALTH,
         seed=seed + 2 if seed else None,
     )
     reward_function = PnL()
     return AMMEnvironment(
         terminal_time=TERMINAL_TIME, n_steps=N_STEPS,
+        initial_wealth=INITIAL_WEALTH,
         reward_function=reward_function, model_dynamics=model_dynamics,
-        num_trajectories=num_trajectories, seed=seed,
+        num_trajectories=num_trajectories,
+        initial_pool_price=INITIAL_POOL_PRICE,
+        seed=seed,
     )
 
 # ============================================================================
@@ -818,7 +832,18 @@ def main():
     if ENABLE_AGENTS.get('DeployOnce'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
         pnl_results['DeployOnce'] = evaluate_on_trajectories(
-            env, DeployOnceAgent(env).get_action,
+            env, DeployOnceAgent(
+                env, lower_offset=DEPLOYONCE_LOWER, upper_offset=DEPLOYONCE_UPPER,
+            ).get_action,
+        )
+
+    if ENABLE_AGENTS.get('ArrivalRebalance'):
+        env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
+        pnl_results['ArrivalRebalance'] = evaluate_on_trajectories(
+            env, ArrivalRebalanceAgent(
+                env, rebalance_every=ARRIVAL_REBALANCE_EVERY,
+                width=ARRIVAL_REBALANCE_WIDTH,
+            ).get_action,
         )
 
     if ENABLE_AGENTS.get('CarteaDrissiMonga'):
@@ -897,7 +922,17 @@ def main():
         if ENABLE_AGENTS.get('DeployOnce'):
             env = create_environment(1, sim_seed)
             single_data.setdefault('DeployOnce', []).append(
-                collect_single_trajectory(env, DeployOnceAgent(env).get_action))
+                collect_single_trajectory(env, DeployOnceAgent(
+                    env, lower_offset=DEPLOYONCE_LOWER, upper_offset=DEPLOYONCE_UPPER,
+                ).get_action))
+
+        if ENABLE_AGENTS.get('ArrivalRebalance'):
+            env = create_environment(1, sim_seed)
+            single_data.setdefault('ArrivalRebalance', []).append(
+                collect_single_trajectory(env, ArrivalRebalanceAgent(
+                    env, rebalance_every=ARRIVAL_REBALANCE_EVERY,
+                    width=ARRIVAL_REBALANCE_WIDTH,
+                ).get_action))
 
         if ENABLE_AGENTS.get('CarteaDrissiMonga'):
             env = create_environment(1, sim_seed)

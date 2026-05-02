@@ -70,28 +70,99 @@ class UniformAllocationAgent(Agent):
 
 class DeployOnceAgent(Agent):
     """
-    Deploys liquidity once at the full active tick range and holds for the entire episode.
+    Deploys liquidity once at a fixed tick range and holds for the entire episode.
 
     On the first step (LP not yet deployed), emits hold_flag = -1 to trigger
-    deployment at [-tau, +tau]. On all subsequent steps, emits hold_flag = +1
-    to hold the existing position without rebalancing.
+    deployment at [lower_offset, upper_offset]. On all subsequent steps, emits
+    hold_flag = +1 to hold the existing position without rebalancing.
+
+    Defaults to the symmetric full active range [-tau, +tau]. Pass
+    `lower_offset` / `upper_offset` to quote asymmetrically, e.g. [-3, +7].
     """
-    def __init__(self, env: AMMEnvironment):
+    def __init__(self, env: AMMEnvironment,
+                 lower_offset: int = None, upper_offset: int = None):
         self.env = env
-        self.tau = env.model_dynamics.tau
+        tau = env.model_dynamics.tau
+        self.lower_offset = -tau if lower_offset is None else int(lower_offset)
+        self.upper_offset = tau if upper_offset is None else int(upper_offset)
+        assert -tau <= self.lower_offset < self.upper_offset <= tau, (
+            f"need -tau <= lower_offset < upper_offset <= tau, got "
+            f"[{self.lower_offset}, {self.upper_offset}] with tau={tau}"
+        )
 
     def get_action(self, state: dict) -> np.ndarray:
         n = self.env.num_trajectories
-        lower = np.full(n, -self.tau, dtype=np.float32)
-        upper = np.full(n, self.tau, dtype=np.float32)
-        #lower = np.full(n, -35, dtype=np.float32)
-        #upper = np.full(n, 70, dtype=np.float32)
-        # hold_flag: -1 (rebalance) if never deployed, +1 (hold) otherwise
+        lower = np.full(n, self.lower_offset, dtype=np.float32)
+        upper = np.full(n, self.upper_offset, dtype=np.float32)
         ever_deployed = state[LP_EVER_DEPLOYED_KEY]
         hold_flag = np.where(ever_deployed, 1.0, -1.0).astype(np.float32)
-        
-        # at the final episode rebalance to collect fees
+        return np.column_stack([lower, upper, hold_flag])
 
+
+class PeriodicRebalanceAgent(Agent):
+    """
+    Quotes a fixed ±width tick range around the current price and rebalances
+    every `rebalance_every` steps (holds in between).
+
+    Step index is derived from TIME_KEY so the agent is stateless and resets
+    automatically with env.reset(). Step 0 always deploys (0 % N == 0).
+    """
+    def __init__(self, env: AMMEnvironment, rebalance_every: int = 5, width: int = 2):
+        assert rebalance_every >= 1, f"rebalance_every must be >= 1, got {rebalance_every}"
+        assert 1 <= width <= env.model_dynamics.tau, (
+            f"width must be in [1, tau={env.model_dynamics.tau}], got {width}"
+        )
+        self.env = env
+        self.rebalance_every = rebalance_every
+        self.width = width
+
+    def get_action(self, state: dict) -> np.ndarray:
+        n = self.env.num_trajectories
+        lower = np.full(n, -self.width, dtype=np.float32)
+        upper = np.full(n,  self.width, dtype=np.float32)
+
+        step_idx = int(np.round(state[TIME_KEY][0] / self.env.step_size))
+        rebalance = (step_idx % self.rebalance_every) == 0
+        hold_flag = np.full(n, -1.0 if rebalance else 1.0, dtype=np.float32)
+
+        return np.column_stack([lower, upper, hold_flag])
+
+
+class ArrivalRebalanceAgent(Agent):
+    """
+    Quotes ±width ticks around the current price; rebalances after every
+    `rebalance_every` liquidity-taking arrivals (sell or buy).
+
+    Reads the arrivals that produced the *current* state directly from
+    `env.model_dynamics.last_arrivals` (cached after each get_arrivals call),
+    so the count is exact — no fee-delta or |Δtick| approximation.
+    """
+    def __init__(self, env: AMMEnvironment, rebalance_every: int = 10, width: int = 2):
+        assert rebalance_every >= 1, f"rebalance_every must be >= 1, got {rebalance_every}"
+        assert 1 <= width <= env.model_dynamics.tau, (
+            f"width must be in [1, tau={env.model_dynamics.tau}], got {width}"
+        )
+        self.env = env
+        self.rebalance_every = rebalance_every
+        self.width = width
+        self.arrival_count = np.zeros(env.num_trajectories, dtype=np.int64)
+
+    def get_action(self, state: dict) -> np.ndarray:
+        n = self.env.num_trajectories
+        is_episode_start = state[TIME_KEY][0] < self.env.step_size / 2
+
+        if is_episode_start:
+            self.arrival_count = np.zeros(n, dtype=np.int64)
+            rebalance = np.ones(n, dtype=bool)  # initial deploy
+        else:
+            new_arrivals = self.env.model_dynamics.last_arrivals.sum(axis=1).astype(np.int64)
+            self.arrival_count += new_arrivals
+            rebalance = self.arrival_count >= self.rebalance_every
+            self.arrival_count = np.where(rebalance, 0, self.arrival_count)
+
+        lower = np.full(n, -self.width, dtype=np.float32)
+        upper = np.full(n,  self.width, dtype=np.float32)
+        hold_flag = np.where(rebalance, -1.0, 1.0).astype(np.float32)
         return np.column_stack([lower, upper, hold_flag])
 
 

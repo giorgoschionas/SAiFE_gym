@@ -24,3 +24,6 @@ prompts/
 # Generated artifacts (plots, experiment outputs)
 figures/
 notebooks/results/
+
+
+.DS_Store

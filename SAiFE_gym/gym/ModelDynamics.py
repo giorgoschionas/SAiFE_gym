@@ -97,6 +97,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # once tick_lower_global is known. Shape: (num_ticks + 1,) so AMM[i+1] at the last
         # interior tick is a safe lookup.
         self.sqrt_grid = None
+        # Cached arrivals from the most recent get_arrivals() call. Read by diagnostic
+        # agents that key off realised order flow. Shape: (num_trajectories, 2) [sell, buy].
+        self.last_arrivals = np.zeros((num_trajectories, 2), dtype=bool)
 
     def _build_sqrt_grid(self):
         """Precompute the lattice `AMM[i] = sqrt(r^i)` for every reachable absolute tick.
@@ -548,9 +551,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
                         Column 1: buy_token0 arrivals
         """
         if self.arrival_model is None:
-            # Return no arrivals if no arrival model
-            return np.zeros((self.num_trajectories, 2), dtype=bool)
-
-        return self.arrival_model.get_arrivals()
+            arrivals = np.zeros((self.num_trajectories, 2), dtype=bool)
+        else:
+            arrivals = self.arrival_model.get_arrivals()
+        self.last_arrivals = arrivals
+        return arrivals
 
 
