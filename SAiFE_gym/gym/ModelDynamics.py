@@ -72,9 +72,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         num_trajectories: int = 1,
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of ticks around current tick
-        num_ticks: int = 2000,             # Total ticks to track in liquidity array
+        num_ticks: int = 3000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
-        gas_cost: float = 1.0815*2,      # Fixed cost per rebalance in token1 units
+        gas_cost: float = 20.0815*2,      # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
     ):

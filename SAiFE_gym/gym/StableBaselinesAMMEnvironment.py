@@ -11,7 +11,6 @@ from SAiFE_gym.gym.index_names import (
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
-    GAS_COST_KEY,
     LP_ALPHA_KEY,
     PORTFOLIO_VALUE_KEY,
     LP_COLLECTED_FEES0_KEY,
@@ -40,8 +39,7 @@ DEFAULT_OBS_KEYS = [
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
     # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
     TIME_KEY,                  # remaining time to recoup gas cost
-    GAS_COST_KEY,              # rebalancing cost
-]  # obs_dim = 5
+]  # obs_dim = 4
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 _DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
@@ -63,11 +61,13 @@ class StableBaselinesAMMEnvironment(VecEnv):
         amm_env: AMMEnvironment,
         obs_keys: Optional[List[str]] = None,
         store_terminal_observation_info: bool = True,
+        normalize_actions: bool = False,
     ):
         self.env = amm_env  # must be set before super().__init__() calls get_attr()
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
         self.obs_dim = len(self.obs_keys)
         self.store_terminal_observation_info = store_terminal_observation_info
+        self.normalize_actions = normalize_actions
         self.actions = np.zeros((amm_env.num_trajectories, amm_env.action_space.shape[0]), dtype=np.float32)
 
         for k in self.obs_keys:
@@ -80,13 +80,33 @@ class StableBaselinesAMMEnvironment(VecEnv):
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
         old_act = amm_env.action_space
-        gymnasium_act_space = gymnasium.spaces.Box(
-            low=old_act.low.astype(np.float32),
-            high=old_act.high.astype(np.float32),
-            shape=old_act.shape,
-            dtype=np.float32,
-        )
+        # Affine map from normalized [-1, 1] → underlying action range.
+        # When normalize_actions=False these are unused but harmless.
+        self._action_scale = ((old_act.high - old_act.low) / 2.0).astype(np.float32)
+        self._action_offset = ((old_act.high + old_act.low) / 2.0).astype(np.float32)
+
+        if normalize_actions:
+            gymnasium_act_space = gymnasium.spaces.Box(
+                low=-1.0, high=1.0, shape=old_act.shape, dtype=np.float32,
+            )
+        else:
+            gymnasium_act_space = gymnasium.spaces.Box(
+                low=old_act.low.astype(np.float32),
+                high=old_act.high.astype(np.float32),
+                shape=old_act.shape,
+                dtype=np.float32,
+            )
         super().__init__(amm_env.num_trajectories, flat_obs_space, gymnasium_act_space)
+
+    def scale_action(self, normalized_actions: np.ndarray) -> np.ndarray:
+        """Map actions from normalized [-1, 1] space to the underlying env's range.
+
+        No-op when normalize_actions=False. Use this when stepping the bare env
+        with actions produced by a policy trained on the normalized wrapper.
+        """
+        if not self.normalize_actions:
+            return normalized_actions
+        return normalized_actions * self._action_scale + self._action_offset
 
     # ------------------------------------------------------------------
     # Core VecEnv methods
@@ -123,7 +143,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
         return self._flatten_obs(obs)
 
     def step_async(self, actions: np.ndarray) -> None:
-        self.actions = actions
+        self.actions = self.scale_action(actions)
 
     def step_wait(self) -> VecEnvStepReturn:
         state_dict, rewards, terminated, truncated, _ = self.env.step(self.actions)

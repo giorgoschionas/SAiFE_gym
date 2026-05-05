@@ -51,12 +51,12 @@ N_STEPS = 300
 NUM_TRAJECTORIES_TRAIN = 300
 NUM_TRAJECTORIES_EVAL = 1000
 INITIAL_WEALTH = 1000
-TAU = 100
+TAU = 200
 LIQUIDITY_SCALE = 1e6
 
 INITIAL_PRICE = 200.0
 DRIFT = 1
-VOLATILITY = 2.0
+VOLATILITY = 8.0
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
 
@@ -69,7 +69,8 @@ KERNEL_K = 50
 
 GAMMA_CARTEA = 0.000005
 
-REINFORCE_EPOCHS = 200
+REINFORCE_EPOCHS = 140
+
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.8
 
@@ -281,15 +282,19 @@ class EpisodeRewardCallback(BaseCallback):
 # ============================================================================
 
 def evaluate_on_trajectories(env, get_action_fn):
-    """Run one full episode; return per-trajectory cumulative PnL."""
+    """Run one full episode; return (cumulative PnL, mean position width) per trajectory."""
     state, _ = env.reset()
     rewards_list = []
+    widths_list = []
     terminated = np.zeros(env.num_trajectories, dtype=bool)
     while not np.any(terminated):
         action = get_action_fn(state)
         state, reward, terminated, _, _ = env.step(action)
         rewards_list.append(reward)
-    return np.sum(np.array(rewards_list), axis=0)
+        widths_list.append(state[LP_TICK_UPPER_KEY] - state[LP_TICK_LOWER_KEY])
+    pnl = np.sum(np.array(rewards_list), axis=0)
+    mean_width = np.mean(np.array(widths_list), axis=0)
+    return pnl, mean_width
 
 
 def collect_single_trajectory(env, get_action_fn):
@@ -388,6 +393,25 @@ def plot_pnl_distribution(pnl_results):
     fig2.savefig(path2, dpi=150, bbox_inches='tight')
     plt.close(fig2)
     print(f"  Saved: {path2}")
+
+
+def plot_width_distribution(width_results):
+    """Boxplot of per-trajectory mean position width (in ticks) per agent."""
+    agents = [n for n in AGENT_NAMES if n in width_results]
+    fig, ax = plt.subplots(figsize=(8, 5))
+    box_data = [width_results[n] for n in agents]
+    bp = ax.boxplot(box_data, labels=agents, patch_artist=True, notch=False)
+    for patch, name in zip(bp['boxes'], agents):
+        patch.set_facecolor(AGENT_COLORS[name])
+        patch.set_alpha(0.6)
+    ax.set_ylabel('Mean Position Width (ticks)', fontsize=16)
+    ax.tick_params(axis='both', labelsize=14)
+    ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path = os.path.join(FIGURES_DIR, f'width_boxplot_{job_id}.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    print(f"  Saved: {path}")
 
 
 def plot_price_evolution(single_data):
@@ -731,7 +755,7 @@ def main():
         print("=" * 60)
 
         ppo_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
-        sb_train_env = StableBaselinesAMMEnvironment(ppo_env)
+        sb_train_env = StableBaselinesAMMEnvironment(ppo_env, normalize_actions=True)
         ppo_vec_normalize = VecNormalize(
             VecMonitor(sb_train_env),
             norm_obs=True, norm_reward=False, clip_obs=10.0,
@@ -741,6 +765,7 @@ def main():
             "MlpPolicy", ppo_vec_normalize,
             learning_rate=3e-4, n_steps=N_STEPS, batch_size=64,
             n_epochs=10, gamma=1.0, gae_lambda=0.95, clip_range=0.2,
+            policy_kwargs=dict(log_std_init=0.5),
             verbose=1, seed=SEED,
         )
         ppo_reward_cb = EpisodeRewardCallback()
@@ -811,38 +836,41 @@ def main():
 
     EVAL_SEED = SEED + 999
     pnl_results = {}
+    width_results = {}
 
     if ENABLE_AGENTS.get('Uniform'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['Uniform'] = evaluate_on_trajectories(
+        pnl_results['Uniform'], width_results['Uniform'] = evaluate_on_trajectories(
             env, UniformAllocationAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('DeployOnce'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['DeployOnce'] = evaluate_on_trajectories(
+        pnl_results['DeployOnce'], width_results['DeployOnce'] = evaluate_on_trajectories(
             env, DeployOnceAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('CarteaDrissiMonga'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
+        pnl_results['CarteaDrissiMonga'], width_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
             env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action,
         )
 
     if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['REINFORCE'] = evaluate_on_trajectories(
+        pnl_results['REINFORCE'], width_results['REINFORCE'] = evaluate_on_trajectories(
             env, lambda s: reinforce_agent.get_action(s, deterministic=True),
         )
 
     if ENABLE_AGENTS.get('PPO') and ppo_model is not None:
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        sb_eval = StableBaselinesAMMEnvironment(env)
+        sb_eval = StableBaselinesAMMEnvironment(env, normalize_actions=True)
         ppo_eval = SbAgent(ppo_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         ppo_vec_normalize.training = False
-        pnl_results['PPO'] = evaluate_on_trajectories(
-            env, lambda s: ppo_eval.get_action(ppo_vec_normalize.normalize_obs(sb_eval._flatten_obs(s))),
+        pnl_results['PPO'], width_results['PPO'] = evaluate_on_trajectories(
+            env, lambda s: sb_eval.scale_action(
+                ppo_eval.get_action(ppo_vec_normalize.normalize_obs(sb_eval._flatten_obs(s)))
+            ),
         )
 
     if ENABLE_AGENTS.get('SAC') and sac_model is not None:
@@ -850,7 +878,7 @@ def main():
         sb_eval_sac = StableBaselinesAMMEnvironment(env)
         sac_eval = SbAgent(sac_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         sac_vec_normalize.training = False
-        pnl_results['SAC'] = evaluate_on_trajectories(
+        pnl_results['SAC'], width_results['SAC'] = evaluate_on_trajectories(
             env, lambda s: sac_eval.get_action(sac_vec_normalize.normalize_obs(sb_eval_sac._flatten_obs(s))),
         )
 
@@ -862,20 +890,25 @@ def main():
             flat = _sb._flatten_obs(state)
             disc, _ = _m.predict(flat, deterministic=True)
             return _t[disc]
-        pnl_results['DQN'] = evaluate_on_trajectories(env, _dqn_eval_action)
+        pnl_results['DQN'], width_results['DQN'] = evaluate_on_trajectories(env, _dqn_eval_action)
 
     # Print summary table
     active = [n for n in AGENT_NAMES if n in pnl_results]
-    header = f"{'Agent':<12} | {'Mean PnL':>10} | {'Std':>10} | {'Median':>10} | {'Profitable':>12}"
+    header = (
+        f"{'Agent':<12} | {'Mean PnL':>10} | {'Std':>10} | {'Median':>10} "
+        f"| {'Mean Width':>10} | {'Profitable':>12}"
+    )
     print("\n" + "-" * len(header))
     print(header)
     print("-" * len(header))
     for name in active:
         pnl = pnl_results[name]
+        width = width_results[name]
         pct = 100 * np.mean(pnl > 0)
         print(
             f"{name:<12} | {np.mean(pnl):>+10.1f} | {np.std(pnl):>10.1f} "
-            f"| {np.median(pnl):>+10.1f} | {np.sum(pnl > 0):>4d}/{len(pnl)} ({pct:.0f}%)"
+            f"| {np.median(pnl):>+10.1f} | {np.mean(width):>10.1f} "
+            f"| {np.sum(pnl > 0):>4d}/{len(pnl)} ({pct:.0f}%)"
         )
     print("-" * len(header))
 
@@ -914,10 +947,10 @@ def main():
 
         if ENABLE_AGENTS.get('PPO') and ppo_model is not None:
             env = create_environment(1, sim_seed)
-            sb_single = StableBaselinesAMMEnvironment(env)
+            sb_single = StableBaselinesAMMEnvironment(env, normalize_actions=True)
             ppo_single = SbAgent(ppo_model, num_trajectories=1)
             single_data.setdefault('PPO', []).append(
-                collect_single_trajectory(env, lambda s, _a=ppo_single, _sb=sb_single: _a.get_action(ppo_vec_normalize.normalize_obs(_sb._flatten_obs(s)))))
+                collect_single_trajectory(env, lambda s, _a=ppo_single, _sb=sb_single: _sb.scale_action(_a.get_action(ppo_vec_normalize.normalize_obs(_sb._flatten_obs(s))))))
 
         if ENABLE_AGENTS.get('SAC') and sac_model is not None:
             env = create_environment(1, sim_seed)
@@ -968,6 +1001,8 @@ def main():
         plot_training_rewards(rl_training_rewards)
     if pnl_results:
         plot_pnl_distribution(pnl_results)
+    if width_results:
+        plot_width_distribution(width_results)
     if single_data:
         plot_price_evolution(single_data)
         plot_pnl_evolution(single_data)

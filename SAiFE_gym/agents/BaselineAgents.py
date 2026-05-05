@@ -63,10 +63,11 @@ class UniformAllocationAgent(Agent):
 
 
     def get_action(self, state: dict) -> np.ndarray:
-
-        #action = np.array([[-self.tau, self.tau]])
-        action = np.array([[-0.4, 0.4]])
-        return np.repeat(action, self.env.num_trajectories, axis=0)
+        n = self.env.num_trajectories
+        lower = np.full(n, -self.tau, dtype=np.float32)
+        upper = np.full(n, self.tau, dtype=np.float32)
+        hold_flag = np.full(n, -1.0, dtype=np.float32)
+        return np.column_stack([lower, upper, hold_flag])
 
 class DeployOnceAgent(Agent):
     """
