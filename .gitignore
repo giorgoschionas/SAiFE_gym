@@ -21,6 +21,7 @@ prompts/
 .claude/settings.local.json
 .claude/*.lock
 .trees/
+.pytest_cache/
 
 # Generated artifacts (plots, experiment outputs)
 figures/
