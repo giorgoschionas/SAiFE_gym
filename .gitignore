@@ -19,6 +19,7 @@ __pycache__/
 prompts/
 
 .claude/settings.local.json
+.claude/*.lock
 .trees/
 
 # Generated artifacts (plots, experiment outputs)
