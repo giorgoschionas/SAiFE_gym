@@ -64,12 +64,14 @@ class AMMEnvironment(gymnasium.Env):
         reward_function: RewardFunction = None,
         model_dynamics: ModelDynamics = None,
         initial_wealth: float = 1e6,
+        background_liquidity: float = 100000.0,
         num_trajectories: int = 1,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
         self.initial_wealth = initial_wealth
+        self.background_liquidity = background_liquidity
         self.num_trajectories = num_trajectories
         self._step_size = self.terminal_time / self.n_steps
 
@@ -244,10 +246,6 @@ class AMMEnvironment(gymnasium.Env):
         # on the lattice.
         initial_sqrt_price = self.model_dynamics.sqrt_grid[initial_tick - self.model_dynamics.tick_lower_global]
 
-        # Initial liquidity (uniform distribution across all ticks)
-        # This can be customized based on specific requirements
-        initial_liquidity = 100000.0  # Base liquidity per tick
-
         return {
             # Pool state
             POOL_SQRT_PRICE_KEY: np.full(
@@ -257,7 +255,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, initial_tick, dtype=np.int64
             ),
             POOL_LIQUIDITY_ARRAY_KEY: np.full(
-                (self.num_trajectories, num_ticks), initial_liquidity, dtype=np.float64
+                (self.num_trajectories, num_ticks), self.background_liquidity, dtype=np.float64
             ),
 
             # Fee arrays (per-tick, start at zero)

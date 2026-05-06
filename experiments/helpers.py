@@ -63,6 +63,7 @@ def get_amm_env(
     alpha3: float = 0.0,
     gas_cost: float = 0.0,
     swap_fee_rate: float = 0.0,
+    background_liquidity: float = 100000.0,
     reward_function: RewardFunction = None,
     seed: int = SEED,
 ) -> AMMEnvironment:
@@ -81,6 +82,11 @@ def get_amm_env(
                           Applied only when the LP already holds a position.
         swap_fee_rate:    Fee rate on the imbalanced swap amount when rebalancing
                           (e.g. 0.001 = 0.1%). Cost = rate * W * |α_new - α_current|.
+        background_liquidity:
+                          Liquidity units placed uniformly on every tick at reset
+                          (the LP's deposit is layered on top). Set to 0.0 for a
+                          single-LP setup where the agent captures 100% of in-range
+                          fees. Default 1e5 matches the historical hardcoded value.
         reward_function:  Defaults to PnL.
         seed:             Random seed.
 
@@ -130,6 +136,7 @@ def get_amm_env(
         model_dynamics=model_dynamics,
         reward_function=reward_function or PnL(),
         initial_wealth=INITIAL_WEALTH,
+        background_liquidity=background_liquidity,
         num_trajectories=num_trajectories,
         seed=seed,
     )
