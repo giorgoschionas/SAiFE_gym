@@ -282,19 +282,34 @@ class EpisodeRewardCallback(BaseCallback):
 # ============================================================================
 
 def evaluate_on_trajectories(env, get_action_fn):
-    """Run one full episode; return (cumulative PnL, mean position width) per trajectory."""
+    """Run one full episode; return per-trajectory PnL, width, and offset stats.
+
+    Returns a dict keyed by metric. Offsets are tick deltas relative to the
+    pool's current tick. center = (lower + upper) / 2; near 0 means symmetric
+    around current price, positive means the position leans above it.
+    """
     state, _ = env.reset()
-    rewards_list = []
-    widths_list = []
+    rewards_list, widths_list, lowers_list, uppers_list = [], [], [], []
     terminated = np.zeros(env.num_trajectories, dtype=bool)
     while not np.any(terminated):
         action = get_action_fn(state)
         state, reward, terminated, _, _ = env.step(action)
         rewards_list.append(reward)
-        widths_list.append(state[LP_TICK_UPPER_KEY] - state[LP_TICK_LOWER_KEY])
-    pnl = np.sum(np.array(rewards_list), axis=0)
-    mean_width = np.mean(np.array(widths_list), axis=0)
-    return pnl, mean_width
+        cur = state[POOL_CURRENT_TICK_KEY]
+        lower_off = state[LP_TICK_LOWER_KEY] - cur
+        upper_off = state[LP_TICK_UPPER_KEY] - cur
+        widths_list.append(upper_off - lower_off)
+        lowers_list.append(lower_off)
+        uppers_list.append(upper_off)
+    lowers = np.array(lowers_list)
+    uppers = np.array(uppers_list)
+    return {
+        'pnl': np.sum(np.array(rewards_list), axis=0),
+        'mean_width': np.mean(np.array(widths_list), axis=0),
+        'mean_lower_offset': np.mean(lowers, axis=0),
+        'mean_upper_offset': np.mean(uppers, axis=0),
+        'mean_center_offset': np.mean((lowers + uppers) / 2.0, axis=0),
+    }
 
 
 def collect_single_trajectory(env, get_action_fn):
@@ -772,6 +787,9 @@ def main():
         t0 = time.time()
         ppo_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_reward_cb)
         print(f"  PPO training time: {time.time() - t0:.1f}s")
+        ppo_model.save(os.path.join(FIGURES_DIR, f'ppo_model_{job_id}'))
+        ppo_vec_normalize.save(os.path.join(FIGURES_DIR, f'ppo_vec_normalize_{job_id}.pkl'))
+        print(f"  Saved: ppo_model_{job_id}.zip, ppo_vec_normalize_{job_id}.pkl")
 
     if ENABLE_AGENTS.get('SAC'):
         print("\n" + "=" * 60)
@@ -797,6 +815,9 @@ def main():
         t0 = time.time()
         sac_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=sac_reward_cb)
         print(f"  SAC training time: {time.time() - t0:.1f}s")
+        sac_model.save(os.path.join(FIGURES_DIR, f'sac_model_{job_id}'))
+        sac_vec_normalize.save(os.path.join(FIGURES_DIR, f'sac_vec_normalize_{job_id}.pkl'))
+        print(f"  Saved: sac_model_{job_id}.zip, sac_vec_normalize_{job_id}.pkl")
 
     if ENABLE_AGENTS.get('DQN'):
         print("\n" + "=" * 60)
@@ -826,6 +847,9 @@ def main():
         t0 = time.time()
         dqn_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=dqn_reward_cb)
         print(f"  DQN training time: {time.time() - t0:.1f}s")
+        dqn_model.save(os.path.join(FIGURES_DIR, f'dqn_model_{job_id}'))
+        np.save(os.path.join(FIGURES_DIR, f'dqn_action_table_{job_id}.npy'), dqn_action_table)
+        print(f"  Saved: dqn_model_{job_id}.zip, dqn_action_table_{job_id}.npy")
 
     # ==================================================================
     # Phase 2: Evaluate enabled agents on eval trajectories
@@ -835,30 +859,29 @@ def main():
     print("=" * 60)
 
     EVAL_SEED = SEED + 999
-    pnl_results = {}
-    width_results = {}
+    eval_results = {}
 
     if ENABLE_AGENTS.get('Uniform'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['Uniform'], width_results['Uniform'] = evaluate_on_trajectories(
+        eval_results['Uniform'] = evaluate_on_trajectories(
             env, UniformAllocationAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('DeployOnce'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['DeployOnce'], width_results['DeployOnce'] = evaluate_on_trajectories(
+        eval_results['DeployOnce'] = evaluate_on_trajectories(
             env, DeployOnceAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('CarteaDrissiMonga'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['CarteaDrissiMonga'], width_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
+        eval_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
             env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action,
         )
 
     if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['REINFORCE'], width_results['REINFORCE'] = evaluate_on_trajectories(
+        eval_results['REINFORCE'] = evaluate_on_trajectories(
             env, lambda s: reinforce_agent.get_action(s, deterministic=True),
         )
 
@@ -867,7 +890,7 @@ def main():
         sb_eval = StableBaselinesAMMEnvironment(env, normalize_actions=True)
         ppo_eval = SbAgent(ppo_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         ppo_vec_normalize.training = False
-        pnl_results['PPO'], width_results['PPO'] = evaluate_on_trajectories(
+        eval_results['PPO'] = evaluate_on_trajectories(
             env, lambda s: sb_eval.scale_action(
                 ppo_eval.get_action(ppo_vec_normalize.normalize_obs(sb_eval._flatten_obs(s)))
             ),
@@ -878,7 +901,7 @@ def main():
         sb_eval_sac = StableBaselinesAMMEnvironment(env)
         sac_eval = SbAgent(sac_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         sac_vec_normalize.training = False
-        pnl_results['SAC'], width_results['SAC'] = evaluate_on_trajectories(
+        eval_results['SAC'] = evaluate_on_trajectories(
             env, lambda s: sac_eval.get_action(sac_vec_normalize.normalize_obs(sb_eval_sac._flatten_obs(s))),
         )
 
@@ -890,27 +913,37 @@ def main():
             flat = _sb._flatten_obs(state)
             disc, _ = _m.predict(flat, deterministic=True)
             return _t[disc]
-        pnl_results['DQN'], width_results['DQN'] = evaluate_on_trajectories(env, _dqn_eval_action)
+        eval_results['DQN'] = evaluate_on_trajectories(env, _dqn_eval_action)
 
     # Print summary table
-    active = [n for n in AGENT_NAMES if n in pnl_results]
+    active = [n for n in AGENT_NAMES if n in eval_results]
     header = (
-        f"{'Agent':<12} | {'Mean PnL':>10} | {'Std':>10} | {'Median':>10} "
-        f"| {'Mean Width':>10} | {'Profitable':>12}"
+        f"{'Agent':<18} | {'Mean PnL':>10} | {'Std':>10} | {'Median':>10} "
+        f"| {'Width':>7} | {'Lower':>7} | {'Upper':>7} | {'Center':>7} "
+        f"| {'Profitable':>12}"
     )
     print("\n" + "-" * len(header))
     print(header)
     print("-" * len(header))
     for name in active:
-        pnl = pnl_results[name]
-        width = width_results[name]
+        d = eval_results[name]
+        pnl = d['pnl']
         pct = 100 * np.mean(pnl > 0)
         print(
-            f"{name:<12} | {np.mean(pnl):>+10.1f} | {np.std(pnl):>10.1f} "
-            f"| {np.median(pnl):>+10.1f} | {np.mean(width):>10.1f} "
+            f"{name:<18} | {np.mean(pnl):>+10.1f} | {np.std(pnl):>10.1f} "
+            f"| {np.median(pnl):>+10.1f} | {np.mean(d['mean_width']):>7.1f} "
+            f"| {np.mean(d['mean_lower_offset']):>+7.1f} | {np.mean(d['mean_upper_offset']):>+7.1f} "
+            f"| {np.mean(d['mean_center_offset']):>+7.1f} "
             f"| {np.sum(pnl > 0):>4d}/{len(pnl)} ({pct:.0f}%)"
         )
     print("-" * len(header))
+
+    # Persist eval results so analyses can be done without retraining
+    np.savez_compressed(
+        os.path.join(FIGURES_DIR, f'eval_results_{job_id}.npz'),
+        **{f"{name}_{k}": v for name, d in eval_results.items() for k, v in d.items()},
+    )
+    print(f"  Saved: eval_results_{job_id}.npz")
 
     # ==================================================================
     # Phase 3: Collect single-trajectory data for each agent
@@ -979,6 +1012,18 @@ def main():
                 print(f"  {name:12s}  final PnL: mean={np.mean(finals):+.1f}, "
                       f"std={np.std(finals):.1f}, range=[{min(finals):+.1f}, {max(finals):+.1f}]")
 
+    # Persist single-trajectory arrays so strategy diagnostics can be done
+    # post-hoc without retraining.
+    if single_data:
+        flat = {f"{name}_sim{i}_{k}": v
+                for name, sims in single_data.items()
+                for i, sim in enumerate(sims)
+                for k, v in sim.items()}
+        np.savez_compressed(
+            os.path.join(FIGURES_DIR, f'single_data_{job_id}.npz'), **flat,
+        )
+        print(f"  Saved: single_data_{job_id}.npz")
+
     # ==================================================================
     # Phase 4: Generate plots (each saved individually)
     # ==================================================================
@@ -999,10 +1044,9 @@ def main():
 
     if rl_training_rewards:
         plot_training_rewards(rl_training_rewards)
-    if pnl_results:
-        plot_pnl_distribution(pnl_results)
-    if width_results:
-        plot_width_distribution(width_results)
+    if eval_results:
+        plot_pnl_distribution({n: d['pnl'] for n, d in eval_results.items()})
+        plot_width_distribution({n: d['mean_width'] for n, d in eval_results.items()})
     if single_data:
         plot_price_evolution(single_data)
         plot_pnl_evolution(single_data)
