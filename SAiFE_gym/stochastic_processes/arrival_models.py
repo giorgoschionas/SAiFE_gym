@@ -240,15 +240,28 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         weighted_liq_sell = sum_{d=1}^{K} exp(-beta*d) * L(current_tick - d)
         weighted_liq_buy  = sum_{d=1}^{K} exp(-beta*d) * L(current_tick + d)
 
-        intensity_sell = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_sell / liq_scale - alpha_3 * (S-Z))
-        intensity_buy  = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_buy  / liq_scale + alpha_3 * (S-Z))
+        intensity_sell = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_sell / liq_scale - alpha_3 * log(S/Z))
+        intensity_buy  = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_buy  / liq_scale + alpha_3 * log(S/Z))
+
+    Mispricing is measured in log-price (``log(S/Z)``) rather than linear
+    price (``S - Z``). Tick spacing is geometric in price (``Z_n = Z_0 * r^n``)
+    so log-price is the natural coordinate: ``|log(S/Z)|`` is symmetric across
+    adjacent ticks (always equal to ``log(r)``), eliminating the linear-price
+    asymmetry where moving up one tick gives a slightly larger ``|S-Z|`` than
+    moving down. For small mispricings ``log(S/Z) ≈ (S-Z)/Z``, so this is
+    effectively the relative (fractional) mispricing — keeps direction and
+    monotonicity, removes the price-scale dependence.
+
+    Note: ``alpha_3`` units change with this convention. To match an
+    ``alpha_3_old`` that was calibrated against linear ``S-Z``, use
+    ``alpha_3_new ≈ alpha_3_old * Z_typical``.
 
     Parameters:
         alpha: Array of shape (4, 2) for [sell, buy]:
             alpha[0] = minimum intensity floor
             alpha[1] = baseline intensity
             alpha[2] = directional liquidity kernel coefficient
-            alpha[3] = mispricing (arbitrage) coefficient
+            alpha[3] = mispricing (arbitrage) coefficient (per unit log(S/Z))
         beta: Exponential decay rate for the kernel (default 0.5)
         K: Number of neighboring ticks in the kernel window (default 10)
         liquidity_scale: Normalization factor for weighted liquidity (default 1e6)
@@ -352,11 +365,16 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         # Stack directional liquidity: (N, 2)
         weighted_liq = np.stack([weighted_liq_sell, weighted_liq_buy], axis=1)
 
-        # Mispricing term
-        mispricing = (S - Z)[:, None]       # (N, 1)
+        # Log-mispricing term — symmetric across adjacent ticks because tick
+        # spacing is geometric in price (additive in log-price). For small
+        # mispricings log(S/Z) ≈ (S-Z)/Z, so this is the relative mispricing.
+        # Guard against non-positive Z (shouldn't happen in steady state but
+        # defensive against edge cases like uninitialised arrays).
+        Z_safe = np.maximum(Z, 1e-300)
+        mispricing = np.log(S / Z_safe)[:, None]   # (N, 1)
         sign_multiplier = np.array([-1.0, 1.0])
 
-        # Linear intensity: alpha_1 + alpha_2 * weighted_liq +/- alpha_3 * (S - Z)
+        # Linear intensity: alpha_1 + alpha_2 * weighted_liq +/- alpha_3 * log(S/Z)
         linear_part = (self.alpha[1]
                        + self.alpha[2] * weighted_liq
                        + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
