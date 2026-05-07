@@ -19,10 +19,9 @@ from SAiFE_gym.gym.index_names import (
 
 class RandomAgent(Agent):
     """
-    Randomly samples LP position bounds uniformly from [-tau, tau].
+    Randomly samples LP position center and half-width.
 
-    Uses order statistics: samples two points, sorts them to ensure lower < upper.
-    This guarantees valid actions where lower_offset < upper_offset.
+    Action format: [center_offset, half_width, hold_flag].
     """
     def __init__(self, env: gymnasium.Env, seed: int = None):
         self.tau = env.model_dynamics.tau
@@ -30,32 +29,18 @@ class RandomAgent(Agent):
         self.rng = np.random.default_rng(seed)
 
     def get_action(self, state: dict) -> np.ndarray:
-        # Sample two points uniformly from [-tau, tau] for each trajectory
-        # Shape: (num_trajectories, 2)
-        samples = self.rng.uniform(-self.tau, self.tau, size=(self.num_trajectories, 2))
-
-        # Sort along axis=1 so that [:, 0] < [:, 1]
-        actions = np.sort(samples, axis=1)
-
-        # Clip to valid action space bounds: lower ∈ [-tau, tau-1], upper ∈ [-tau+1, tau]
-        actions[:, 0] = np.clip(actions[:, 0], -self.tau, self.tau - 1)
-        actions[:, 1] = np.clip(actions[:, 1], -self.tau + 1, self.tau)
-
-        # Ensure minimum width of 1 tick (lower < upper)
-        too_close = actions[:, 1] <= actions[:, 0]
-        actions[too_close, 1] = actions[too_close, 0] + 1
-
-        # Append hold_flag = -1.0 (always rebalance)
-        hold_col = np.full((self.num_trajectories, 1), -1.0, dtype=np.float32)
-        return np.concatenate([actions.astype(np.float32), hold_col], axis=1)
+        center = self.rng.uniform(-self.tau, self.tau, size=self.num_trajectories)
+        half_width = self.rng.uniform(1.0, self.tau, size=self.num_trajectories)
+        hold_flag = np.full(self.num_trajectories, -1.0)
+        return np.column_stack([center, half_width, hold_flag]).astype(np.float32)
 
 
 class UniformAllocationAgent(Agent):
     """
     Allocates capital across the full active tick range around the current price.
 
-    Action format: [lower_offset, upper_offset, hold_flag] = [-tau, +tau, -1.0]
-    This covers 2*tau+1 ticks centered on the current price. Always rebalances.
+    Action format: [center_offset, half_width, hold_flag] = [0, tau, -1.0]
+    This covers 2*tau ticks centered on the current price. Always rebalances.
     """
     def __init__(self, env: AMMEnvironment):
         self.env = env
@@ -64,10 +49,10 @@ class UniformAllocationAgent(Agent):
 
     def get_action(self, state: dict) -> np.ndarray:
         n = self.env.num_trajectories
-        lower = np.full(n, -self.tau, dtype=np.float32)
-        upper = np.full(n, self.tau, dtype=np.float32)
+        center = np.zeros(n, dtype=np.float32)
+        half_width = np.full(n, self.tau, dtype=np.float32)
         hold_flag = np.full(n, -1.0, dtype=np.float32)
-        return np.column_stack([lower, upper, hold_flag])
+        return np.column_stack([center, half_width, hold_flag])
 
 class DeployOnceAgent(Agent):
     """
@@ -83,15 +68,13 @@ class DeployOnceAgent(Agent):
 
     def get_action(self, state: dict) -> np.ndarray:
         n = self.env.num_trajectories
-        lower = np.full(n, -self.tau, dtype=np.float32)
-        upper = np.full(n, self.tau, dtype=np.float32)
-        #lower = np.full(n, -35, dtype=np.float32)
-        #upper = np.full(n, 70, dtype=np.float32)
+        center = np.zeros(n, dtype=np.float32)
+        half_width = np.full(n, self.tau, dtype=np.float32)
         # hold_flag: -1 (rebalance) if never deployed, +1 (hold) otherwise
         ever_deployed = state[LP_EVER_DEPLOYED_KEY]
         hold_flag = np.where(ever_deployed, 1.0, -1.0).astype(np.float32)
 
-        return np.column_stack([lower, upper, hold_flag])
+        return np.column_stack([center, half_width, hold_flag])
 
 
 class CarteaPLAgent(Agent):
@@ -212,7 +195,7 @@ class CarteaPLAgent(Agent):
             sqrt_price: Current pool √price, shape (num_trajectories,)
 
         Returns:
-            actions: [lower_offset, upper_offset], shape (num_trajectories, 2)
+            actions: [center_offset, half_width], shape (num_trajectories, 2)
         """
         # Convert δ to actual price boundaries using Cartea formulas (equation 6)
         # (Zₜˡ)^(1/2) = √price * (1 - δₗ/2)
@@ -237,22 +220,15 @@ class CarteaPLAgent(Agent):
         lower_offset = tick_lower - current_tick
         upper_offset = tick_upper - current_tick
 
-        # Round to integers (tick offsets must be whole numbers)
-        lower_offset = np.round(lower_offset)
-        upper_offset = np.round(upper_offset)
+        # Convert to (center, half_width) parameterization
+        center = (lower_offset + upper_offset) / 2.0
+        half_width = (upper_offset - lower_offset) / 2.0
 
-        # Ensure offsets are within tau bounds and satisfy lower < upper
-        lower_offset = np.clip(lower_offset, -self.tau, self.tau - 1)
-        upper_offset = np.clip(upper_offset, -self.tau + 1, self.tau)
+        # Clip to action-space bounds
+        center = np.clip(center, -self.tau, self.tau)
+        half_width = np.clip(half_width, 1.0, self.tau)
 
-        # Ensure minimum width of 1 tick
-        invalid = lower_offset >= upper_offset
-        upper_offset = np.where(invalid, lower_offset + 1, upper_offset)
-        upper_offset = np.clip(upper_offset, -self.tau + 1, self.tau)
-
-        # Stack into action format
-        actions = np.column_stack([lower_offset, upper_offset])
-        return actions.astype(np.float32)
+        return np.column_stack([center, half_width]).astype(np.float32)
 
     def get_action(self, state: dict) -> np.ndarray:
         """
@@ -262,8 +238,9 @@ class CarteaPLAgent(Agent):
             state: Current environment state dictionary
 
         Returns:
-            action: [lower_offset, upper_offset] for each trajectory,
-                   shape (num_trajectories, 2)
+            action: [center_offset, half_width] for each trajectory,
+                   shape (num_trajectories, 2). update_state treats a
+                   2-element action as "always rebalance" (no hold_flag).
         """
         # Compute optimal boundary controls
         delta_lower, delta_upper = self.compute_optimal_deltas(state)

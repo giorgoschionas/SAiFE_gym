@@ -128,27 +128,29 @@ The state is a **dictionary** with the following keys:
 - See "Liquidity Array Indexing" section above for conversion formulas
 
 
-### Action Space - 3D Offset Format
+### Action Space - (center, half_width) Format
 
-**Action format**: `[lower_offset, upper_offset, hold_flag]` - tick offsets relative to current tick plus a hold/rebalance flag.
+**Action format**: `[center_offset, half_width, hold_flag]` — position center offset from current tick, half-width in ticks, plus a hold/rebalance flag.
 
-**Action space**: `Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,))`
+**Action space**: `Box(low=[-tau, 1.0, -1.0], high=[tau, tau, 1.0], shape=(3,))`
 
 | Index | Name | Bounds | Description |
 |-------|------|--------|-------------|
-| `[0]` | `lower_offset` | `[-tau, tau-1]` | Tick offset of position lower bound from current tick |
-| `[1]` | `upper_offset` | `[-tau+1, tau]` | Tick offset of position upper bound from current tick |
+| `[0]` | `center_offset` | `[-tau, tau]` | Tick offset of position **center** from current tick |
+| `[1]` | `half_width` | `[1, tau]` | Half-width in ticks (≥ 1 ⇒ at least 2-tick total width) |
 | `[2]` | `hold_flag` | `[-1.0, 1.0]` | `<= 0` → rebalance; `> 0` → hold current position |
 
-**Key Concept:**
-- **Tau (τ)**: Hyperparameter defining the maximum tick window on each side of current price
-- Constraint: `lower_offset < upper_offset` (enforced by `validate_action`)
-- `hold_flag` allows the agent to stay idle (no rebalance, no gas cost) for a step
+**Resolved range** (computed inline by `_rebalance`):
+```
+new_lower = round(current_tick + center_offset - half_width)
+new_upper = round(current_tick + center_offset + half_width)
+new_upper = max(new_upper, new_lower + 1)   # defensive 1-tick floor
+```
 
-**`validate_action` behaviour** (applied to `action[:, :2]` only):
-- Rounds offsets to integers (continuous actions from PPO snap to tick grid)
-- Clips to box bounds
-- Enforces `lower_offset < upper_offset`: if violated, sets `upper = lower + 1` then re-clips
+**Key Concept:**
+- **Tau (τ)**: Hyperparameter defining the maximum tick window on each side of current price (and the maximum half-width).
+- The two range parameters are **independent** (no cross-component constraint), so a randomly-initialized PPO policy with means near 0 produces a centered, medium-width position rather than collapsing to width 1.
+- `hold_flag` allows the agent to stay idle (no rebalance, no gas cost) for a step.
 
 
 ### State Update Mechanism

@@ -74,7 +74,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 3000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
-        gas_cost: float = 20.0815*2,      # Fixed cost per rebalance in token1 units
+        gas_cost: float = 5.0815*2,      # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
     ):
@@ -113,50 +113,21 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Return the action space for the agent.
 
-        Action format: [lower_offset, upper_offset, hold_flag]
-        - lower_offset: Tick offset from current tick (range: -tau to tau-1)
-        - upper_offset: Tick offset from current tick (range: -tau+1 to tau)
+        Action format: [center_offset, half_width, hold_flag]
+        - center_offset: Tick offset of position center from current tick (range: [-tau, tau])
+        - half_width: Half-width of position in ticks (range: [1, tau])
         - hold_flag: <= 0 triggers rebalance, > 0 holds current position
 
-        Constraint: lower_offset < upper_offset (enforced by validate_action)
-        The LP always deploys all available wealth into the specified range.
+        Resolved range: [current_tick + center_offset - half_width,
+                         current_tick + center_offset + half_width].
+        The LP always deploys all available wealth into the resolved range.
         """
         return gymnasium.spaces.Box(
-            low=np.array([-self.tau, -self.tau + 1, -1.0], dtype=np.float32),
-            high=np.array([self.tau - 1, self.tau, 1.0], dtype=np.float32),
+            low=np.array([-self.tau, 1.0, -1.0], dtype=np.float32),
+            high=np.array([self.tau, self.tau, 1.0], dtype=np.float32),
             shape=(3,),
             dtype=np.float32
         )
-
-    def validate_action(self, action: np.ndarray) -> np.ndarray:
-        """
-        Validate and clip action to ensure constraints.
-
-        Args:
-            action: (num_trajectories, 2) array of [lower_offset, upper_offset]
-
-        Returns:
-            Validated action with same shape, rounded to integers.
-        """
-        action = action.copy()
-
-        # Round to integers first — continuous actions from PPO must snap to tick grid
-        # before the width constraint is applied (avoids zero-width positions)
-        action[:, 0] = np.round(action[:, 0])
-        action[:, 1] = np.round(action[:, 1])
-
-        # Clip to box bounds
-        action[:, 0] = np.clip(action[:, 0], -self.tau, self.tau - 1)
-        action[:, 1] = np.clip(action[:, 1], -self.tau + 1, self.tau)
-
-        # Ensure lower < upper (add minimum width of 1 tick if violated)
-        invalid = action[:, 0] >= action[:, 1]
-        action[invalid, 1] = action[invalid, 0] + 1
-
-        # Re-clip upper after adjustment
-        action[:, 1] = np.clip(action[:, 1], -self.tau + 1, self.tau)
-
-        return action
 
     def _get_current_tick_liquidity(self):
         """
@@ -375,7 +346,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Called at the start of update_state() before xi computation and swaps.
 
         Args:
-            action: (num_trajectories, 2) validated action [lower_offset, upper_offset]
+            action: (num_trajectories, 2) raw action [center_offset, half_width].
+                Decoded inline to integer (lower, upper) tick offsets.
             rebalance_mask: Optional boolean mask (num_trajectories,). If provided,
                 only trajectories where mask is True are rebalanced; others are held.
         """
@@ -449,8 +421,17 @@ class UniswapV3ModelDynamics(ModelDynamics):
             self.state[POOL_LIQUIDITY_ARRAY_KEY] -= remove_mask * lp_liq[:, None]
 
         # --- Phase 2: Deploy new position ---
-        new_lower = current_tick + np.round(action[:, 0]).astype(np.int64)
-        new_upper = current_tick + np.round(action[:, 1]).astype(np.int64)
+        # Decode action (center_offset, half_width) → integer tick offsets.
+        # Round the resolved bounds (not center/hw independently) so that
+        # half-integer centers / half-widths still snap cleanly to ticks.
+        # Then enforce a minimum 1-tick width as a defensive floor.
+        action_center = action[:, 0].astype(np.float64)
+        action_hw = action[:, 1].astype(np.float64)
+        new_lower = np.round(action_center - action_hw).astype(np.int64)
+        new_upper = np.round(action_center + action_hw).astype(np.int64)
+        new_upper = np.maximum(new_upper, new_lower + 1)
+        new_lower = current_tick + new_lower
+        new_upper = current_tick + new_upper
 
         sqrt_p_new_lower = np.sqrt(self.exponential_value ** new_lower.astype(np.float64))
         sqrt_p_new_upper = np.sqrt(self.exponential_value ** new_upper.astype(np.float64))
@@ -515,9 +496,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
             raise ValueError("State not initialized. Call reset() first.")
 
         if action is not None:
-            tick_action = self.validate_action(action[:, :2])
             rebalance_mask = action[:, 2] <= 0 if action.shape[1] >= 3 else None
-            self._rebalance(tick_action, rebalance_mask)
+            self._rebalance(action[:, :2], rebalance_mask)
 
         sell_active = arrivals[:, 0].astype(bool)
         buy_active = arrivals[:, 1].astype(bool)

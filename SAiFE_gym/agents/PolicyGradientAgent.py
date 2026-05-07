@@ -69,7 +69,7 @@ class PolicyGradientAgent(Agent):
     ):
         self.env = env
         self.num_trajectories = env.num_trajectories
-        self.action_size = env.action_space.shape[0]  # 3 for [lower_offset, upper_offset, hold_flag]
+        self.action_size = env.action_space.shape[0]  # 3 for [center_offset, half_width, hold_flag]
 
         # Get input size by creating a dummy state and flattening it
         dummy_state, _ = env.reset()

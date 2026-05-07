@@ -101,7 +101,7 @@ class TestPreEntryFeeBug:
         pre_entry_fee0_total = model.state[FEES0_KEY][0].sum()
 
         # First rebalance: LP enters the range with pre-existing fees
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         model.update_state(arrivals_none, action)
 
         # Immediately rebalance again (triggers fee collection)
@@ -129,7 +129,7 @@ class TestPreEntryFeeBug:
             model.state[FEES0_KEY][0, idx] = 1000.0
 
         # Deploy LP
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         model.update_state(arrivals_none, action)
 
         # Generate POST-entry fees via trades
@@ -162,7 +162,7 @@ class TestPreEntryFeeBug:
             model.state[FEES0_KEY][0, idx] = 200.0
 
         # Deploy LP
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         model.update_state(arrivals_none, action)
 
         # Snapshot should be non-zero (captures LP's share of pre-existing fees)
@@ -182,7 +182,7 @@ class TestPreEntryFeeBug:
         model.state[FEES0_KEY][0, idx] = 100.0
 
         # Deploy LP (sets snapshot)
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         model.update_state(arrivals_none, action)
         assert model.state[LP_FEE_SNAPSHOT0_KEY][0] > 0
 
@@ -210,7 +210,7 @@ class TestPreEntryFeeBug:
         model.state[FEES0_KEY][0, idx] = pre_entry_amount
 
         # Deploy LP
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         model.update_state(arrivals_none, action)
 
         # Rebalance (triggers collection)
@@ -228,7 +228,7 @@ class TestPreEntryFeeBug:
 
         arrivals_none = np.array([[0, 0]], dtype=np.int64)
         arrivals_sell = np.array([[1, 0]], dtype=np.int64)
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
 
         # Deploy LP
         model.update_state(arrivals_none, action)
@@ -262,11 +262,12 @@ class TestPreEntryFeeBug:
             idx = (current_tick - model.tick_lower_global) + t
             model.state[FEES0_KEY][t, idx] = (t + 1) * 100.0
 
-        # Deploy with different ranges
+        # Deploy with different ranges, expressed as (center, half_width).
+        # (lower=-2, upper=2), (lower=-1, upper=3), (lower=-3, upper=1).
         action = np.array([
-            [-2, 2],
-            [-1, 3],
-            [-3, 1],
+            [0.0,  2.0],
+            [1.0,  2.0],
+            [-1.0, 2.0],
         ], dtype=np.float64)
         model.update_state(arrivals_none, action)
 
@@ -289,7 +290,7 @@ class TestPreEntryFeeBug:
 
         arrivals_none = np.array([[0, 0]], dtype=np.int64)
         arrivals_sell = np.array([[1, 0]], dtype=np.int64)
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
 
         # Deploy LP into clean range (no pre-existing fees)
         model.update_state(arrivals_none, action)

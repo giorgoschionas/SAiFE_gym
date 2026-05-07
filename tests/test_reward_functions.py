@@ -164,7 +164,7 @@ class TestPnLRebalancingCost:
         _initialize_model_state(model_no_cost, initial_wealth=initial_wealth)
         _initialize_model_state(model_with_cost, initial_wealth=initial_wealth)
 
-        action = np.array([[-2, 2]], dtype=np.float64)
+        action = np.array([[0, 2]], dtype=np.float64)  # (center, hw) → (lower=-2, upper=2)
         arrivals = np.array([[0, 0]], dtype=np.int64)
         _step_model(model_no_cost, arrivals, action)
         _step_model(model_with_cost, arrivals, action)
@@ -191,8 +191,9 @@ class TestPnLHoldStepRewardsFees:
         model = _create_test_model(gas_cost=0.0)
         _initialize_model_state(model, initial_wealth=initial_wealth)
 
-        rebalance_action = np.array([[-5, 5, -1.0]], dtype=np.float64)
-        hold_action = np.array([[-5, 5, 1.0]], dtype=np.float64)
+        # (center=0, hw=5) → (lower=-5, upper=5)
+        rebalance_action = np.array([[0, 5, -1.0]], dtype=np.float64)
+        hold_action = np.array([[0, 5, 1.0]], dtype=np.float64)
         arrivals_none = np.array([[0, 0]], dtype=np.int64)
         arrivals_both = np.array([[1, 1]], dtype=np.int64)
 

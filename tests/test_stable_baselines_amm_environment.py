@@ -374,8 +374,8 @@ class TestRelativeObsKeys:
         env = create_sb3_env(num_trajectories=1)
         env.reset()
 
-        # Step with action [lower_offset=-3, upper_offset=3]
-        actions = np.array([[-3.0, 3.0, -1.0]], dtype=np.float32)
+        # Step with action (center=0, half_width=3) → (lower=-3, upper=3).
+        actions = np.array([[0.0, 3.0, -1.0]], dtype=np.float32)
         env.step_async(actions)
         obs, _, _, _ = env.step_wait()
 

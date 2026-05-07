@@ -65,7 +65,7 @@ def create_policy_network(input_size: int, hidden_size: int = 256, action_size: 
     Args:
         input_size: Number of flattened state features
         hidden_size: Hidden layer size
-        action_size: Output action dimensions (3 for [lower_offset, upper_offset, hold_flag])
+        action_size: Output action dimensions (3 for [center_offset, half_width, hold_flag])
     """
     return nn.Sequential(
         nn.Linear(input_size, hidden_size),
@@ -115,12 +115,11 @@ class UnbiasedTwoStagePolicyNetwork(nn.Module):
         # Stage 1: Uniform width sampling [1, 2*tau]
         # Maps sigmoid[0] ∈ [0,1] → width ∈ [1, 2*tau]
         width = sigmoid_output[:, 0] * (2 * self.tau - 1) + 1
-
-        # Stage 2: CORRECTED center sampling to ensure position straddles current tick
-        # Ensure lower_offset < 0 < upper_offset (position straddles current price)
         half_width = width / 2
 
-        # Calculate bounds ensuring position crosses current tick (offset 0)
+        # Stage 2: center sampling constrained so the resolved range straddles
+        # the current tick (lower_offset < 0 < upper_offset) and stays within
+        # [-tau, tau].
         min_center = torch.maximum(
             torch.full_like(half_width, -self.tau) + half_width,  # Respect tau bound
             -half_width + 0.001                                   # Ensure lower < 0
@@ -139,14 +138,11 @@ class UnbiasedTwoStagePolicyNetwork(nn.Module):
         # Maps sigmoid[1] ∈ [0,1] → center ∈ [min_center, max_center]
         center = min_center + sigmoid_output[:, 1] * center_range
 
-        # Convert to offsets
-        lower_offset = center - half_width  # Will be < 0
-        upper_offset = center + half_width  # Will be > 0
-
         # Hold flag in [-1, 1]: env reads sign — > 0 = hold, <= 0 = rebalance.
         hold_flag = torch.tanh(raw_output[:, 2])
 
-        return torch.stack([lower_offset, upper_offset, hold_flag], dim=1)
+        # Action format: (center_offset, half_width, hold_flag).
+        return torch.stack([center, half_width, hold_flag], dim=1)
 
 # ============================================================================
 # Environment Setup

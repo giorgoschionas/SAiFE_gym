@@ -574,15 +574,16 @@ def create_policy_behavior_plot(
     norm_obs = vec_normalize.normalize_obs(raw_obs)
     vec_normalize.training = old_training
 
-    rl_actions, _ = model.predict(norm_obs, deterministic=True)  # (n_points, 2)
-    rl_lower, rl_upper = rl_actions[:, 0], rl_actions[:, 1]
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)  # (n_points, 2 or 3)
+    rl_center, rl_half_width = rl_actions[:, 0], rl_actions[:, 1]
 
     fig, (ax_lo, ax_hi) = plt.subplots(1, 2, figsize=(12, 5))
     fig.suptitle(title)
 
+    # Compare against the uniform-allocation baseline action (0, tau).
     for ax, rl_vals, uniform_val, ylabel, sub_title in [
-        (ax_lo, rl_lower, -tau, "lower_offset", "Lower bound action"),
-        (ax_hi, rl_upper,  tau, "upper_offset", "Upper bound action"),
+        (ax_lo, rl_center,     0,   "center_offset", "Center action"),
+        (ax_hi, rl_half_width, tau, "half_width",    "Half-width action"),
     ]:
         ax.plot(mispricings, rl_vals,
                 color=AGENT_COLORS["rl"], linewidth=1.5, label=AGENT_LABELS["rl"])
@@ -648,8 +649,9 @@ def create_time_behavior_plot(
     norm_obs = vec_normalize.normalize_obs(raw_obs)
     vec_normalize.training = old_training
 
-    rl_actions, _ = model.predict(norm_obs, deterministic=True)       # (n_total, 2)
-    rl_actions = rl_actions.reshape(n_levels, n_time_points, 2)       # (levels, time, 2)
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)       # (n_total, 2 or 3)
+    action_dim = rl_actions.shape[1]
+    rl_actions = rl_actions.reshape(n_levels, n_time_points, action_dim)
 
     level_colors = plt.cm.RdYlGn(np.linspace(0.15, 0.85, n_levels))
     fig, (ax_lo, ax_hi) = plt.subplots(1, 2, figsize=(13, 5))
@@ -661,8 +663,8 @@ def create_time_behavior_plot(
         ax_hi.plot(time_vals, rl_actions[i, :, 1], color=color, linewidth=1.5, label=label)
 
     for ax, uniform_val, ylabel, sub_title in [
-        (ax_lo, -tau, "lower_offset", "Lower bound action vs time"),
-        (ax_hi,  tau, "upper_offset", "Upper bound action vs time"),
+        (ax_lo, 0,   "center_offset", "Center action vs time"),
+        (ax_hi, tau, "half_width",    "Half-width action vs time"),
     ]:
         ax.axhline(uniform_val,
                    color=AGENT_COLORS["uniform"], linestyle="--", linewidth=1.2,

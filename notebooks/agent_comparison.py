@@ -140,19 +140,24 @@ def create_environment(num_trajectories: int, seed: int = None):
 # ============================================================================
 
 def build_discrete_action_table(tau: int, tick_stride: int) -> np.ndarray:
-    """Build lookup table mapping discrete index → [lower, upper, hold_flag].
+    """Build lookup table mapping discrete index → [center, half_width, hold_flag].
 
     Index 0 is the HOLD action (hold_flag=+1, offsets ignored).
-    Indices 1..N are REBALANCE actions at every valid (lower, upper) pair
-    sampled at the given tick stride.
+    Indices 1..N are REBALANCE actions at every valid (center, half_width) pair
+    sampled at the given tick stride. (center, half_width) enumerates the same
+    set of (lower, upper) ranges as before — just in the new parameterization.
     """
     # Action 0: HOLD (offsets are arbitrary — ignored when hold_flag > 0)
     actions = [[0.0, 1.0, 1.0]]
-    # Remaining actions: rebalance to each valid (lower, upper) pair
+    # Remaining actions: rebalance to each valid (lower, upper) pair, expressed
+    # as (center, half_width). Iterate over the same (lo, hi) pair grid as
+    # before so the discrete action count is identical.
     offsets = np.arange(-tau, tau + 1, tick_stride, dtype=np.float32)
     for i, lo in enumerate(offsets):
         for hi in offsets[i + 1:]:
-            actions.append([lo, hi, -1.0])
+            center = (lo + hi) / 2.0
+            half_width = (hi - lo) / 2.0
+            actions.append([center, half_width, -1.0])
     return np.array(actions, dtype=np.float32)
 
 
@@ -211,9 +216,9 @@ class SimpleStraddlePolicy(nn.Module):
 
     forward() returns raw unbounded means (3 dims).  Noise is added in this
     raw space by the agent, then transform() squashes samples into valid
-    [lower_offset, upper_offset, hold_flag] actions via center/half_width
-    parameterization.  log_prob_correction() provides the Jacobian term so
-    the policy gradient accounts for the squashing.
+    [center_offset, half_width, hold_flag] actions.  log_prob_correction()
+    provides the Jacobian term so the policy gradient accounts for the
+    squashing.
     """
     def __init__(self, input_size: int, hidden_size: int = 64, tau: int = TAU):
         super().__init__()
@@ -228,13 +233,11 @@ class SimpleStraddlePolicy(nn.Module):
         return self.net(x)  # raw unbounded means
 
     def transform(self, raw):
-        """Map raw unbounded samples → valid [lower, upper, hold_flag]."""
+        """Map raw unbounded samples → valid [center, half_width, hold_flag]."""
         center = self.tau * torch.tanh(raw[:, 0])
         half_width = 1.0 + (self.tau - 1.0) * torch.sigmoid(raw[:, 1])
-        lower = torch.clamp(center - half_width, min=-self.tau)
-        upper = torch.clamp(center + half_width, max=self.tau)
         hold_flag = torch.tanh(raw[:, 2])
-        return torch.stack([lower, upper, hold_flag], dim=1)
+        return torch.stack([center, half_width, hold_flag], dim=1)
 
     def log_prob_correction(self, raw):
         """Log |det Jacobian| of the squashing (up to additive constants)."""
@@ -332,8 +335,12 @@ def collect_single_trajectory(env, get_action_fn):
         data['midprice'].append(state[ASSET_PRICE_KEY][0])
 
         action = get_action_fn(state)
-        data['action_lower'].append(float(action[0, 0]))
-        data['action_upper'].append(float(action[0, 1]))
+        # Action is now (center_offset, half_width, hold_flag); derive
+        # lower/upper for diagnostic plotting.
+        center = float(action[0, 0])
+        half_width = float(action[0, 1])
+        data['action_lower'].append(center - half_width)
+        data['action_upper'].append(center + half_width)
         data['hold_flag'].append(float(action[0, 2]) if action.shape[1] >= 3 else -1.0)
 
         state, reward, terminated, _, _ = env.step(action)
