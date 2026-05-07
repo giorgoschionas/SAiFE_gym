@@ -153,13 +153,15 @@ The state is a **dictionary** with the following keys:
 
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
+The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). 
 
 **Core Principle**: Each trade = one tick of price movement.
-- The square root of the AMM price is stored in grid `AMM[i]`. Each trade moves the price by one entry in the grid. 
+- The square root of the AMM price is stored in grid `AMM[i] = sqrt(exponential_value^i)`. Each trade moves the price by one entry in the grid. 
+- If the current tick is `i` 
+  - A buy order moves the price from `AMM[i]` to `AMM[i+1]`
+  - A sell order moves the price from `AMM[i]` to `AMM[i-1]`
 - Arrivals are Bernoulli trials (boolean arrays): `P(arrival) = intensity * step_size`
 - When both sell and buy arrive simultaneously, execution order is randomized via coin flip
-- On crossing, sqrt_price snaps to the **geometric midpoint** of the new tick to prevent drift
 
 
 **Key Parameters**:
