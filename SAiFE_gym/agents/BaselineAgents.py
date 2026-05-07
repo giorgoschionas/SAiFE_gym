@@ -50,6 +50,56 @@ class RandomAgent(Agent):
         return np.concatenate([actions.astype(np.float32), hold_col], axis=1)
 
 
+class DoNothingAgent(Agent):
+    """
+    HODL-token0 baseline: holds the initial wealth as the risky asset
+    (token0) for the whole episode, so portfolio value marks to market with
+    the external price:
+
+        wealth_t  ≈  initial_wealth · (price_t / price_0)
+
+    Mechanism: on the first step, deploys a one-tick range at the top of
+    the action space (``[tau-1, tau]``) — i.e. just above current price —
+    then emits ``hold_flag = +1`` forever. As long as pool price stays
+    below the position's lower bound, the LP sits at 100% token0 with no
+    swaps and no fees, so ``get_position_value_vec`` evaluates to
+    ``W · external_price_t / external_price_0`` and the env's `PnL` reward
+    produces the HODL-token0 path automatically.
+
+    Caveat: if pool price ever crosses into the deployed range, the LP
+    starts earning fees and converting to token1, so MTM diverges from
+    pure HODL. This stays safe when expected price moves are smaller than
+    ``1.0001^(tau-1) - 1`` (≈ 0.5% with default TAU=50).
+
+    Set ``hold_cash=True`` for the alternative cash baseline: never deploy,
+    portfolio value stays at ``initial_wealth`` (token1 is the numeraire
+    so its value doesn't move), cumulative PnL ≡ 0.
+    """
+    def __init__(self, env: AMMEnvironment, hold_cash: bool = False):
+        self.env = env
+        self.hold_cash = hold_cash
+        tau = env.model_dynamics.tau
+        # Tightest "above current price" range available — minimises the
+        # chance of price crossing into the range during the episode.
+        self.lower_offset = 0#tau - 1
+        self.upper_offset = 1#tau
+
+    def get_action(self, state: dict) -> np.ndarray:
+        n = self.env.num_trajectories
+        if self.hold_cash:
+            # Never deploy → portfolio_value = initial_wealth (constant).
+            lower = np.zeros(n, dtype=np.float32)
+            upper = np.ones(n, dtype=np.float32)
+            hold_flag = np.ones(n, dtype=np.float32)
+        else:
+            # Deploy once far above current price → 100% token0 → MTM with price.
+            lower = np.full(n, self.lower_offset, dtype=np.float32)
+            upper = np.full(n, self.upper_offset, dtype=np.float32)
+            ever_deployed = state[LP_EVER_DEPLOYED_KEY]
+            hold_flag = np.where(ever_deployed, 1.0, -1.0).astype(np.float32)
+        return np.column_stack([lower, upper, hold_flag])
+
+
 class UniformAllocationAgent(Agent):
     """
     Allocates capital across the full active tick range around the current price.
@@ -130,21 +180,43 @@ class PeriodicRebalanceAgent(Agent):
 
 class ArrivalRebalanceAgent(Agent):
     """
-    Quotes ±width ticks around the current price; rebalances after every
-    `rebalance_every` liquidity-taking arrivals (sell or buy).
+    Quotes a fixed tick range around the current price; rebalances after
+    every ``rebalance_every`` liquidity-taking arrivals (sell or buy).
+
+    Range:
+      - Symmetric (default): ``width=W`` → ``[-W, +W]``.
+      - Asymmetric: pass ``lower_offset`` and ``upper_offset`` to quote
+        e.g. ``[-3, +7]``. When both are provided they take precedence
+        over ``width``.
 
     Reads the arrivals that produced the *current* state directly from
-    `env.model_dynamics.last_arrivals` (cached after each get_arrivals call),
-    so the count is exact — no fee-delta or |Δtick| approximation.
+    ``env.model_dynamics.last_arrivals`` (cached after each get_arrivals
+    call), so the count is exact — no fee-delta or |Δtick| approximation.
     """
-    def __init__(self, env: AMMEnvironment, rebalance_every: int = 10, width: int = 2):
+    def __init__(self, env: AMMEnvironment, rebalance_every: int = 10,
+                 width: int = 2,
+                 lower_offset: int = None, upper_offset: int = None):
         assert rebalance_every >= 1, f"rebalance_every must be >= 1, got {rebalance_every}"
-        assert 1 <= width <= env.model_dynamics.tau, (
-            f"width must be in [1, tau={env.model_dynamics.tau}], got {width}"
+        tau = env.model_dynamics.tau
+
+        if lower_offset is not None or upper_offset is not None:
+            assert lower_offset is not None and upper_offset is not None, (
+                "pass both lower_offset and upper_offset, or neither"
+            )
+            self.lower_offset = int(lower_offset)
+            self.upper_offset = int(upper_offset)
+        else:
+            assert 1 <= width <= tau, f"width must be in [1, tau={tau}], got {width}"
+            self.lower_offset = -int(width)
+            self.upper_offset = int(width)
+
+        assert -tau <= self.lower_offset < self.upper_offset <= tau, (
+            f"need -tau <= lower_offset < upper_offset <= tau, got "
+            f"[{self.lower_offset}, {self.upper_offset}] with tau={tau}"
         )
+
         self.env = env
         self.rebalance_every = rebalance_every
-        self.width = width
         self.arrival_count = np.zeros(env.num_trajectories, dtype=np.int64)
 
     def get_action(self, state: dict) -> np.ndarray:
@@ -160,8 +232,8 @@ class ArrivalRebalanceAgent(Agent):
             rebalance = self.arrival_count >= self.rebalance_every
             self.arrival_count = np.where(rebalance, 0, self.arrival_count)
 
-        lower = np.full(n, -self.width, dtype=np.float32)
-        upper = np.full(n,  self.width, dtype=np.float32)
+        lower = np.full(n, self.lower_offset, dtype=np.float32)
+        upper = np.full(n, self.upper_offset, dtype=np.float32)
         hold_flag = np.where(rebalance, -1.0, 1.0).astype(np.float32)
         return np.column_stack([lower, upper, hold_flag])
 
