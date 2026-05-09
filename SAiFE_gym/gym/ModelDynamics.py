@@ -74,7 +74,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         tau: int = 5,                      # Number of ticks around current tick
         num_ticks: int = 3000,             # Total ticks to track in liquidity array
         exponential_value: float = 1.0001, # Base for exponential tick spacing
-        gas_cost: float = 5.0815*2,      # Fixed cost per rebalance in token1 units
+        gas_cost: float = 3.0815*2,      # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
     ):
@@ -128,24 +128,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
             shape=(3,),
             dtype=np.float32
         )
-
-    def _get_current_tick_liquidity(self):
-        """
-
-        Returns:
-            (tick_array_idx, L_current):
-                tick_array_idx: Clipped array index, shape (num_trajectories,)
-                L_current: Liquidity at current tick, shape (num_trajectories,)
-        """
-        current_tick = self.state[POOL_CURRENT_TICK_KEY]
-        tick_array_idx = np.clip(
-            (current_tick - self.tick_lower_global).astype(np.int64),
-            0, self.num_ticks - 1,
-        )
-        L_current = self.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(self.num_trajectories), tick_array_idx
-        ]
-        return tick_array_idx, L_current
 
     def _process_sell(self, active: np.ndarray) -> None:
         """Process a sell arrival per trajectory (lattice model).
