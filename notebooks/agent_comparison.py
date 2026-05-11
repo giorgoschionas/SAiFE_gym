@@ -54,8 +54,8 @@ INITIAL_WEALTH = 1000
 TAU = 200
 LIQUIDITY_SCALE = 1e6
 
-INITIAL_PRICE = 200.0
-DRIFT = 1
+INITIAL_PRICE = 2000
+DRIFT = 0
 VOLATILITY = 0.001
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
@@ -111,7 +111,7 @@ def create_environment(num_trajectories: int, seed: int = None):
     step_size = TERMINAL_TIME / N_STEPS
     alpha = np.array([ALPHA0, ALPHA1, ALPHA2, ALPHA3])
 
-    midprice_model = BrownianMotionMidpriceModel(
+    midprice_model = GeometricBrownianMotionMidpriceModel(
         drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
         terminal_time=TERMINAL_TIME, step_size=step_size,
         num_trajectories=num_trajectories, seed=seed,
