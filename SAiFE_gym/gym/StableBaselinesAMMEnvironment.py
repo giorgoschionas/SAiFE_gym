@@ -11,6 +11,7 @@ from SAiFE_gym.gym.index_names import (
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
+    HAS_POSITION_KEY,
     LP_ALPHA_KEY,
     PORTFOLIO_VALUE_KEY,
     LP_COLLECTED_FEES0_KEY,
@@ -32,18 +33,19 @@ DEFAULT_OBS_KEYS = [
     MISPRICING_KEY,            # adverse selection signal
     BOUNDARY_PROXIMITY_KEY,    # min(lower_offset, upper_offset) — distance to nearest boundary
     POSITION_WIDTH_KEY,        # lower_offset + upper_offset — position concentration
+    HAS_POSITION_KEY,          # 1.0 if LP currently holds liquidity, else 0.0
     # LP_LOWER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
     # LP_UPPER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
-    # LP_LIQUIDITY_KEY,        # not directly actionable for hold/rebalance
+    # LP_LIQUIDITY_KEY,        # raw scale unhelpful; HAS_POSITION_KEY exposes the actionable bit
     # LP_COLLECTED_FEES0_KEY,  # cumulative, not actionable
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
     # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
     TIME_KEY,                  # remaining time to recoup gas cost
-]  # obs_dim = 4
+]  # obs_dim = 5
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 _DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
-                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY}
+                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY, HAS_POSITION_KEY}
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -125,6 +127,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
             LP_UPPER_OFFSET_KEY:     upper_offset,
             BOUNDARY_PROXIMITY_KEY:  np.minimum(lower_offset, upper_offset),
             POSITION_WIDTH_KEY:      lower_offset + upper_offset,
+            HAS_POSITION_KEY:        (state_dict[LP_LIQUIDITY_KEY] > 0).astype(np.float32),
         }
 
     def _flatten_obs(self, state_dict: dict) -> np.ndarray:

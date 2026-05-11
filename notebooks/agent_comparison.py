@@ -30,7 +30,7 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from SAiFE_gym.stochastic_processes.midprice_models import GeometricBrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel, LiquidityKernelArrivalModel
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent
 from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
@@ -47,23 +47,23 @@ from SAiFE_gym.gym.index_names import (
 
 SEED = 42
 TERMINAL_TIME = 1.0
-N_STEPS = 300
+N_STEPS = 400
 NUM_TRAJECTORIES_TRAIN = 300
 NUM_TRAJECTORIES_EVAL = 1000
 INITIAL_WEALTH = 1000
 TAU = 200
 LIQUIDITY_SCALE = 1e6
 
-INITIAL_PRICE = 200.0
-DRIFT = 1
-VOLATILITY = 3.0
+INITIAL_PRICE = 2000
+DRIFT = 0
+VOLATILITY = 0.001
 FEE_TIER = 0.003
 EXP_VALUE = 1.0001
 
-ALPHA0 = np.array([5.0, 5.0])
-ALPHA1 = np.array([20.0, 20.0])
-ALPHA2 = np.array([300.0, 300.0])
-ALPHA3 = np.array([10.0, 10.0])
+ALPHA0 = np.array([10, 10])
+ALPHA1 = np.array([50, 50])
+ALPHA2 = np.array([0, 0])
+ALPHA3 = np.array([60000, 60000])
 KERNEL_BETA = 0.1
 KERNEL_K = 50
 
@@ -111,7 +111,7 @@ def create_environment(num_trajectories: int, seed: int = None):
     step_size = TERMINAL_TIME / N_STEPS
     alpha = np.array([ALPHA0, ALPHA1, ALPHA2, ALPHA3])
 
-    midprice_model = BrownianMotionMidpriceModel(
+    midprice_model = GeometricBrownianMotionMidpriceModel(
         drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
         terminal_time=TERMINAL_TIME, step_size=step_size,
         num_trajectories=num_trajectories, seed=seed,
@@ -787,9 +787,14 @@ def main():
             "MlpPolicy", ppo_vec_normalize,
             learning_rate=3e-4, n_steps=N_STEPS, batch_size=64,
             n_epochs=10, gamma=1.0, gae_lambda=0.95, clip_range=0.2,
-            policy_kwargs=dict(log_std_init=0.5),
+            policy_kwargs=dict(log_std_init=-0.5),
             verbose=1, seed=SEED,
         )
+        # Bias hold_flag mean to -1.0 (firmly "rebalance") at init so the policy
+        # doesn't collapse onto the gradient-sink "always hold" attractor before
+        # discovering useful (center, half_width) gradients.
+        with torch.no_grad():
+            ppo_model.policy.action_net.bias[2] = -1.0
         ppo_reward_cb = EpisodeRewardCallback()
         t0 = time.time()
         ppo_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_reward_cb)

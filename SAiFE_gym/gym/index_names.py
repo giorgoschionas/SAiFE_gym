@@ -50,6 +50,7 @@ LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0
 
 BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset) — distance to nearest boundary
 POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
+HAS_POSITION_KEY = 'has_position'              # 1.0 if LP currently holds liquidity, else 0.0 (from lp_liquidity > 0)
 
 
 
