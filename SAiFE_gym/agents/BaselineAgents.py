@@ -195,7 +195,8 @@ class CarteaPLAgent(Agent):
             sqrt_price: Current pool √price, shape (num_trajectories,)
 
         Returns:
-            actions: [center_offset, half_width], shape (num_trajectories, 2)
+            actions: [center_offset, half_width, hold_flag], shape (num_trajectories, 3).
+                hold_flag is set to -1.0 to always rebalance.
         """
         # Convert δ to actual price boundaries using Cartea formulas (equation 6)
         # (Zₜˡ)^(1/2) = √price * (1 - δₗ/2)
@@ -204,31 +205,26 @@ class CarteaPLAgent(Agent):
         sqrt_price_lower = sqrt_price * (1 - delta_lower/2)
         sqrt_price_upper = sqrt_price / (1 - delta_upper/2)
 
-        # Convert √price to actual prices
-        price = sqrt_price ** 2
         price_lower = sqrt_price_lower ** 2
         price_upper = sqrt_price_upper ** 2
 
-        # Convert prices to ticks using SAiFE_gym's exponential spacing
         exponential_value = self.model_dynamics.exponential_value
         current_tick = state[POOL_CURRENT_TICK_KEY]
 
         tick_lower = np.log(price_lower) / np.log(exponential_value)
         tick_upper = np.log(price_upper) / np.log(exponential_value)
 
-        # Compute offsets relative to current tick
         lower_offset = tick_lower - current_tick
         upper_offset = tick_upper - current_tick
 
-        # Convert to (center, half_width) parameterization
         center = (lower_offset + upper_offset) / 2.0
         half_width = (upper_offset - lower_offset) / 2.0
 
-        # Clip to action-space bounds
         center = np.clip(center, -self.tau, self.tau)
         half_width = np.clip(half_width, 1.0, self.tau)
 
-        return np.column_stack([center, half_width]).astype(np.float32)
+        hold_flag = -np.ones_like(center)
+        return np.column_stack([center, half_width, hold_flag]).astype(np.float32)
 
     def get_action(self, state: dict) -> np.ndarray:
         """
@@ -238,9 +234,9 @@ class CarteaPLAgent(Agent):
             state: Current environment state dictionary
 
         Returns:
-            action: [center_offset, half_width] for each trajectory,
-                   shape (num_trajectories, 2). update_state treats a
-                   2-element action as "always rebalance" (no hold_flag).
+            action: [center_offset, half_width, hold_flag] for each trajectory,
+                   shape (num_trajectories, 3). hold_flag is fixed to -1.0
+                   (always rebalance).
         """
         # Compute optimal boundary controls
         delta_lower, delta_upper = self.compute_optimal_deltas(state)

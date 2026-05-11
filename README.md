@@ -6,7 +6,7 @@ A Gymnasium-compatible Reinforcement Learning environment for training liquidity
 
 SAiFE_gym simulates a Uniswap V3 pool with stochastic order flow and price dynamics. The environment is **fully vectorized** — it runs multiple parallel trajectories in a single step call, making it efficient for RL training with algorithms like PPO.
 
-The LP agent controls its position range at each step by choosing tick offsets `[lower_offset, upper_offset]` relative to the current price. The reward is mark-to-market PnL of the LP portfolio, with optional risk adjustments.
+The LP agent controls its position range at each step by choosing `[center_offset, half_width, hold_flag]`: the tick offset of the position center relative to the current tick, the half-width in ticks, and a flag to hold the existing position (skip rebalance). The reward is mark-to-market PnL of the LP portfolio, with optional risk adjustments.
 
 ## Features
 
@@ -108,7 +108,13 @@ SAiFE_gym/
 
 ### Action Space
 
-`Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))` — tick offsets relative to current price.
+`Box(low=[-tau, 1.0, -1.0], high=[tau, tau, 1.0], shape=(3,))`
+
+| Index | Name | Bounds | Description |
+|-------|------|--------|-------------|
+| `[0]` | `center_offset` | `[-tau, tau]` | Tick offset of position center from current tick |
+| `[1]` | `half_width`    | `[1, tau]`    | Half-width in ticks (≥ 1 ⇒ at least 2-tick total width) |
+| `[2]` | `hold_flag`     | `[-1, 1]`     | `<= 0` → rebalance; `> 0` → hold current position |
 
 ## Key Parameters
 
