@@ -65,12 +65,14 @@ class AMMEnvironment(gymnasium.Env):
         model_dynamics: ModelDynamics = None,
         initial_wealth: float = 1e6,
         num_trajectories: int = 1,
+        initial_pool_price: float = None,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
         self.initial_wealth = initial_wealth
         self.num_trajectories = num_trajectories
+        self.initial_pool_price = initial_pool_price
         self._step_size = self.terminal_time / self.n_steps
 
         # Create model dynamics if not provided
@@ -229,20 +231,23 @@ class AMMEnvironment(gymnasium.Env):
         Returns:
             dict: Initial state dictionary with all required keys
         """
-        # Get initial price from midprice model
+        # External midprice comes from the midprice model; pool price defaults to
+        # the same value but can be overridden via `initial_pool_price` to start
+        # the simulation with a deliberate mispricing between the AMM and the market.
         initial_price = self.model_dynamics.initial_price
-        initial_tick = price_to_tick(initial_price)
+        pool_price = self.initial_pool_price if self.initial_pool_price is not None else initial_price
+        pool_tick = price_to_tick(pool_price)
 
-        # Set tick_lower_global to center the array around initial price, then
+        # Center the lattice on the POOL tick (that's where the AMM lives) and
         # build the AMM lattice so POOL_SQRT_PRICE_KEY can be read straight off the grid.
         num_ticks = self.model_dynamics.num_ticks
-        self.model_dynamics.tick_lower_global = initial_tick - num_ticks // 2
+        self.model_dynamics.tick_lower_global = pool_tick - num_ticks // 2
         self.model_dynamics._build_sqrt_grid()
 
-        # Snap the pool sqrt_price to the lattice point AMM[initial_tick]. The external
+        # Snap the pool sqrt_price to the lattice point AMM[pool_tick]. The external
         # midprice (ASSET_PRICE_KEY) is unchanged — only the on-chain pool price lives
         # on the lattice.
-        initial_sqrt_price = self.model_dynamics.sqrt_grid[initial_tick - self.model_dynamics.tick_lower_global]
+        initial_sqrt_price = self.model_dynamics.sqrt_grid[pool_tick - self.model_dynamics.tick_lower_global]
 
         # Initial liquidity (uniform distribution across all ticks)
         # This can be customized based on specific requirements
@@ -254,7 +259,7 @@ class AMMEnvironment(gymnasium.Env):
                 self.num_trajectories, initial_sqrt_price, dtype=np.float64
             ),
             POOL_CURRENT_TICK_KEY: np.full(
-                self.num_trajectories, initial_tick, dtype=np.int64
+                self.num_trajectories, pool_tick, dtype=np.int64
             ),
             POOL_LIQUIDITY_ARRAY_KEY: np.full(
                 (self.num_trajectories, num_ticks), initial_liquidity, dtype=np.float64
@@ -271,10 +276,10 @@ class AMMEnvironment(gymnasium.Env):
             # LP state (no position initially)
             LP_LIQUIDITY_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
             LP_TICK_LOWER_KEY: np.full(
-                self.num_trajectories, initial_tick - self.model_dynamics.tau, dtype=np.int64
+                self.num_trajectories, pool_tick - self.model_dynamics.tau, dtype=np.int64
             ),
             LP_TICK_UPPER_KEY: np.full(
-                self.num_trajectories, initial_tick + self.model_dynamics.tau, dtype=np.int64
+                self.num_trajectories, pool_tick + self.model_dynamics.tau, dtype=np.int64
             ),
 
             # LP cumulative fee tracking (lifetime earnings, updated every step)
@@ -342,6 +347,7 @@ class AMMEnvironment(gymnasium.Env):
 
         # Reset state
         self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
+        self.model_dynamics.last_arrivals = np.zeros((self.num_trajectories, 2), dtype=bool)
 
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)

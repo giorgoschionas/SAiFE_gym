@@ -224,6 +224,7 @@ class PoissonLinearArrivalModel(ArrivalModel):
         self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
 
 
+'''
 class LiquidityKernelArrivalModel(ArrivalModel):
     """
     Arrival model where intensity depends on nearby directional liquidity
@@ -240,8 +241,189 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         weighted_liq_sell = sum_{d=1}^{K} exp(-beta*d) * L(current_tick - d)
         weighted_liq_buy  = sum_{d=1}^{K} exp(-beta*d) * L(current_tick + d)
 
-        intensity_sell = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_sell / liq_scale - alpha_3 * (S-Z))
-        intensity_buy  = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_buy  / liq_scale + alpha_3 * (S-Z))
+        intensity_sell = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_sell / liq_scale - alpha_3 * log(S/Z))
+        intensity_buy  = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_buy  / liq_scale + alpha_3 * log(S/Z))
+
+    Mispricing is measured in log-price (``log(S/Z)``) rather than linear
+    price (``S - Z``). Tick spacing is geometric in price (``Z_n = Z_0 * r^n``)
+    so log-price is the natural coordinate: ``|log(S/Z)|`` is symmetric across
+    adjacent ticks (always equal to ``log(r)``), eliminating the linear-price
+    asymmetry where moving up one tick gives a slightly larger ``|S-Z|`` than
+    moving down. For small mispricings ``log(S/Z) ≈ (S-Z)/Z``, so this is
+    effectively the relative (fractional) mispricing — keeps direction and
+    monotonicity, removes the price-scale dependence.
+
+    Note: ``alpha_3`` units change with this convention. To match an
+    ``alpha_3_old`` that was calibrated against linear ``S-Z``, use
+    ``alpha_3_new ≈ alpha_3_old * Z_typical``.
+
+    Parameters:
+        alpha: Array of shape (4, 2) for [sell, buy]:
+            alpha[0] = minimum intensity floor
+            alpha[1] = baseline intensity
+            alpha[2] = directional liquidity kernel coefficient
+            alpha[3] = mispricing (arbitrage) coefficient (per unit log(S/Z))
+        beta: Exponential decay rate for the kernel (default 0.5)
+        K: Number of neighboring ticks in the kernel window (default 10)
+        liquidity_scale: Normalization factor for weighted liquidity (default 1e6)
+    """
+
+    def __init__(
+        self,
+        alpha: np.ndarray = None,
+        beta: float = 0.5,
+        K: int = 10,
+        liquidity_scale: float = 1e6,
+        step_size: float = 0.001,
+        num_trajectories: int = 1,
+        seed: Optional[int] = None,
+    ):
+        if alpha is None:
+            alpha = np.array([
+                [10.0, 10.0],    # alpha_0: minimum intensity floor
+                [100.0, 100.0],  # alpha_1: baseline intensity
+                [50.0, 50.0],    # alpha_2: directional liquidity kernel coefficient
+                [5.0, 5.0],      # alpha_3: mispricing coefficient
+            ])
+
+        self.alpha = np.atleast_2d(alpha)
+        self.liquidity_scale = liquidity_scale
+        self.beta = beta
+        self.K = K
+
+        assert self.alpha.shape == (4, 2), f"alpha must have shape (4, 2), got {self.alpha.shape}"
+        assert np.all(self.alpha[0] >= 0), "alpha_0 (floor) must be non-negative"
+        assert beta > 0, f"beta must be positive, got {beta}"
+        assert K >= 1, f"K must be >= 1, got {K}"
+
+        # Pre-compute kernel weights: w[d] = exp(-beta * d) for d = 1, ..., K
+        self.kernel_weights = np.exp(-beta * np.arange(1, K + 1))  # shape (K,)
+
+        # INTERNAL STATE: Initialize intensity to baseline (alpha_1)
+        self.current_state = np.ones((num_trajectories, 2)) * self.alpha[1]
+
+        super().__init__(
+            min_value=np.array([[0, 0]]),
+            max_value=np.array([[1, 1]]) * self.alpha[1] * 10,
+            step_size=step_size,
+            terminal_time=0.0,
+            initial_state=self.alpha[1].reshape(1, 2),
+            num_trajectories=num_trajectories,
+            seed=seed,
+        )
+
+    def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray,
+               state: dict = None) -> np.ndarray:
+        """Update internal intensity state based on directional kernel-weighted liquidity.
+
+        Args:
+            arrivals: Not used (for interface compatibility)
+            fills: Not used (for interface compatibility)
+            actions: Not used (for interface compatibility)
+            state: Dict with keys:
+                - 'liquidity_array': Full liquidity per tick, shape (num_trajectories, num_ticks)
+                - 'current_tick': Absolute current tick, shape (num_trajectories,)
+                - 'tick_lower_global': Scalar int, converts array index to absolute tick
+                - 'amm_price': AMM price (sqrt_price**2), shape (num_trajectories,)
+                - 'midprice': External market midprice, shape (num_trajectories,)
+
+        Returns:
+            np.ndarray: Updated internal intensity state, shape (num_trajectories, 2)
+        """
+        if state is None:
+            return self.current_state
+
+        liquidity_array = state['liquidity_array']      # (N, num_ticks)
+        current_tick = state['current_tick']             # (N,)
+        tick_lower_global = state['tick_lower_global']   # scalar
+        Z = state['amm_price']                           # (N,)
+        S = state['midprice']                            # (N,)
+
+        num_ticks = liquidity_array.shape[1]
+        current_tick_idx = (current_tick - tick_lower_global).astype(np.int64)  # (N,)
+
+        # Build index arrays for K neighbors in each direction: (N, K)
+        offsets = np.arange(1, self.K + 1)  # (K,)
+        sell_indices = current_tick_idx[:, None] - offsets[None, :]  # (N, K) -- left
+        buy_indices = current_tick_idx[:, None] + offsets[None, :]   # (N, K) -- right
+
+        # Validity masks (in-bounds check)
+        sell_valid = (sell_indices >= 0) & (sell_indices < num_ticks)
+        buy_valid = (buy_indices >= 0) & (buy_indices < num_ticks)
+
+        # Clip for safe indexing, then zero out invalid positions
+        sell_indices_safe = np.clip(sell_indices, 0, num_ticks - 1)
+        buy_indices_safe = np.clip(buy_indices, 0, num_ticks - 1)
+
+        traj_idx = np.arange(self.num_trajectories)[:, None]  # (N, 1)
+        sell_liq = liquidity_array[traj_idx, sell_indices_safe] * sell_valid  # (N, K)
+        buy_liq = liquidity_array[traj_idx, buy_indices_safe] * buy_valid    # (N, K)
+
+        # Kernel-weighted sum: (N, K) @ (K,) -> (N,)
+        weighted_liq_sell = sell_liq @ self.kernel_weights / self.liquidity_scale
+        weighted_liq_buy = buy_liq @ self.kernel_weights / self.liquidity_scale
+
+        # Stack directional liquidity: (N, 2)
+        weighted_liq = np.stack([weighted_liq_sell, weighted_liq_buy], axis=1)
+
+        # Log-mispricing term — symmetric across adjacent ticks because tick
+        # spacing is geometric in price (additive in log-price). For small
+        # mispricings log(S/Z) ≈ (S-Z)/Z, so this is the relative mispricing.
+        # Guard against non-positive Z (shouldn't happen in steady state but
+        # defensive against edge cases like uninitialised arrays).
+        Z_safe = np.maximum(Z, 1e-300)
+        mispricing = np.log(S / Z_safe)[:, None]   # (N, 1)
+        sign_multiplier = np.array([-1.0, 1.0])
+
+        # Linear intensity: alpha_1 + alpha_2 * weighted_liq +/- alpha_3 * log(S/Z)
+        linear_part = (self.alpha[1]
+                       + self.alpha[2] * weighted_liq
+                       + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
+
+        # Apply floor
+        self.current_state = np.maximum(self.alpha[0], linear_part)  # (N, 2)
+
+        return self.current_state
+
+    def get_arrivals(self) -> np.ndarray:
+        """Generate boolean arrival indicators via Bernoulli trials (uses internal state).
+
+        Returns:
+            np.ndarray: Boolean arrival indicators of shape (num_trajectories, 2) for [SELL, BUY]
+        """
+        unif = self.rng.uniform(size=(self.num_trajectories, 2))
+        return unif < np.maximum(self.current_state * self.step_size, 0.0)
+
+    def reset(self):
+        """Reset internal state to baseline intensity (alpha_1)."""
+        self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
+'''
+
+class LiquidityKernelArrivalModel(ArrivalModel):
+    """
+    Arrival model where intensity depends on nearby directional liquidity
+    with exponential decay.
+
+    Buy intensity depends on liquidity in K ticks to the RIGHT (above current price).
+    Sell intensity depends on liquidity in K ticks to the LEFT (below current price).
+    Closer ticks are weighted more heavily via exponential kernel: w(d) = exp(-beta * d).
+
+    More nearby liquidity in the trade direction -> higher arrival intensity
+    (thick markets attract volume / less slippage).
+
+    Formula:
+        weighted_liq_sell = sum_{d=1}^{K} exp(-beta*d) * L(current_tick - d)
+        weighted_liq_buy  = sum_{d=1}^{K} exp(-beta*d) * L(current_tick + d)
+
+        intensity_sell = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_sell / liq_scale + alpha_3 * max(Z-S, 0))
+        intensity_buy  = max(alpha_0, alpha_1 + alpha_2 * weighted_liq_buy  / liq_scale + alpha_3 * max(S-Z, 0))
+
+    The alpha_3 (arbitrage) term is one-sided: arbs only fire on the side that
+    profits from the gap. When S > Z (AMM underpriced) only buy intensity is
+    boosted; when S < Z (AMM overpriced) only sell intensity is boosted. The
+    disadvantaged side keeps its noise baseline (alpha_1 + alpha_2 * L) — noise
+    traders don't disappear because of mispricing, they just aren't amplified
+    by it.
 
     Parameters:
         alpha: Array of shape (4, 2) for [sell, buy]:
@@ -352,14 +534,17 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         # Stack directional liquidity: (N, 2)
         weighted_liq = np.stack([weighted_liq_sell, weighted_liq_buy], axis=1)
 
-        # Mispricing term
-        mispricing = (S - Z)[:, None]       # (N, 1)
-        sign_multiplier = np.array([-1.0, 1.0])
+        # One-sided arbitrage term: arbs only fire on the side that profits
+        # from the gap. S > Z (AMM underpriced) → arb buys, no arb sells.
+        # S < Z (AMM overpriced) → arb sells, no arb buys. The disadvantaged
+        # side keeps its noise baseline rather than being suppressed below it.
+        gap = S - Z                                            # (N,)
+        arb_buy  = self.alpha[3, 1] * np.maximum(gap,  0.0)    # (N,)
+        arb_sell = self.alpha[3, 0] * np.maximum(-gap, 0.0)    # (N,)
+        arb = np.stack([arb_sell, arb_buy], axis=1)            # (N, 2)
 
-        # Linear intensity: alpha_1 + alpha_2 * weighted_liq +/- alpha_3 * (S - Z)
-        linear_part = (self.alpha[1]
-                       + self.alpha[2] * weighted_liq
-                       + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
+        # Linear intensity: alpha_1 + alpha_2 * weighted_liq + arb
+        linear_part = self.alpha[1] + self.alpha[2] * weighted_liq + arb  # (N, 2)
 
         # Apply floor
         self.current_state = np.maximum(self.alpha[0], linear_part)  # (N, 2)
@@ -383,6 +568,10 @@ class LiquidityKernelArrivalModel(ArrivalModel):
     def reset(self):
         """Reset internal state to baseline intensity (alpha_1)."""
         self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
+
+
+
+
 
 
 class PoissonNonLinearArrivalModel(ArrivalModel):

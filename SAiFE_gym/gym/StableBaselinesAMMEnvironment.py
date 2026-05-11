@@ -45,7 +45,8 @@ DEFAULT_OBS_KEYS = [
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 _DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
-                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY}
+                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY,
+                 POOL_SQRT_PRICE_KEY}  # exposed as squared pool price in obs
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -101,6 +102,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
         return {
             MISPRICING_KEY:          state_dict[ASSET_PRICE_KEY]
                                      - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
+            POOL_SQRT_PRICE_KEY:     state_dict[POOL_SQRT_PRICE_KEY] ** 2,
             LP_LOWER_OFFSET_KEY:     lower_offset,
             LP_UPPER_OFFSET_KEY:     upper_offset,
             BOUNDARY_PROXIMITY_KEY:  np.minimum(lower_offset, upper_offset),
