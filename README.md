@@ -6,7 +6,7 @@ A Gymnasium-compatible Reinforcement Learning environment for training liquidity
 
 SAiFE_gym simulates a Uniswap V3 pool with stochastic order flow and price dynamics. The environment is **fully vectorized** — it runs multiple parallel trajectories in a single step call, making it efficient for RL training with algorithms like PPO.
 
-The LP agent controls its position range at each step by choosing tick offsets `[lower_offset, upper_offset]` relative to the current price. The reward is mark-to-market PnL of the LP portfolio, with optional risk adjustments.
+The LP agent controls its position range at each step by choosing tick offsets `[lower_offset, upper_offset]` relative to the current price, together with a `hold_flag` that lets it skip the rebalance (and its gas cost) for the step. The reward is mark-to-market PnL of the LP portfolio, with optional risk adjustments.
 
 ## Features
 
@@ -108,7 +108,15 @@ SAiFE_gym/
 
 ### Action Space
 
-`Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))` — tick offsets relative to current price.
+`Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,), dtype=float32)`
+
+| Idx | Name | Range | Description |
+|-----|------|-------|-------------|
+| `[0]` | `lower_offset` | `[-tau, tau-1]` | Lower tick bound, offset from current pool tick |
+| `[1]` | `upper_offset` | `[-tau+1, tau]` | Upper tick bound, offset from current pool tick |
+| `[2]` | `hold_flag` | `[-1.0, 1.0]` | `<= 0` → rebalance into `[lower, upper]`; `> 0` → hold current position (no gas cost) |
+
+Constraint: `lower_offset < upper_offset` (enforced by `validate_action`, which also rounds the offsets to integer ticks).
 
 ## Key Parameters
 
