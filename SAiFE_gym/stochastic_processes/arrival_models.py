@@ -488,6 +488,3 @@ class PoissonNonLinearArrivalModel(ArrivalModel):
     def reset(self):
         """Reset internal state to baseline intensity (α₁)."""
         self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
-
-
-
