@@ -29,7 +29,7 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, OrnsteinUhlenbeckMidpriceModel
+from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, OrnsteinUhlenbeckMidpriceModel, GeometricBrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.agents.BaselineAgents import (
     UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent, ArrivalRebalanceAgent,
@@ -48,30 +48,30 @@ from SAiFE_gym.gym.index_names import (
 # Configuration
 # ============================================================================
 
-SEED = 123
+SEED = 6#2#123
 TERMINAL_TIME = 1.0
-N_STEPS = 200
+N_STEPS = 1000
 NUM_TRAJECTORIES_TRAIN = 200
-NUM_TRAJECTORIES_EVAL = 4000
+NUM_TRAJECTORIES_EVAL = 100
 INITIAL_WEALTH = 1000
-TAU = 5
+TAU = 20
 LIQUIDITY_SCALE = 1e5
 
-INITIAL_PRICE = 10
-INITIAL_POOL_PRICE = 10#99.98  # None → pool starts at INITIAL_PRICE; set a float to seed a mispricing
+INITIAL_PRICE = 100#0000
+INITIAL_POOL_PRICE = None#99.98  # None → pool starts at INITIAL_PRICE; set a float to seed a mispricing
 DRIFT = 0
-VOLATILITY = 0.01 #compare with 1. 
-FEE_TIER = 0.003#0065
+VOLATILITY = 0.009
+FEE_TIER = 0.003#5#0.003
 EXP_VALUE = 1.0001
 
-ALPHA0 = np.array([10.0, 10.0])
-ALPHA1 = np.array([5.0, 5.0])
-ALPHA2 = np.array([5.0, 5.0])
-ALPHA3 = np.array([1.3e5, 1.3e5])
+ALPHA0 = np.array([1.0, 1.0])
+ALPHA1 = np.array([15.0, 15.0])
+ALPHA2 = np.array([0.0, 0.0])
+ALPHA3 = np.array([20000, 20000])
 
 GAMMA_CARTEA = 0.000005
 
-ARRIVAL_REBALANCE_EVERY = 150000
+ARRIVAL_REBALANCE_EVERY = 15000000
 ARRIVAL_REBALANCE_WIDTH = 1
 # Asymmetric range for ArrivalRebalance (None → fall back to ±WIDTH).
 # Pass both to quote e.g. [-3, +7]; the agent will use these instead of WIDTH.
@@ -79,17 +79,17 @@ ARRIVAL_REBALANCE_LOWER = -1
 ARRIVAL_REBALANCE_UPPER = 0
 
 # DeployOnce quote bounds (None → defaults to symmetric [-TAU, +TAU])
-DEPLOYONCE_LOWER = -1#200#140
-DEPLOYONCE_UPPER = 1#200#155#TAU
+DEPLOYONCE_LOWER = -10#-5#200#140
+DEPLOYONCE_UPPER = 10#200#155#TAU
 
-REINFORCE_EPOCHS = 500
+REINFORCE_EPOCHS = 600#600
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.7
 
-SB3_TOTAL_TIMESTEPS = REINFORCE_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS
+
 
 DQN_TICK_STRIDE = 10  # Discretization stride for tick offsets
-NUM_SINGLE_SIMS = 20   # Number of single-trajectory simulations to plot
+NUM_SINGLE_SIMS = 10   # Number of single-trajectory simulations to plot
 MAX_TRADES_DEBUG = None  # int → cut each single-trajectory rollout off after this many arrivals; None = run full episode
 
 # PPO action wrapper:
@@ -100,6 +100,18 @@ MAX_TRADES_DEBUG = None  # int → cut each single-trajectory rollout off after 
 #                     thresholded auto-correction in validate_action. Gaussian
 #                     policy, biased toward narrow centred actions.
 PPO_ACTION_WRAPPER = 'multidiscrete'
+
+# Decision stride: RL agent emits an action every DECISION_STRIDE underlying env
+# steps; intermediate steps run with a forced HOLD. Stride=1 is a no-op (every
+# env step is a decision step — identical to the original behaviour). Must
+# divide N_STEPS evenly. Only applied to RL agents (REINFORCE/PPO/SAC/DQN);
+# baselines are unaffected.
+# DECISION_STRIDE = N_STEPS/#decisions per episode
+DECISION_STRIDE = 1000
+
+#600*200*1000/1000 = 120000 actions to learn 
+SB3_TOTAL_TIMESTEPS = REINFORCE_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS // DECISION_STRIDE
+
 
 # Observation features for SB3 agents (PPO/SAC/DQN). Uses raw asymmetric position
 # offsets instead of the default symmetric (boundary, width) encoding so the
@@ -150,31 +162,38 @@ def create_environment(num_trajectories: int, seed: int = None):
     step_size = TERMINAL_TIME / N_STEPS
     alpha = np.array([ALPHA0, ALPHA1, ALPHA2, ALPHA3])
 
-    midprice_model = BrownianMotionMidpriceModel(
-        drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
-        terminal_time=TERMINAL_TIME, step_size=step_size,
-        num_trajectories=num_trajectories, seed=seed,
-    )
-
-    #midprice_model = OrnsteinUhlenbeckMidpriceModel(                                                     
-    #    mean_reversion=10,           # κ — pull strength toward θ                                       
-    #    long_term_mean=INITIAL_PRICE, # θ — defaults to INITIAL_PRICE if omitted                                                                                               
-    #    volatility=VOLATILITY,
+    #midprice_model = BrownianMotionMidpriceModel(
+    #    drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
+    #    terminal_time=TERMINAL_TIME, step_size=step_size,
     #    num_trajectories=num_trajectories, seed=seed,
-    #    initial_price=INITIAL_PRICE,
-    #    terminal_time=TERMINAL_TIME, step_size=step_size
     #)
+
+    #midprice_model = GeometricBrownianMotionMidpriceModel(
+    #    drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
+    #    terminal_time=TERMINAL_TIME, step_size=step_size,
+    #    num_trajectories=num_trajectories, seed=seed,
+    #)
+
+
+    midprice_model = OrnsteinUhlenbeckMidpriceModel(                                                     
+        mean_reversion=0.4,           # κ — pull strength toward θ                                       
+        long_term_mean=INITIAL_PRICE, # θ — defaults to INITIAL_PRICE if omitted                                                                                               
+        volatility=VOLATILITY,
+        num_trajectories=num_trajectories, seed=seed,
+        initial_price=INITIAL_PRICE,
+        terminal_time=TERMINAL_TIME, step_size=step_size
+    )
 
     
     arrival_model = LiquidityKernelArrivalModel(
-        alpha=alpha, beta=0.8, K=10, liquidity_scale=LIQUIDITY_SCALE,
+        alpha=alpha, beta=0.1, K=20, liquidity_scale=LIQUIDITY_SCALE,
         step_size=step_size, num_trajectories=num_trajectories,
         seed=seed + 1 if seed else None,
     )
     model_dynamics = UniswapV3ModelDynamics(
         midprice_model=midprice_model, arrival_model=arrival_model,
         num_trajectories=num_trajectories, fee_tier=FEE_TIER, tau=TAU,
-        num_ticks=3000, exponential_value=EXP_VALUE,
+        num_ticks=5000, exponential_value=EXP_VALUE,
         seed=seed + 2 if seed else None,
     )
     reward_function = PnL()
@@ -232,6 +251,128 @@ class DiscreteActionVecEnv(VecEnv):
 
     def step_wait(self):
         return self._wrapped.step_wait()
+
+    def close(self):
+        self._wrapped.close()
+
+    def get_attr(self, attr_name, indices=None):
+        return self._wrapped.get_attr(attr_name, indices)
+
+    def set_attr(self, attr_name, value, indices=None):
+        self._wrapped.set_attr(attr_name, value, indices)
+
+    def env_method(self, method_name, *args, indices=None, **kwargs):
+        return self._wrapped.env_method(method_name, *args, indices=indices, **kwargs)
+
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return self._wrapped.env_is_wrapped(wrapper_class, indices)
+
+    def seed(self, seed=None):
+        return self._wrapped.seed(seed)
+
+    def get_images(self):
+        return self._wrapped.get_images()
+
+
+class DecisionStrideEnv:
+    """Decision-stride wrapper for ``AMMEnvironment`` (REINFORCE / eval path).
+
+    Each outer ``step`` runs ``stride`` underlying env steps. The agent's action
+    is applied on the first; the remaining ``stride-1`` steps run with a forced
+    HOLD = ``[0, 1, +1]`` (offsets are ignored by ``update_state`` when
+    ``hold_flag > 0``). Per-step rewards are summed into a single window reward.
+
+    ``stride=1`` is a transparent passthrough.
+    """
+
+    def __init__(self, env, stride: int = 1):
+        assert stride >= 1, f"stride must be >= 1, got {stride}"
+        assert env.n_steps % stride == 0, (
+            f"n_steps={env.n_steps} not divisible by stride={stride}"
+        )
+        self.env = env
+        self.stride = int(stride)
+        self._hold = np.tile(
+            np.array([0.0, 1.0, 1.0], dtype=np.float32),
+            (env.num_trajectories, 1),
+        )
+
+    def reset(self, **kwargs):
+        return self.env.reset(**kwargs)
+
+    def step(self, action):
+        if self.stride == 1:
+            return self.env.step(action)
+
+        reward_sum = np.zeros(self.env.num_trajectories, dtype=np.float64)
+        obs = None
+        terminated = np.zeros(self.env.num_trajectories, dtype=bool)
+        truncated = np.zeros(self.env.num_trajectories, dtype=bool)
+        info = {}
+        for k in range(self.stride):
+            act = action if k == 0 else self._hold
+            obs, reward, terminated, truncated, info = self.env.step(act)
+            reward_sum += reward
+            if np.any(terminated):
+                break
+        return obs, reward_sum, terminated, truncated, info
+
+    def __getattr__(self, name):
+        # Delegate any unknown attribute (model_dynamics, num_trajectories,
+        # terminal_time, n_steps, step_size, action_space, ...) to the inner env.
+        return getattr(self.env, name)
+
+
+class DecisionStrideVecEnv(VecEnv):
+    """Decision-stride wrapper for ``StableBaselinesAMMEnvironment``.
+
+    SB3 sees one outer step per agent decision; internally ``stride`` underlying
+    env steps run with the agent's action on the first and HOLD = ``[0, 1, +1]``
+    on the rest. Returns the obs at the end of the window, the summed window
+    reward, and forwards the inner ``dones`` / ``infos`` (auto-reset and
+    ``terminal_observation`` plumbing live in the inner env).
+
+    ``stride=1`` is a transparent passthrough.
+    """
+
+    def __init__(self, vec_env: VecEnv, stride: int = 1):
+        assert stride >= 1, f"stride must be >= 1, got {stride}"
+        n_steps = getattr(vec_env, 'n_steps', None)
+        if n_steps is not None:
+            assert n_steps % stride == 0, (
+                f"n_steps={n_steps} not divisible by stride={stride}"
+            )
+        self._wrapped = vec_env
+        self.stride = int(stride)
+        self._hold = np.tile(
+            np.array([0.0, 1.0, 1.0], dtype=np.float32),
+            (vec_env.num_envs, 1),
+        )
+        self._pending_action = None
+        super().__init__(vec_env.num_envs, vec_env.observation_space, vec_env.action_space)
+
+    def reset(self):
+        return self._wrapped.reset()
+
+    def step_async(self, actions):
+        self._pending_action = actions
+
+    def step_wait(self):
+        action = self._pending_action
+        if self.stride == 1:
+            self._wrapped.step_async(action)
+            return self._wrapped.step_wait()
+
+        reward_sum = np.zeros(self.num_envs, dtype=np.float32)
+        obs = dones = infos = None
+        for k in range(self.stride):
+            act = action if k == 0 else self._hold
+            self._wrapped.step_async(act)
+            obs, reward, dones, infos = self._wrapped.step_wait()
+            reward_sum += reward.astype(np.float32)
+            if np.all(dones):
+                break
+        return obs, reward_sum, dones, infos
 
     def close(self):
         self._wrapped.close()
@@ -472,14 +613,23 @@ def evaluate_on_trajectories(env, get_action_fn):
     return np.sum(np.array(rewards_list), axis=0)
 
 
-def collect_single_trajectory(env, get_action_fn, max_trades: int = None):
+def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
+                              decision_stride: int = 1):
     """Run one episode (num_trajectories=1) and return per-step data dict.
+
+    ``decision_stride`` controls how often the agent's action is sampled:
+    once every ``stride`` env steps. Intermediate steps run with a forced
+    HOLD = ``[0, 1, +1]``. Data is still recorded at every env step so plots
+    keep full per-step resolution. Stride=1 reproduces the original behaviour.
 
     If ``max_trades`` is set, the rollout cuts off as soon as that many
     arrivals (sell + buy) have been seen — useful for debugging strategy
     behaviour around a controlled number of swap events.
     """
     assert env.num_trajectories == 1
+    assert env.n_steps % decision_stride == 0, (
+        f"n_steps={env.n_steps} not divisible by decision_stride={decision_stride}"
+    )
     data = {k: [] for k in [
         'time', 'pool_price', 'midprice',
         'position_lower_price', 'position_upper_price',
@@ -492,13 +642,15 @@ def collect_single_trajectory(env, get_action_fn, max_trades: int = None):
     state, _ = env.reset()
     cum_pnl = 0.0
     trade_count = 0
+    hold_action = np.array([[0.0, 1.0, 1.0]], dtype=np.float32)
 
-    for _ in range(env.n_steps):
+    for step_idx in range(env.n_steps):
         data['time'].append(state[TIME_KEY][0])
         data['pool_price'].append(state[POOL_SQRT_PRICE_KEY][0] ** 2)
         data['midprice'].append(state[ASSET_PRICE_KEY][0])
 
-        action = get_action_fn(state)
+        is_decision = (step_idx % decision_stride) == 0
+        action = get_action_fn(state) if is_decision else hold_action
         data['action_lower'].append(float(action[0, 0]))
         data['action_upper'].append(float(action[0, 1]))
         data['hold_flag'].append(float(action[0, 2]) if action.shape[1] >= 3 else -1.0)
@@ -896,7 +1048,9 @@ def main():
         print("Phase 1a: Training REINFORCE agent")
         print("=" * 60)
 
-        reinforce_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
+        reinforce_env = DecisionStrideEnv(
+            create_environment(NUM_TRAJECTORIES_TRAIN, SEED), stride=DECISION_STRIDE,
+        )
 
         # Determine input size via dummy forward pass
         dummy_policy = nn.Linear(7, 2)
@@ -925,7 +1079,10 @@ def main():
         print("=" * 60)
 
         ppo_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
-        sb_train_env = StableBaselinesAMMEnvironment(ppo_env, obs_keys=SB3_OBS_KEYS)
+        sb_train_env = DecisionStrideVecEnv(
+            StableBaselinesAMMEnvironment(ppo_env, obs_keys=SB3_OBS_KEYS),
+            stride=DECISION_STRIDE,
+        )
         ppo_vec_normalize = VecNormalize(
             VecMonitor(sb_train_env),
             norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0,
@@ -946,8 +1103,8 @@ def main():
 
         ppo_model = PPO(
             "MlpPolicy", ppo_action_wrapper,
-            learning_rate=3e-4, n_steps=N_STEPS, batch_size=64,
-            n_epochs=10, gamma=1.0, gae_lambda=0.95, clip_range=0.2, ent_coef=0.03,
+            learning_rate=3e-4, n_steps=N_STEPS // DECISION_STRIDE, batch_size=64,
+            n_epochs=5, gamma=0.99, gae_lambda=0.95, clip_range=0.2, ent_coef=0.05,
             policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
             verbose=1, seed=SEED,
         )
@@ -962,7 +1119,10 @@ def main():
         print("=" * 60)
 
         sac_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
-        sb_sac_env = StableBaselinesAMMEnvironment(sac_env, obs_keys=SB3_OBS_KEYS)
+        sb_sac_env = DecisionStrideVecEnv(
+            StableBaselinesAMMEnvironment(sac_env, obs_keys=SB3_OBS_KEYS),
+            stride=DECISION_STRIDE,
+        )
         sac_vec_normalize = VecNormalize(
             VecMonitor(sb_sac_env),
             norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0,
@@ -987,7 +1147,10 @@ def main():
         print("=" * 60)
 
         dqn_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
-        sb_dqn_env = StableBaselinesAMMEnvironment(dqn_env, obs_keys=SB3_OBS_KEYS)
+        sb_dqn_env = DecisionStrideVecEnv(
+            StableBaselinesAMMEnvironment(dqn_env, obs_keys=SB3_OBS_KEYS),
+            stride=DECISION_STRIDE,
+        )
         dqn_wrapper = DiscreteActionVecEnv(sb_dqn_env, TAU, DQN_TICK_STRIDE)
         dqn_action_table = dqn_wrapper.action_table
 
@@ -1058,7 +1221,9 @@ def main():
         )
 
     if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
-        env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
+        env = DecisionStrideEnv(
+            create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED), stride=DECISION_STRIDE,
+        )
         pnl_results['REINFORCE'] = evaluate_on_trajectories(
             env, lambda s: reinforce_agent.get_action(s, deterministic=True),
         )
@@ -1068,8 +1233,9 @@ def main():
         sb_eval = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
         ppo_eval = SbAgent(ppo_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         ppo_vec_normalize.training = False
+        eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
         pnl_results['PPO'] = evaluate_on_trajectories(
-            env, lambda s: ppo_action_wrapper.unscale(
+            eval_env, lambda s: ppo_action_wrapper.unscale(
                 ppo_eval.get_action(ppo_vec_normalize.normalize_obs(sb_eval._flatten_obs(s)))
             ),
         )
@@ -1079,8 +1245,9 @@ def main():
         sb_eval_sac = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
         sac_eval = SbAgent(sac_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         sac_vec_normalize.training = False
+        eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
         pnl_results['SAC'] = evaluate_on_trajectories(
-            env, lambda s: sac_eval.get_action(sac_vec_normalize.normalize_obs(sb_eval_sac._flatten_obs(s))),
+            eval_env, lambda s: sac_eval.get_action(sac_vec_normalize.normalize_obs(sb_eval_sac._flatten_obs(s))),
         )
 
     if ENABLE_AGENTS.get('DQN') and dqn_model is not None:
@@ -1091,7 +1258,8 @@ def main():
             flat = _sb._flatten_obs(state)
             disc, _ = _m.predict(flat, deterministic=True)
             return _t[disc]
-        pnl_results['DQN'] = evaluate_on_trajectories(env, _dqn_eval_action)
+        eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
+        pnl_results['DQN'] = evaluate_on_trajectories(eval_env, _dqn_eval_action)
 
     # Print summary table
     active = [n for n in AGENT_NAMES if n in pnl_results]
@@ -1156,21 +1324,21 @@ def main():
         if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
             env = create_environment(1, sim_seed)
             single_data.setdefault('REINFORCE', []).append(
-                collect_single_trajectory(env, lambda s: reinforce_agent.get_action(s, deterministic=True), max_trades=MAX_TRADES_DEBUG))
+                collect_single_trajectory(env, lambda s: reinforce_agent.get_action(s, deterministic=True), max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
 
         if ENABLE_AGENTS.get('PPO') and ppo_model is not None:
             env = create_environment(1, sim_seed)
             sb_single = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
             ppo_single = SbAgent(ppo_model, num_trajectories=1)
             single_data.setdefault('PPO', []).append(
-                collect_single_trajectory(env, lambda s, _a=ppo_single, _sb=sb_single, _w=ppo_action_wrapper: _w.unscale(_a.get_action(ppo_vec_normalize.normalize_obs(_sb._flatten_obs(s)))), max_trades=MAX_TRADES_DEBUG))
+                collect_single_trajectory(env, lambda s, _a=ppo_single, _sb=sb_single, _w=ppo_action_wrapper: _w.unscale(_a.get_action(ppo_vec_normalize.normalize_obs(_sb._flatten_obs(s)))), max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
 
         if ENABLE_AGENTS.get('SAC') and sac_model is not None:
             env = create_environment(1, sim_seed)
             sb_single_sac = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
             sac_single = SbAgent(sac_model, num_trajectories=1)
             single_data.setdefault('SAC', []).append(
-                collect_single_trajectory(env, lambda s, _a=sac_single, _sb=sb_single_sac: _a.get_action(sac_vec_normalize.normalize_obs(_sb._flatten_obs(s))), max_trades=MAX_TRADES_DEBUG))
+                collect_single_trajectory(env, lambda s, _a=sac_single, _sb=sb_single_sac: _a.get_action(sac_vec_normalize.normalize_obs(_sb._flatten_obs(s))), max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
 
         if ENABLE_AGENTS.get('DQN') and dqn_model is not None:
             env = create_environment(1, sim_seed)
@@ -1181,7 +1349,7 @@ def main():
                 disc, _ = _m.predict(flat, deterministic=True)
                 return _t[disc]
             single_data.setdefault('DQN', []).append(
-                collect_single_trajectory(env, _dqn_single_action, max_trades=MAX_TRADES_DEBUG))
+                collect_single_trajectory(env, _dqn_single_action, max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
 
     for name in AGENT_NAMES:
         if name in single_data:
