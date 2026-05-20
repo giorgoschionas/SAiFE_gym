@@ -14,8 +14,8 @@ Toggle agents on/off via the ENABLE_AGENTS dict.
 import sys
 import os
 import time
+import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
-job_id = os.environ.get("SLURM_JOB_ID", "local")
 import gymnasium
 import numpy as np
 import matplotlib.pyplot as plt
@@ -45,73 +45,26 @@ from SAiFE_gym.gym.index_names import (
 )
 
 # ============================================================================
-# Configuration
+# Configuration — loaded from experiment_config.py via --config-idx
 # ============================================================================
 
-SEED = 6#2#123
-TERMINAL_TIME = 1.0
-N_STEPS = 1000
-NUM_TRAJECTORIES_TRAIN = 200
-NUM_TRAJECTORIES_EVAL = 100
-INITIAL_WEALTH = 1000
-TAU = 20
-LIQUIDITY_SCALE = 1e5
+from experiment_config import (
+    get_combination, count_combinations, SWEEP_VARS,
+)
 
-INITIAL_PRICE = 100#0000
-INITIAL_POOL_PRICE = None#99.98  # None → pool starts at INITIAL_PRICE; set a float to seed a mispricing
-DRIFT = 0
-VOLATILITY = 0.009
-FEE_TIER = 0.003#5#0.003
-EXP_VALUE = 1.0001
+_parser = argparse.ArgumentParser()
+_parser.add_argument(
+    '--config-idx', type=int, default=0,
+    help='Index of the combination from experiment_config.py to run.',
+)
+_args, _ = _parser.parse_known_args()
+CONFIG_IDX = _args.config_idx
+_combo = get_combination(CONFIG_IDX)
+# Inject every sweep variable into module globals (SEED, TAU, ENABLE_AGENTS, …).
+globals().update(_combo)
 
-ALPHA0 = np.array([1.0, 1.0])
-ALPHA1 = np.array([15.0, 15.0])
-ALPHA2 = np.array([0.0, 0.0])
-ALPHA3 = np.array([20000, 20000])
-
-GAMMA_CARTEA = 0.000005
-
-ARRIVAL_REBALANCE_EVERY = 15000000
-ARRIVAL_REBALANCE_WIDTH = 1
-# Asymmetric range for ArrivalRebalance (None → fall back to ±WIDTH).
-# Pass both to quote e.g. [-3, +7]; the agent will use these instead of WIDTH.
-ARRIVAL_REBALANCE_LOWER = -1
-ARRIVAL_REBALANCE_UPPER = 0
-
-# DeployOnce quote bounds (None → defaults to symmetric [-TAU, +TAU])
-DEPLOYONCE_LOWER = -10#-5#200#140
-DEPLOYONCE_UPPER = 10#200#155#TAU
-
-REINFORCE_EPOCHS = 600#600
-REINFORCE_LR = 2e-4
-ACTION_STD_INIT = 1.7
-
-
-
-DQN_TICK_STRIDE = 10  # Discretization stride for tick offsets
-NUM_SINGLE_SIMS = 10   # Number of single-trajectory simulations to plot
-MAX_TRADES_DEBUG = None  # int → cut each single-trajectory rollout off after this many arrivals; None = run full episode
-
-# PPO action wrapper:
-#   'multidiscrete' — MultiDiscrete([2·TAU+1, TAU, 2]) for (center, half_width,
-#                     hold). True Categorical heads, valid by construction,
-#                     uniform initial exploration. Recommended.
-#   'rescaled'      — Box([-1, 1]^3) for raw (lower, upper, hold) with sign-
-#                     thresholded auto-correction in validate_action. Gaussian
-#                     policy, biased toward narrow centred actions.
-PPO_ACTION_WRAPPER = 'multidiscrete'
-
-# Decision stride: RL agent emits an action every DECISION_STRIDE underlying env
-# steps; intermediate steps run with a forced HOLD. Stride=1 is a no-op (every
-# env step is a decision step — identical to the original behaviour). Must
-# divide N_STEPS evenly. Only applied to RL agents (REINFORCE/PPO/SAC/DQN);
-# baselines are unaffected.
-# DECISION_STRIDE = N_STEPS/#decisions per episode
-DECISION_STRIDE = 1000
-
-#600*200*1000/1000 = 120000 actions to learn 
+# Derived from the loaded combo.
 SB3_TOTAL_TIMESTEPS = REINFORCE_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS // DECISION_STRIDE
-
 
 # Observation features for SB3 agents (PPO/SAC/DQN). Uses raw asymmetric position
 # offsets instead of the default symmetric (boundary, width) encoding so the
@@ -126,20 +79,14 @@ SB3_OBS_KEYS = [
     GAS_COST_KEY,
 ]
 
-FIGURES_DIR = os.path.join(os.path.dirname(__file__), 'figures')
-
-# ── Agent toggles (set to False to skip training / evaluation) ──────
-ENABLE_AGENTS = {
-    'DoNothing':  True,
-    'Uniform':    False,
-    'DeployOnce': True,
-    'ArrivalRebalance': True,
-    'CarteaDrissiMonga': False,
-    'REINFORCE':  False,
-    'PPO':        True,
-    'SAC':        False,
-    'DQN':        False,
-}
+# Output directory: one folder per (array) job under notebooks/results/.
+_array_job = os.environ.get("SLURM_ARRAY_JOB_ID")
+_array_task = os.environ.get("SLURM_ARRAY_TASK_ID")
+if _array_job and _array_task:
+    job_id = f"{_array_job}_{_array_task}"
+else:
+    job_id = os.environ.get("SLURM_JOB_ID", "local")
+FIGURES_DIR = os.path.join(os.path.dirname(__file__), 'results', job_id)
 
 AGENT_NAMES = [name for name, on in ENABLE_AGENTS.items() if on]
 AGENT_COLORS = {
@@ -153,6 +100,24 @@ AGENT_COLORS = {
     'SAC':        '#17becf',
     'DQN':        '#8c564b',
 }
+
+
+def save_config_to_file(path: str):
+    """Dump the active combination as a human-readable text file."""
+    def fmt(v):
+        if isinstance(v, np.ndarray):
+            return f"np.array({v.tolist()!r})"
+        return repr(v)
+    total = count_combinations()
+    with open(path, 'w') as f:
+        f.write(f"# Experiment config (config_idx={CONFIG_IDX} of {total} combination(s))\n")
+        f.write(f"# Job ID: {job_id}\n\n")
+        f.write("# ── Sweep variables ──\n")
+        for name in SWEEP_VARS:
+            f.write(f"{name} = {fmt(_combo[name])}\n")
+        f.write("\n# ── Derived ──\n")
+        f.write(f"SB3_TOTAL_TIMESTEPS = {SB3_TOTAL_TIMESTEPS}\n")
+        f.write(f"SB3_OBS_KEYS = {list(SB3_OBS_KEYS)!r}\n")
 
 # ============================================================================
 # Environment Factory
@@ -701,7 +666,7 @@ def plot_pnl_distribution(pnl_results):
     #ax1.set_title('PnL Distribution')
     ax1.grid(True, alpha=0.3)
     plt.tight_layout()
-    path1 = os.path.join(FIGURES_DIR, f'pnl_boxplot_{job_id}.png')
+    path1 = os.path.join(FIGURES_DIR, 'pnl_boxplot.png')
     fig1.savefig(path1, dpi=150, bbox_inches='tight')
     plt.close(fig1)
     print(f"  Saved: {path1}")
@@ -729,7 +694,7 @@ def plot_pnl_distribution(pnl_results):
     ax2.legend(fontsize=16, loc='upper left')
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
-    path2 = os.path.join(FIGURES_DIR, f'pnl_histogram_{job_id}.png')
+    path2 = os.path.join(FIGURES_DIR, 'pnl_histogram.png')
     fig2.savefig(path2, dpi=150, bbox_inches='tight')
     plt.close(fig2)
     print(f"  Saved: {path2}")
@@ -797,7 +762,7 @@ def plot_price_evolution(single_data):
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, f'price_evolution_{job_id}.png')
+    path = os.path.join(FIGURES_DIR, 'price_evolution.png')
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -844,7 +809,7 @@ def plot_price_evolution(single_data):
         ax_rl.legend(fontsize=16, loc='lower right')
         ax_rl.grid(True, alpha=0.3)
         plt.tight_layout()
-        path_rl = os.path.join(FIGURES_DIR, f'price_evolution_{name.lower()}_{job_id}.png')
+        path_rl = os.path.join(FIGURES_DIR, f'price_evolution_{name.lower()}.png')
         fig_rl.savefig(path_rl, dpi=200, bbox_inches='tight')
         plt.close(fig_rl)
         print(f"  Saved: {path_rl}")
@@ -897,7 +862,7 @@ def plot_price_evolution(single_data):
                 ax.grid(True, alpha=0.3)
 
             plt.tight_layout()
-            path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}_{job_id}.png')
+            path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}.png')
             fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
             plt.close(fig_i)
             print(f"  Saved: {path_i}")
@@ -931,7 +896,7 @@ def plot_pnl_evolution(single_data):
     ax.legend(fontsize=16, loc='upper left')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, f'pnl_evolution_{job_id}.png')
+    path = os.path.join(FIGURES_DIR, 'pnl_evolution.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -965,7 +930,7 @@ def plot_training_rewards(rl_rewards: dict):
     ax.legend(fontsize=16, loc='lower right')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, f'training_rewards_{job_id}.png')
+    path = os.path.join(FIGURES_DIR, 'training_rewards.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -1011,7 +976,7 @@ def plot_position_offsets(single_data):
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, f'position_offsets_{job_id}.png')
+    path = os.path.join(FIGURES_DIR, 'position_offsets.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     print(f"  Saved: {path}")
@@ -1024,6 +989,10 @@ def main():
     torch.manual_seed(SEED)
     np.random.seed(SEED)
     os.makedirs(FIGURES_DIR, exist_ok=True)
+    _config_path = os.path.join(FIGURES_DIR, 'config.txt')
+    save_config_to_file(_config_path)
+    print(f"Experiment {CONFIG_IDX} → {FIGURES_DIR}")
+    print(f"  Config written to: {_config_path}")
 
     # Containers for trained RL models / agents
     reinforce_agent = None
@@ -1103,9 +1072,13 @@ def main():
 
         ppo_model = PPO(
             "MlpPolicy", ppo_action_wrapper,
-            learning_rate=3e-4, n_steps=N_STEPS // DECISION_STRIDE, batch_size=64,
-            n_epochs=5, gamma=0.99, gae_lambda=0.95, clip_range=0.2, ent_coef=0.05,
-            policy_kwargs=dict(net_arch=dict(pi=[256, 256], vf=[256, 256])),
+            learning_rate=PPO_LEARNING_RATE,
+            n_steps=N_STEPS // DECISION_STRIDE,
+            batch_size=PPO_BATCH_SIZE,
+            n_epochs=PPO_N_EPOCHS,
+            gamma=PPO_GAMMA, gae_lambda=PPO_GAE_LAMBDA,
+            clip_range=PPO_CLIP_RANGE, ent_coef=PPO_ENT_COEF,
+            policy_kwargs=dict(net_arch=dict(pi=PPO_NET_ARCH, vf=PPO_NET_ARCH)),
             verbose=1, seed=SEED,
         )
         ppo_reward_cb = EpisodeRewardCallback()
