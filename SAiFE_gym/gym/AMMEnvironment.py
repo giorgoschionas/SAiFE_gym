@@ -13,7 +13,8 @@ from SAiFE_gym.gym.index_names import (
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
     LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
-    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
+    PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY,
+    LP_TOKEN0_AMOUNT_KEY, LP_TOKEN1_AMOUNT_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick, get_position_value_vec
 
@@ -46,13 +47,21 @@ def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
     )
     state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
 
-    # Absolute token0 holdings (LP risky-asset inventory) — three-region V3 formula.
-    x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
-    x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+    # Absolute token0/token1 holdings — three-region V3 formula.
+    # token0 (risky asset): max below range, zero above; in-range = L·(1/√P − 1/√P_U).
+    # token1 (numéraire):   zero below range, max above; in-range = L·(√P − √P_L).
     above = sqrt_p >= sqrt_p_upper
     below = sqrt_p <= sqrt_p_lower
+
+    x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+    x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
     x = np.where(above, 0.0, np.where(below, x_below, x_in))
     state[LP_TOKEN0_AMOUNT_KEY] = np.where(has_position, x, 0.0)
+
+    y_in = lp_liq * (sqrt_p - sqrt_p_lower)
+    y_above = lp_liq * (sqrt_p_upper - sqrt_p_lower)
+    y = np.where(below, 0.0, np.where(above, y_above, y_in))
+    state[LP_TOKEN1_AMOUNT_KEY] = np.where(has_position, y, 0.0)
 
 
 class AMMEnvironment(gymnasium.Env):
@@ -216,6 +225,11 @@ class AMMEnvironment(gymnasium.Env):
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
+            LP_TOKEN1_AMOUNT_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
         })
 
     def _initial_v3_state(self) -> dict:
@@ -317,6 +331,7 @@ class AMMEnvironment(gymnasium.Env):
             ),
             LP_ALPHA_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
             LP_TOKEN0_AMOUNT_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
+            LP_TOKEN1_AMOUNT_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
         }
 
     def seed(self, seed: int = None):

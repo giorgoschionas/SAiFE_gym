@@ -81,7 +81,7 @@ class DoNothingAgent(Agent):
         tau = env.model_dynamics.tau
         # Tightest "above current price" range available — minimises the
         # chance of price crossing into the range during the episode.
-        self.lower_offset = 0#tau - 1
+        self.lower_offset = -1#tau - 1
         self.upper_offset = 1#tau
 
     def get_action(self, state: dict) -> np.ndarray:

@@ -18,6 +18,7 @@ import argparse
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import gymnasium
 import numpy as np
+from scipy import stats
 import matplotlib.pyplot as plt
 import torch
 import torch.nn as nn
@@ -37,11 +38,15 @@ from SAiFE_gym.agents.BaselineAgents import (
 )
 from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
-from SAiFE_gym.rewards.RewardFunctions import PnL
+from SAiFE_gym.rewards.RewardFunctions import PnL, RunningInventoryPenalty, ExponentialUtility
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY, GAS_COST_KEY,
+    LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+    LP_LIQUIDITY_KEY, LP_EVER_DEPLOYED_KEY,
+    LP_TOKEN0_AMOUNT_KEY, LP_TOKEN1_AMOUNT_KEY,
+    PORTFOLIO_VALUE_KEY, INITIAL_WEALTH_KEY,
 )
 
 # ============================================================================
@@ -96,7 +101,8 @@ AGENT_COLORS = {
     'ArrivalRebalance': '#e377c2',
     'CarteaDrissiMonga': '#ff7f0e',
     'REINFORCE':  '#2ca02c',
-    'PPO':        '#d62728',
+    'PPO':        "#e75454",
+    'PPO_narrow': "#5d090b",
     'SAC':        '#17becf',
     'DQN':        '#8c564b',
 }
@@ -133,25 +139,25 @@ def create_environment(num_trajectories: int, seed: int = None):
     #    num_trajectories=num_trajectories, seed=seed,
     #)
 
-    #midprice_model = GeometricBrownianMotionMidpriceModel(
-    #    drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
-    #    terminal_time=TERMINAL_TIME, step_size=step_size,
-    #    num_trajectories=num_trajectories, seed=seed,
-    #)
-
-
-    midprice_model = OrnsteinUhlenbeckMidpriceModel(                                                     
-        mean_reversion=0.4,           # κ — pull strength toward θ                                       
-        long_term_mean=INITIAL_PRICE, # θ — defaults to INITIAL_PRICE if omitted                                                                                               
-        volatility=VOLATILITY,
+    midprice_model = GeometricBrownianMotionMidpriceModel(
+        drift=DRIFT, volatility=VOLATILITY, initial_price=INITIAL_PRICE,
+        terminal_time=TERMINAL_TIME, step_size=step_size,
         num_trajectories=num_trajectories, seed=seed,
-        initial_price=INITIAL_PRICE,
-        terminal_time=TERMINAL_TIME, step_size=step_size
     )
+
+
+    #midprice_model = OrnsteinUhlenbeckMidpriceModel(                                                     
+    #    mean_reversion=0.0000000000000000001,           # κ — pull strength toward θ                                       
+    #    long_term_mean=INITIAL_PRICE, # θ — defaults to INITIAL_PRICE if omitted                                                                                               
+    #    volatility=VOLATILITY,
+    #    num_trajectories=num_trajectories, seed=seed,
+    #    initial_price=INITIAL_PRICE,
+    #    terminal_time=TERMINAL_TIME, step_size=step_size
+    #)
 
     
     arrival_model = LiquidityKernelArrivalModel(
-        alpha=alpha, beta=0.1, K=20, liquidity_scale=LIQUIDITY_SCALE,
+        alpha=alpha, beta=0.001, K=100, liquidity_scale=LIQUIDITY_SCALE,
         step_size=step_size, num_trajectories=num_trajectories,
         seed=seed + 1 if seed else None,
     )
@@ -161,7 +167,18 @@ def create_environment(num_trajectories: int, seed: int = None):
         num_ticks=5000, exponential_value=EXP_VALUE,
         seed=seed + 2 if seed else None,
     )
-    reward_function = PnL()
+    if REWARD_KIND == 'pnl':
+        reward_function = PnL()
+    elif REWARD_KIND == 'inventory':
+        reward_function = RunningInventoryPenalty(
+            per_step_inventory_aversion=INVENTORY_PHI,
+            terminal_inventory_aversion=INVENTORY_TERMINAL_AVERSION,
+            inventory_exponent=INVENTORY_EXPONENT,
+        )
+    elif REWARD_KIND == 'exponential':
+        reward_function = ExponentialUtility(risk_aversion=EXP_RISK_AVERSION)
+    else:
+        raise ValueError(f"unknown REWARD_KIND={REWARD_KIND!r}")
     return AMMEnvironment(
         terminal_time=TERMINAL_TIME, n_steps=N_STEPS,
         initial_wealth=INITIAL_WEALTH,
@@ -487,6 +504,64 @@ class StructuredMultiDiscreteVecEnv(VecEnv):
     def get_images(self):
         return self._wrapped.get_images()
 
+
+class NarrowMultiDiscreteVecEnv(VecEnv):
+    """``MultiDiscrete([2·tau+1, 2])`` wrapper for the PPO_narrow agent.
+
+    Same idea as ``StructuredMultiDiscreteVecEnv`` but the half-width is fixed
+    to the minimum allowed (= 1), so the policy only chooses (center, hold).
+    The emitted env action is ``[center − 1, center + 1, ±1]`` — always a
+    2-tick range centred on the chosen tick.
+
+      dim 0: center_idx ∈ {0, …, 2·tau}  →  center tick ∈ {-tau, …, +tau}
+      dim 1: hold_idx   ∈ {0, 1}         →  hold flag ∈ {-1, +1}
+    """
+
+    def __init__(self, vec_env: VecEnv, tau: int):
+        self._wrapped = vec_env
+        self.tau = int(tau)
+        act_space = gymnasium.spaces.MultiDiscrete([2 * self.tau + 1, 2])
+        super().__init__(vec_env.num_envs, vec_env.observation_space, act_space)
+
+    def unscale(self, action: np.ndarray) -> np.ndarray:
+        a = np.asarray(action, dtype=np.int64)
+        center = a[..., 0] - self.tau              # {-tau, …, +tau}
+        hold = np.where(a[..., 1] == 0, -1.0, 1.0).astype(np.float32)
+        # Fixed half-width of 1 — smallest non-degenerate range.
+        lower = np.clip(center - 1, -self.tau, self.tau - 1).astype(np.float32)
+        upper = np.clip(center + 1, -self.tau + 1, self.tau).astype(np.float32)
+        return np.stack([lower, upper, hold], axis=-1)
+
+    def reset(self):
+        return self._wrapped.reset()
+
+    def step_async(self, actions):
+        self._wrapped.step_async(self.unscale(actions))
+
+    def step_wait(self):
+        return self._wrapped.step_wait()
+
+    def close(self):
+        self._wrapped.close()
+
+    def get_attr(self, attr_name, indices=None):
+        return self._wrapped.get_attr(attr_name, indices)
+
+    def set_attr(self, attr_name, value, indices=None):
+        self._wrapped.set_attr(attr_name, value, indices)
+
+    def env_method(self, method_name, *args, indices=None, **kwargs):
+        return self._wrapped.env_method(method_name, *args, indices=indices, **kwargs)
+
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return self._wrapped.env_is_wrapped(wrapper_class, indices)
+
+    def seed(self, seed=None):
+        return self._wrapped.seed(seed)
+
+    def get_images(self):
+        return self._wrapped.get_images()
+
 # ============================================================================
 # REINFORCE Policy Network
 # ============================================================================
@@ -567,15 +642,23 @@ class EpisodeRewardCallback(BaseCallback):
 # ============================================================================
 
 def evaluate_on_trajectories(env, get_action_fn):
-    """Run one full episode; return per-trajectory cumulative PnL."""
+    """Run one full episode; return per-trajectory cumulative PnL.
+
+    PnL is tracked via PORTFOLIO_VALUE_KEY deltas so it stays correct under
+    any reward function (PnL, RunningInventoryPenalty, ExponentialUtility, ...).
+    The agent's actual reward signal is ignored here — we want the apples-to-
+    apples PnL axis for comparison plots regardless of training objective.
+    """
     state, _ = env.reset()
-    rewards_list = []
-    terminated = np.zeros(env.num_trajectories, dtype=bool)
+    n = env.num_trajectories
+    cum_pnl = np.zeros(n, dtype=np.float64)
+    terminated = np.zeros(n, dtype=bool)
     while not np.any(terminated):
+        prev_pv = state[PORTFOLIO_VALUE_KEY].astype(np.float64).copy()
         action = get_action_fn(state)
-        state, reward, terminated, _, _ = env.step(action)
-        rewards_list.append(reward)
-    return np.sum(np.array(rewards_list), axis=0)
+        state, _, terminated, _, _ = env.step(action)
+        cum_pnl += state[PORTFOLIO_VALUE_KEY].astype(np.float64) - prev_pv
+    return cum_pnl
 
 
 def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
@@ -595,19 +678,37 @@ def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
     assert env.n_steps % decision_stride == 0, (
         f"n_steps={env.n_steps} not divisible by decision_stride={decision_stride}"
     )
+    # ``cum_fees`` / ``cum_gas`` / ``cum_hodl_pnl`` follow Option B for IL
+    # attribution: HODL reference (``hodl_t0``, ``hodl_t1``) resets at every
+    # rebalance to the LP's post-rebalance token composition; between rebalances
+    # the reference stays fixed and HODL PnL contributions accumulate as
+    # ``hodl_t0 · ΔP`` per step (token1 is the numéraire so ``hodl_t1`` is
+    # invariant in value). IL is backed out from the identity
+    # ``Total_PnL = HODL_PnL − IL + Fees − Gas``.
     data = {k: [] for k in [
         'time', 'pool_price', 'midprice',
         'position_lower_price', 'position_upper_price',
         'action_lower', 'action_upper',
         'actual_lower_offset', 'actual_upper_offset',
         'hold_flag',
-        'reward', 'cumulative_pnl',
+        'reward', 'cumulative_pnl', 'cumulative_utility',
         'trade_count',
+        'cum_fees', 'cum_gas', 'cum_il', 'cum_hodl_pnl',
     ]}
     state, _ = env.reset()
-    cum_pnl = 0.0
+    cum_pnl = 0.0       # true PnL via ΔPORTFOLIO_VALUE (reward-function-agnostic)
+    cum_utility = 0.0   # agent's actual reward signal (= cum_pnl under PnL())
     trade_count = 0
     hold_action = np.array([[0.0, 1.0, 1.0]], dtype=np.float32)
+
+    gas_cost = float(env.model_dynamics.gas_cost)
+    cum_fees = 0.0
+    cum_gas = 0.0
+    cum_hodl_pnl = 0.0
+    prev_c0 = float(state[LP_COLLECTED_FEES0_KEY][0])
+    prev_c1 = float(state[LP_COLLECTED_FEES1_KEY][0])
+    hodl_t0 = None  # None until first deployment
+    hodl_t1 = None
 
     for step_idx in range(env.n_steps):
         data['time'].append(state[TIME_KEY][0])
@@ -619,6 +720,12 @@ def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
         data['action_lower'].append(float(action[0, 0]))
         data['action_upper'].append(float(action[0, 1]))
         data['hold_flag'].append(float(action[0, 2]) if action.shape[1] >= 3 else -1.0)
+
+        # Snapshot pre-step quantities needed for attribution.
+        pre_price = float(state[ASSET_PRICE_KEY][0])
+        prev_pv = float(state[PORTFOLIO_VALUE_KEY][0])
+        had_position = bool(state[LP_LIQUIDITY_KEY][0] > 0)
+        hold_flag = float(action[0, 2]) if action.shape[1] >= 3 else -1.0
 
         state, reward, terminated, _, _ = env.step(action)
         # last_arrivals is cached on model_dynamics by env.step's get_arrivals call.
@@ -633,10 +740,50 @@ def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
         data['actual_lower_offset'].append(state[LP_TICK_LOWER_KEY][0] - current_tick)
         data['actual_upper_offset'].append(state[LP_TICK_UPPER_KEY][0] - current_tick)
 
-        cum_pnl += reward[0]
+        # True PnL is ΔPORTFOLIO_VALUE (reward-function-agnostic); reward may
+        # carry inventory/utility penalties under non-PnL reward functions.
+        cum_pnl += float(state[PORTFOLIO_VALUE_KEY][0]) - prev_pv
+        cum_utility += reward[0]
         data['reward'].append(reward[0])
         data['cumulative_pnl'].append(cum_pnl)
+        data['cumulative_utility'].append(cum_utility)
         data['trade_count'].append(trade_count)
+
+        # --- Attribution ---
+        new_price = float(state[ASSET_PRICE_KEY][0])
+
+        # Fees this step: value the LP_COLLECTED delta at end-of-step price.
+        new_c0 = float(state[LP_COLLECTED_FEES0_KEY][0])
+        new_c1 = float(state[LP_COLLECTED_FEES1_KEY][0])
+        cum_fees += (new_c0 - prev_c0) * new_price + (new_c1 - prev_c1)
+        prev_c0, prev_c1 = new_c0, new_c1
+
+        # Gas this step: only paid on rebalance when a position already existed
+        # (matches _rebalance's has_position gate; first deployment is free).
+        rebalanced = (hold_flag <= 0) and had_position
+        if rebalanced:
+            cum_gas += gas_cost
+
+        # HODL PnL contribution for this step uses the *pre-step* reference;
+        # the reference is refreshed afterwards if a rebalance happened (or this
+        # is the first deployment), so it stays valid for the next period.
+        if hodl_t0 is not None:
+            cum_hodl_pnl += hodl_t0 * (new_price - pre_price)
+
+        first_deploy = (hodl_t0 is None) and bool(state[LP_EVER_DEPLOYED_KEY][0])
+        if rebalanced or first_deploy:
+            new_t0 = float(state[LP_TOKEN0_AMOUNT_KEY][0])
+            new_pv = float(state[PORTFOLIO_VALUE_KEY][0])
+            hodl_t0 = new_t0
+            hodl_t1 = new_pv - new_t0 * new_price
+
+        # IL backed out from the accounting identity.
+        cum_il = cum_hodl_pnl + cum_fees - cum_gas - cum_pnl
+
+        data['cum_fees'].append(cum_fees)
+        data['cum_gas'].append(cum_gas)
+        data['cum_il'].append(cum_il)
+        data['cum_hodl_pnl'].append(cum_hodl_pnl)
 
         if terminated[0]:
             break
@@ -644,6 +791,201 @@ def collect_single_trajectory(env, get_action_fn, max_trades: int = None,
             break
 
     return {k: np.array(v) for k, v in data.items()}
+
+
+def evaluate_on_trajectories_with_attribution(env, get_action_fn):
+    """Vectorized version of ``evaluate_on_trajectories`` that also returns the
+    per-trajectory attribution (Fees / Gas / IL / HODL PnL) at episode end.
+
+    Uses Option B: HODL reference is the LP's post-rebalance token composition,
+    refreshed at every rebalance. IL backed out from
+    ``Total_PnL = HODL_PnL − IL + Fees − Gas``.
+
+    Returns a dict with arrays of shape (num_trajectories,):
+        'pnl'       — cumulative reward (= ΔPortfolioValue)
+        'fees'      — cumulative fees in token1 (numéraire) units
+        'gas'       — cumulative gas paid
+        'il'        — cumulative impermanent loss (positive = cost)
+        'hodl_pnl'  — cumulative HODL PnL of the (resetting) reference portfolio
+    """
+    state, _ = env.reset()
+    n = env.num_trajectories
+    gas_cost = float(env.model_dynamics.gas_cost)
+
+    cum_pnl = np.zeros(n)      # true PnL via ΔPORTFOLIO_VALUE
+    cum_utility = np.zeros(n)  # agent's reward signal (= cum_pnl under PnL())
+    cum_fees = np.zeros(n)
+    cum_gas = np.zeros(n)
+    cum_hodl_pnl = np.zeros(n)
+    prev_c0 = state[LP_COLLECTED_FEES0_KEY].astype(np.float64).copy()
+    prev_c1 = state[LP_COLLECTED_FEES1_KEY].astype(np.float64).copy()
+    hodl_t0 = np.zeros(n)
+    hodl_t1 = np.zeros(n)
+    ref_set = np.zeros(n, dtype=bool)
+    # Per-trajectory spread accumulators (post-step state). Online mean/var
+    # via Σx, Σx² so we only carry two arrays instead of a (T, n) buffer.
+    spread_sum = np.zeros(n, dtype=np.float64)
+    spread_sumsq = np.zeros(n, dtype=np.float64)
+    spread_count = 0
+    # Per-trajectory rebalance counter. Uses the same mask as the gas charge
+    # (first deploy excluded). spread_count doubles as decisions/episode since
+    # the outer loop iterates once per agent decision — DecisionStride
+    # collapses `stride` env steps into one outer step.
+    rebalance_count = np.zeros(n, dtype=np.int64)
+
+    terminated = np.zeros(n, dtype=bool)
+    while not np.any(terminated):
+        pre_price = state[ASSET_PRICE_KEY].astype(np.float64).copy()
+        prev_pv = state[PORTFOLIO_VALUE_KEY].astype(np.float64).copy()
+        had_position = state[LP_LIQUIDITY_KEY] > 0
+
+        action = get_action_fn(state)
+        hold_flags = action[:, 2] if action.shape[1] >= 3 else -np.ones(n)
+
+        state, reward, terminated, _, _ = env.step(action)
+        # PnL tracked from portfolio value (reward-function-agnostic); utility
+        # captures whatever risk/penalty terms the reward function added.
+        cum_pnl += state[PORTFOLIO_VALUE_KEY].astype(np.float64) - prev_pv
+        cum_utility += reward
+
+        # Post-step spread (upper − lower) reflects the agent's actually
+        # deployed position after any rebalance fired in this step.
+        spread_step = (state[LP_TICK_UPPER_KEY].astype(np.float64)
+                       - state[LP_TICK_LOWER_KEY].astype(np.float64))
+        spread_sum += spread_step
+        spread_sumsq += spread_step * spread_step
+        spread_count += 1
+
+        new_price = state[ASSET_PRICE_KEY].astype(np.float64)
+
+        # Fees
+        new_c0 = state[LP_COLLECTED_FEES0_KEY].astype(np.float64)
+        new_c1 = state[LP_COLLECTED_FEES1_KEY].astype(np.float64)
+        cum_fees += (new_c0 - prev_c0) * new_price + (new_c1 - prev_c1)
+        prev_c0[:] = new_c0
+        prev_c1[:] = new_c1
+
+        # Gas
+        rebalanced = (hold_flags <= 0) & had_position
+        cum_gas += rebalanced.astype(np.float64) * gas_cost
+        rebalance_count += rebalanced.astype(np.int64)
+
+        # HODL PnL contribution (only where reference is set)
+        cum_hodl_pnl += np.where(ref_set, hodl_t0 * (new_price - pre_price), 0.0)
+
+        # Refresh reference at every rebalance and on first deployment.
+        first_deploy = state[LP_EVER_DEPLOYED_KEY] & (~ref_set)
+        refresh = rebalanced | first_deploy
+        if np.any(refresh):
+            new_t0 = state[LP_TOKEN0_AMOUNT_KEY].astype(np.float64)
+            new_pv = state[PORTFOLIO_VALUE_KEY].astype(np.float64)
+            new_t1 = new_pv - new_t0 * new_price
+            hodl_t0 = np.where(refresh, new_t0, hodl_t0)
+            hodl_t1 = np.where(refresh, new_t1, hodl_t1)
+            ref_set = ref_set | first_deploy  # latches True once set
+
+    cum_il = cum_hodl_pnl + cum_fees - cum_gas - cum_pnl
+
+    # Per-trajectory spread stats: time-averaged spread, and temporal std of
+    # spread within each trajectory. Var clamped at 0 to absorb numerical noise.
+    denom = max(spread_count, 1)
+    mean_spread = spread_sum / denom
+    var_spread = spread_sumsq / denom - mean_spread * mean_spread
+    temporal_std_spread = np.sqrt(np.maximum(var_spread, 0.0))
+
+    return {
+        'pnl': cum_pnl,
+        'utility': cum_utility,
+        'fees': cum_fees,
+        'gas': cum_gas,
+        'il': cum_il,
+        'hodl_pnl': cum_hodl_pnl,
+        'mean_spread': mean_spread,
+        'temporal_std_spread': temporal_std_spread,
+        'rebalance_count': rebalance_count,           # per-traj, shape (n,)
+        'decision_count': int(spread_count),          # scalar: decisions/episode
+    }
+
+# ============================================================================
+# Stdout logging — capture every print to a text file as well
+# ============================================================================
+
+class _StdoutTee:
+    """File-like object that writes to multiple underlying streams.
+
+    Used to mirror everything printed to the terminal into a results file,
+    without touching any existing print() call. Install via:
+        sys.stdout = _StdoutTee(sys.stdout, open(path, 'w'))
+    """
+    def __init__(self, *streams):
+        self.streams = streams
+
+    def write(self, data):
+        for s in self.streams:
+            s.write(data)
+            s.flush()
+
+    def flush(self):
+        for s in self.streams:
+            s.flush()
+
+    def isatty(self):
+        # Some libraries (tqdm) check this to decide rich vs plain output.
+        # Mirror the first stream's behavior so tqdm keeps using carriage
+        # returns in the terminal — the file ends up with the final state
+        # only, but that's the conventional log format.
+        return getattr(self.streams[0], 'isatty', lambda: False)()
+
+
+# ============================================================================
+# Console tables
+# ============================================================================
+
+def print_spread_table(attribution_results):
+    """Print the agent quoting-behavior table.
+
+    Spread columns:
+      - Mean spread:          E_{traj, step}[upper − lower]
+      - Std (within episode): E_{traj}[ Std_step(spread) ]
+      - Std (between traj):   Std_{traj}[ E_step(spread) ]
+
+    Rebalance columns:
+      - Rebalances/ep: mean across trajs of rebalance count per episode
+                       (first deploy not counted — matches gas convention)
+      - Rate (%):      Rebalances/ep / decisions_per_ep × 100
+                       (per-decision-opportunity rate; comparable across strides)
+    """
+    active = [n for n in AGENT_NAMES if n in attribution_results]
+    if not active:
+        return
+    header = (
+        f"  {'Agent':<18} | {'Mean spread':>12} | "
+        f"{'Std (within ep)':>16} | {'Std (between traj)':>19} | "
+        f"{'Rebalances/ep':>14} | {'Rate (%)':>9}"
+    )
+    print("\nQuoting behavior across eval trajectories:")
+    print("  " + "-" * (len(header) - 2))
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for name in active:
+        r = attribution_results[name]
+        mean_s = r['mean_spread']
+        temp_std = r['temporal_std_spread']
+        reb_count = r['rebalance_count']
+        decisions = max(int(r['decision_count']), 1)
+
+        col_mean = float(mean_s.mean())
+        col_std_within = float(temp_std.mean())
+        col_std_between = float(mean_s.std())
+        col_reb_per_ep = float(reb_count.mean())
+        col_rate = 100.0 * col_reb_per_ep / decisions
+        print(
+            f"  {name:<18} | {col_mean:>12.3f} | "
+            f"{col_std_within:>16.3f} | {col_std_between:>19.3f} | "
+            f"{col_reb_per_ep:>14.2f} | {col_rate:>9.2f}"
+        )
+    print("  " + "-" * (len(header) - 2))
+
 
 # ============================================================================
 # Plotting
@@ -669,7 +1011,7 @@ def plot_pnl_distribution(pnl_results):
     path1 = os.path.join(FIGURES_DIR, 'pnl_boxplot.png')
     fig1.savefig(path1, dpi=150, bbox_inches='tight')
     plt.close(fig1)
-    print(f"  Saved: {path1}")
+    #print(f"  Saved: {path1}")
 
     # Histogram
     fig2, ax2 = plt.subplots(figsize=(8, 5))
@@ -697,7 +1039,60 @@ def plot_pnl_distribution(pnl_results):
     path2 = os.path.join(FIGURES_DIR, 'pnl_histogram.png')
     fig2.savefig(path2, dpi=150, bbox_inches='tight')
     plt.close(fig2)
-    print(f"  Saved: {path2}")
+    #print(f"  Saved: {path2}")
+
+
+def plot_utility_distribution(utility_results):
+    """Box-plot and histogram of cumulative agent reward (utility), saved as separate figures.
+
+    Mirrors plot_pnl_distribution but on the agent's reward signal — i.e. PnL
+    minus the inventory/risk penalty when REWARD_KIND != 'pnl'.
+    """
+    agents = [n for n in AGENT_NAMES if n in utility_results]
+
+    # Box plot
+    fig1, ax1 = plt.subplots(figsize=(8, 5))
+    box_data = [utility_results[n] for n in agents]
+    bp = ax1.boxplot(box_data, labels=agents, patch_artist=True, notch=False)
+    for patch, name in zip(bp['boxes'], agents):
+        patch.set_facecolor(AGENT_COLORS[name])
+        patch.set_alpha(0.6)
+    ax1.axhline(0, color='gray', linestyle='--', linewidth=0.8)
+    ax1.set_ylabel(f'Cumulative Utility ({REWARD_KIND})', fontsize=16)
+    ax1.tick_params(axis='both', labelsize=14)
+    ax1.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path1 = os.path.join(FIGURES_DIR, f'utility_boxplot.png')
+    fig1.savefig(path1, dpi=150, bbox_inches='tight')
+    plt.close(fig1)
+    #print(f"  Saved: {path1}")
+
+    # Histogram
+    fig2, ax2 = plt.subplots(figsize=(8, 5))
+    all_u = np.concatenate(list(utility_results.values()))
+    lo, hi = np.percentile(all_u, [1, 99])
+    bins = np.linspace(lo, hi, 50) if hi > lo else 50
+    for name in agents:
+        ax2.hist(
+            utility_results[name], bins=bins, alpha=0.35,
+            color=AGENT_COLORS[name], density=True,
+            label=f"{name} (mean={np.mean(utility_results[name]):+.3g})",
+        )
+        ax2.axvline(
+            np.mean(utility_results[name]),
+            color=AGENT_COLORS[name], linestyle='--', linewidth=1.5,
+        )
+    ax2.axvline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
+    ax2.set_xlabel(f'Cumulative Utility ({REWARD_KIND})', fontsize=16)
+    ax2.set_ylabel('Density', fontsize=16)
+    ax2.tick_params(axis='both', labelsize=14)
+    ax2.legend(fontsize=16, loc='upper left')
+    ax2.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path2 = os.path.join(FIGURES_DIR, f'utility_histogram.png')
+    fig2.savefig(path2, dpi=150, bbox_inches='tight')
+    plt.close(fig2)
+    #print(f"  Saved: {path2}")
 
 
 def plot_price_evolution(single_data):
@@ -765,10 +1160,10 @@ def plot_price_evolution(single_data):
     path = os.path.join(FIGURES_DIR, 'price_evolution.png')
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Saved: {path}")
+    #print(f"  Saved: {path}")
 
     # Save standalone figure per trained RL agent (all sims overlaid)
-    rl_agents = [n for n in agents if n in ('REINFORCE', 'PPO', 'SAC', 'DQN')]
+    rl_agents = [n for n in agents if n in ('REINFORCE', 'PPO', 'PPO_narrow', 'SAC', 'DQN')]
     for name in rl_agents:
         fig_rl, ax_rl = plt.subplots(figsize=(8, 5))
         color = AGENT_COLORS[name]
@@ -812,7 +1207,7 @@ def plot_price_evolution(single_data):
         path_rl = os.path.join(FIGURES_DIR, f'price_evolution_{name.lower()}.png')
         fig_rl.savefig(path_rl, dpi=200, bbox_inches='tight')
         plt.close(fig_rl)
-        print(f"  Saved: {path_rl}")
+        #print(f"  Saved: {path_rl}")
 
     # Save individual per-simulation plots
     if n_sims > 1:
@@ -861,11 +1256,21 @@ def plot_price_evolution(single_data):
                 ax.legend(fontsize=14, loc='lower right')
                 ax.grid(True, alpha=0.3)
 
+                # Final PnL for this sim/agent, top-right of the panel.
+                final_pnl = d['cumulative_pnl'][-1]
+                ax.text(
+                    0.97, 0.97, f'Final PnL: {final_pnl:+.2f}',
+                    transform=ax.transAxes, ha='right', va='top',
+                    fontsize=14, color=color, fontweight='bold',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                              edgecolor=color, alpha=0.85),
+                )
+
             plt.tight_layout()
             path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}.png')
             fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
             plt.close(fig_i)
-            print(f"  Saved: {path_i}")
+            #print(f"  Saved: {path_i}")
 
 
 def plot_pnl_evolution(single_data):
@@ -899,7 +1304,7 @@ def plot_pnl_evolution(single_data):
     path = os.path.join(FIGURES_DIR, 'pnl_evolution.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Saved: {path}")
+    #print(f"  Saved: {path}")
 
 
 def plot_training_rewards(rl_rewards: dict):
@@ -933,7 +1338,7 @@ def plot_training_rewards(rl_rewards: dict):
     path = os.path.join(FIGURES_DIR, 'training_rewards.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Saved: {path}")
+    #print(f"  Saved: {path}")
 
 
 def plot_position_offsets(single_data):
@@ -979,7 +1384,205 @@ def plot_position_offsets(single_data):
     path = os.path.join(FIGURES_DIR, 'position_offsets.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
-    print(f"  Saved: {path}")
+    #print(f"  Saved: {path}")
+
+
+def plot_pnl_attribution_individual(single_data):
+    """Per-agent time series of the PnL decomposition for each individual sim.
+
+    Each subplot shows four cumulative quantities over the episode:
+      Total PnL (black)         — what env reports as cumulative reward
+      Cumulative Fees (green)   — fees earned, valued in token1
+      −Cumulative IL (red)      — impermanent loss (plotted negative as a cost)
+      −Cumulative Gas (orange)  — rebalance gas (plotted negative as a cost)
+
+    The HODL PnL line (dotted gray) is added for reference — it's the
+    "would-have-happened-anyway" market drift of the Option B HODL portfolio.
+    With Option B, the identity
+        Total_PnL = HODL_PnL − IL + Fees − Gas
+    holds exactly to numerical precision.
+    """
+    agents = [n for n in AGENT_NAMES if n in single_data]
+    if not agents:
+        return
+    n_agents = len(agents)
+    ncols = 2
+    nrows = (n_agents + ncols - 1) // ncols
+    n_sims = max(len(v) for v in single_data.values())
+
+    # Combined overview: per-agent panel with all sims overlaid (light alpha).
+    fig, axes = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows))
+    axes = np.atleast_2d(axes)
+    for ax in axes.flat[n_agents:]:
+        ax.set_visible(False)
+    for ax, name in zip(axes.flat, agents):
+        sim_alpha = max(0.15, 0.8 / len(single_data[name]))
+        for si, d in enumerate(single_data[name]):
+            lbl = (lambda s: s if si == 0 else None)
+            ax.plot(d['time'], d['cumulative_pnl'], 'k-', linewidth=1.4,
+                    alpha=sim_alpha, label=lbl('Total PnL'))
+            ax.plot(d['time'], d['cum_fees'], color='#2ca02c', linewidth=1.2,
+                    alpha=sim_alpha, label=lbl('Fees'))
+            ax.plot(d['time'], -d['cum_il'], color='#d62728', linewidth=1.2,
+                    alpha=sim_alpha, label=lbl('−IL'))
+            ax.plot(d['time'], -d['cum_gas'], color='#ff7f0e', linewidth=1.2,
+                    alpha=sim_alpha, label=lbl('−Gas'))
+            ax.plot(d['time'], d['cum_hodl_pnl'], color='gray',
+                    linestyle=':', linewidth=1.0, alpha=sim_alpha,
+                    label=lbl('HODL PnL'))
+        ax.axhline(0, color='gray', linestyle='-', linewidth=0.6, alpha=0.4)
+        ax.set_xlabel('Time', fontsize=14)
+        ax.set_ylabel('Cumulative value (token1)', fontsize=14)
+        ax.set_title(name)
+        ax.tick_params(axis='both', labelsize=12)
+        ax.legend(fontsize=11, loc='best')
+        ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path = os.path.join(FIGURES_DIR, f'pnl_attribution.png')
+    fig.savefig(path, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    #print(f"  Saved: {path}")
+
+    # Per-sim breakdown (one figure per sim, panels per agent).
+    if n_sims > 1:
+        for si in range(n_sims):
+            fig_i, axes_i = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows))
+            axes_i = np.atleast_2d(axes_i)
+            for ax in axes_i.flat[n_agents:]:
+                ax.set_visible(False)
+            for ax, name in zip(axes_i.flat, agents):
+                if si >= len(single_data[name]):
+                    continue
+                d = single_data[name][si]
+                ax.plot(d['time'], d['cumulative_pnl'], 'k-', linewidth=1.8,
+                        label='Total PnL')
+                ax.plot(d['time'], d['cum_fees'], color='#2ca02c', linewidth=1.5,
+                        label='Fees')
+                ax.plot(d['time'], -d['cum_il'], color='#d62728', linewidth=1.5,
+                        label='−IL')
+                ax.plot(d['time'], -d['cum_gas'], color='#ff7f0e', linewidth=1.5,
+                        label='−Gas')
+                ax.plot(d['time'], d['cum_hodl_pnl'], color='gray',
+                        linestyle=':', linewidth=1.2, label='HODL PnL')
+                ax.axhline(0, color='gray', linestyle='-', linewidth=0.6, alpha=0.4)
+                # Final values in the top-right corner.
+                ax.text(
+                    0.97, 0.97,
+                    f"PnL: {d['cumulative_pnl'][-1]:+.2f}\n"
+                    f"Fees: {d['cum_fees'][-1]:+.2f}\n"
+                    f"IL: {d['cum_il'][-1]:+.2f}\n"
+                    f"Gas: {d['cum_gas'][-1]:+.2f}",
+                    transform=ax.transAxes, ha='right', va='top',
+                    fontsize=11, family='monospace',
+                    bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
+                              edgecolor='gray', alpha=0.85),
+                )
+                ax.set_xlabel('Time', fontsize=14)
+                ax.set_ylabel('Cumulative value (token1)', fontsize=14)
+                ax.set_title(name)
+                ax.tick_params(axis='both', labelsize=12)
+                ax.legend(fontsize=10, loc='lower left')
+                ax.grid(True, alpha=0.3)
+            plt.tight_layout()
+            path_i = os.path.join(
+                FIGURES_DIR, f'pnl_attribution_sim{si + 1}.png'
+            )
+            fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
+            plt.close(fig_i)
+            #print(f"  Saved: {path_i}")
+
+
+def plot_pnl_attribution_aggregate(attribution_results):
+    """Distribution + mean decomposition of final attribution across eval trajectories.
+
+    ``attribution_results`` is the dict returned by
+    ``evaluate_on_trajectories_with_attribution``, keyed by agent name.
+
+    Two figures:
+      1. Three side-by-side box plots: distribution of final Fees / IL / Gas
+         per agent across the eval trajectories.
+      2. A stacked bar of *means*: Fees − IL − Gas attribution per agent, with
+         the Total PnL marker overlaid for verification.
+    """
+    agents = [n for n in AGENT_NAMES if n in attribution_results]
+    if not agents:
+        return
+
+    # ---- (1) Box plots of final fees / IL / gas per agent ----
+    fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+    for ax, key, title in zip(
+        axes,
+        ('fees', 'il', 'gas'),
+        ('Cumulative Fees', 'Impermanent Loss', 'Gas paid'),
+    ):
+        box_data = [attribution_results[n][key] for n in agents]
+        bp = ax.boxplot(box_data, labels=agents, patch_artist=True, notch=False)
+        for patch, name in zip(bp['boxes'], agents):
+            patch.set_facecolor(AGENT_COLORS[name])
+            patch.set_alpha(0.6)
+        ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
+        ax.set_ylabel(f'{title} (token1)', fontsize=14)
+        ax.set_title(title)
+        ax.tick_params(axis='both', labelsize=12)
+        ax.grid(True, alpha=0.3)
+    plt.tight_layout()
+    path1 = os.path.join(FIGURES_DIR, f'pnl_attribution_boxplots.png')
+    fig.savefig(path1, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    #print(f"  Saved: {path1}")
+
+    # ---- (2) Mean-decomposition bar chart ----
+    fig, ax = plt.subplots(figsize=(max(7, 1.5 * len(agents) + 4), 5))
+    x = np.arange(len(agents))
+    width = 0.6
+    mean_fees = np.array([np.mean(attribution_results[n]['fees']) for n in agents])
+    mean_il = np.array([np.mean(attribution_results[n]['il']) for n in agents])
+    mean_gas = np.array([np.mean(attribution_results[n]['gas']) for n in agents])
+    mean_pnl = np.array([np.mean(attribution_results[n]['pnl']) for n in agents])
+    mean_hodl = np.array([np.mean(attribution_results[n]['hodl_pnl']) for n in agents])
+
+    # Stacked: positive contributions (Fees, HODL_PnL) above 0; negatives (−IL, −Gas) below.
+    ax.bar(x, mean_fees, width, color='#2ca02c', label='Fees', alpha=0.85)
+    ax.bar(x, mean_hodl, width, bottom=mean_fees, color='gray',
+           label='HODL PnL', alpha=0.65)
+    ax.bar(x, -mean_il, width, color='#d62728', label='−IL', alpha=0.85)
+    ax.bar(x, -mean_gas, width, bottom=-mean_il, color='#ff7f0e',
+           label='−Gas', alpha=0.85)
+
+    # Total PnL marker (should equal HODL_PnL − IL + Fees − Gas exactly).
+    ax.scatter(x, mean_pnl, marker='D', s=80, color='black', zorder=5,
+               label='Total PnL (mean)')
+
+    ax.axhline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.6)
+    ax.set_xticks(x)
+    ax.set_xticklabels(agents, rotation=15)
+    ax.set_ylabel('Mean across eval trajectories (token1)', fontsize=14)
+    ax.set_title('PnL attribution (mean over eval trajectories)')
+    ax.tick_params(axis='both', labelsize=12)
+    ax.legend(fontsize=11, loc='best')
+    ax.grid(True, alpha=0.3, axis='y')
+    plt.tight_layout()
+    path2 = os.path.join(FIGURES_DIR, f'pnl_attribution_means.png')
+    fig.savefig(path2, dpi=150, bbox_inches='tight')
+    plt.close(fig)
+    #print(f"  Saved: {path2}")
+
+    # Console summary so the numbers are visible without opening the figure.
+    header = (
+        f"  {'Agent':<18} | {'PnL':>8} | {'HODL':>8} | {'Fees':>8} | "
+        f"{'IL':>8} | {'Gas':>8}"
+    )
+    print("\n  Mean attribution per agent (token1 units):")
+    print("  " + "-" * (len(header) - 2))
+    print(header)
+    print("  " + "-" * (len(header) - 2))
+    for i, name in enumerate(agents):
+        print(
+            f"  {name:<18} | {mean_pnl[i]:>+8.2f} | {mean_hodl[i]:>+8.2f} "
+            f"| {mean_fees[i]:>+8.2f} | {mean_il[i]:>+8.2f} | {mean_gas[i]:>+8.2f}"
+        )
+    print("  " + "-" * (len(header) - 2))
+
 
 # ============================================================================
 # Main
@@ -1000,6 +1603,10 @@ def main():
     ppo_model = None
     ppo_action_wrapper = None
     ppo_reward_cb = EpisodeRewardCallback()
+    ppo_narrow_model = None
+    ppo_narrow_action_wrapper = None
+    ppo_narrow_reward_cb = EpisodeRewardCallback()
+    ppo_narrow_vec_normalize = None
     sac_model = None
     sac_reward_cb = EpisodeRewardCallback()
     dqn_model = None
@@ -1086,6 +1693,46 @@ def main():
         ppo_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_reward_cb)
         print(f"  PPO training time: {time.time() - t0:.1f}s")
 
+    if ENABLE_AGENTS.get('PPO_narrow'):
+        print("\n" + "=" * 60)
+        print("Phase 1b': Training PPO_narrow agent (half_width fixed to 1)")
+        print("=" * 60)
+
+        ppo_narrow_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
+        sb_train_env_narrow = DecisionStrideVecEnv(
+            StableBaselinesAMMEnvironment(ppo_narrow_env, obs_keys=SB3_OBS_KEYS),
+            stride=DECISION_STRIDE,
+        )
+        ppo_narrow_vec_normalize = VecNormalize(
+            VecMonitor(sb_train_env_narrow),
+            norm_obs=True, norm_reward=True, clip_obs=10.0, clip_reward=10.0,
+        )
+        # Half-width is fixed to 1, so only (center, hold) are learned. We always
+        # use the narrow MultiDiscrete wrapper here regardless of the global
+        # PPO_ACTION_WRAPPER setting — the fixed-width restriction is the whole
+        # point of this agent.
+        ppo_narrow_action_wrapper = NarrowMultiDiscreteVecEnv(
+            ppo_narrow_vec_normalize, TAU,
+        )
+
+        ppo_narrow_model = PPO(
+            "MlpPolicy", ppo_narrow_action_wrapper,
+            learning_rate=PPO_LEARNING_RATE,
+            n_steps=N_STEPS // DECISION_STRIDE,
+            batch_size=PPO_BATCH_SIZE,
+            n_epochs=PPO_N_EPOCHS,
+            gamma=PPO_GAMMA, gae_lambda=PPO_GAE_LAMBDA,
+            clip_range=PPO_CLIP_RANGE, ent_coef=PPO_ENT_COEF,
+            policy_kwargs=dict(net_arch=dict(pi=PPO_NET_ARCH, vf=PPO_NET_ARCH)),
+            verbose=1, seed=SEED,
+        )
+        ppo_narrow_reward_cb = EpisodeRewardCallback()
+        t0 = time.time()
+        ppo_narrow_model.learn(
+            total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_narrow_reward_cb,
+        )
+        print(f"  PPO_narrow training time: {time.time() - t0:.1f}s")
+
     if ENABLE_AGENTS.get('SAC'):
         print("\n" + "=" * 60)
         print("Phase 1c: Training SAC agent")
@@ -1154,23 +1801,27 @@ def main():
     print("=" * 60)
 
     EVAL_SEED = SEED + 999
-    pnl_results = {}
+    # ``attribution_results[name]`` is the full {'pnl', 'fees', 'gas', 'il',
+    # 'hodl_pnl'} dict from evaluate_on_trajectories_with_attribution.
+    # ``pnl_results`` is derived from it for the existing significance tests
+    # and PnL distribution plots.
+    attribution_results = {}
 
     if ENABLE_AGENTS.get('DoNothing'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['DoNothing'] = evaluate_on_trajectories(
+        attribution_results['DoNothing'] = evaluate_on_trajectories_with_attribution(
             env, DoNothingAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('Uniform'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['Uniform'] = evaluate_on_trajectories(
+        attribution_results['Uniform'] = evaluate_on_trajectories_with_attribution(
             env, UniformAllocationAgent(env).get_action,
         )
 
     if ENABLE_AGENTS.get('DeployOnce'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['DeployOnce'] = evaluate_on_trajectories(
+        attribution_results['DeployOnce'] = evaluate_on_trajectories_with_attribution(
             env, DeployOnceAgent(
                 env, lower_offset=DEPLOYONCE_LOWER, upper_offset=DEPLOYONCE_UPPER,
             ).get_action,
@@ -1178,7 +1829,7 @@ def main():
 
     if ENABLE_AGENTS.get('ArrivalRebalance'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['ArrivalRebalance'] = evaluate_on_trajectories(
+        attribution_results['ArrivalRebalance'] = evaluate_on_trajectories_with_attribution(
             env, ArrivalRebalanceAgent(
                 env, rebalance_every=ARRIVAL_REBALANCE_EVERY,
                 width=ARRIVAL_REBALANCE_WIDTH,
@@ -1189,7 +1840,7 @@ def main():
 
     if ENABLE_AGENTS.get('CarteaDrissiMonga'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        pnl_results['CarteaDrissiMonga'] = evaluate_on_trajectories(
+        attribution_results['CarteaDrissiMonga'] = evaluate_on_trajectories_with_attribution(
             env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action,
         )
 
@@ -1197,7 +1848,7 @@ def main():
         env = DecisionStrideEnv(
             create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED), stride=DECISION_STRIDE,
         )
-        pnl_results['REINFORCE'] = evaluate_on_trajectories(
+        attribution_results['REINFORCE'] = evaluate_on_trajectories_with_attribution(
             env, lambda s: reinforce_agent.get_action(s, deterministic=True),
         )
 
@@ -1207,9 +1858,23 @@ def main():
         ppo_eval = SbAgent(ppo_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         ppo_vec_normalize.training = False
         eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
-        pnl_results['PPO'] = evaluate_on_trajectories(
+        attribution_results['PPO'] = evaluate_on_trajectories_with_attribution(
             eval_env, lambda s: ppo_action_wrapper.unscale(
                 ppo_eval.get_action(ppo_vec_normalize.normalize_obs(sb_eval._flatten_obs(s)))
+            ),
+        )
+
+    if ENABLE_AGENTS.get('PPO_narrow') and ppo_narrow_model is not None:
+        env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
+        sb_eval_n = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
+        ppo_narrow_eval = SbAgent(ppo_narrow_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
+        ppo_narrow_vec_normalize.training = False
+        eval_env_n = DecisionStrideEnv(env, stride=DECISION_STRIDE)
+        attribution_results['PPO_narrow'] = evaluate_on_trajectories_with_attribution(
+            eval_env_n, lambda s: ppo_narrow_action_wrapper.unscale(
+                ppo_narrow_eval.get_action(
+                    ppo_narrow_vec_normalize.normalize_obs(sb_eval_n._flatten_obs(s))
+                )
             ),
         )
 
@@ -1219,7 +1884,7 @@ def main():
         sac_eval = SbAgent(sac_model, num_trajectories=NUM_TRAJECTORIES_EVAL)
         sac_vec_normalize.training = False
         eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
-        pnl_results['SAC'] = evaluate_on_trajectories(
+        attribution_results['SAC'] = evaluate_on_trajectories_with_attribution(
             eval_env, lambda s: sac_eval.get_action(sac_vec_normalize.normalize_obs(sb_eval_sac._flatten_obs(s))),
         )
 
@@ -1232,22 +1897,104 @@ def main():
             disc, _ = _m.predict(flat, deterministic=True)
             return _t[disc]
         eval_env = DecisionStrideEnv(env, stride=DECISION_STRIDE)
-        pnl_results['DQN'] = evaluate_on_trajectories(eval_env, _dqn_eval_action)
+        attribution_results['DQN'] = evaluate_on_trajectories_with_attribution(
+            eval_env, _dqn_eval_action,
+        )
 
-    # Print summary table
+    # Project out PnL for the existing significance tests / distribution plots.
+    pnl_results = {n: r['pnl'] for n, r in attribution_results.items()}
+
+    # Per-agent summary. Two significance tests printed side by side:
+    #   p(t) — one-sample t-test on mean PnL vs 0 (parametric, CLT-justified at
+    #          N=eval_trajectories but pulled around by heavy tails)
+    #   p(W) — Wilcoxon signed-rank vs 0 (non-parametric, tests symmetry of the
+    #          distribution around 0, rank-based so robust to long tails)
+    # Skew/Kurt are Fisher's definitions: skew=0 → symmetric, kurt=0 → normal
+    # tails. Strongly negative skew or kurt > 1 means the t-test is testing a
+    # mean that's not representative of the typical trajectory.
     active = [n for n in AGENT_NAMES if n in pnl_results]
-    header = f"{'Agent':<12} | {'Mean PnL':>10} | {'Std':>10} | {'Median':>10} | {'Profitable':>12}"
+    header = (
+        f"{'Agent':<18} | {'Mean':>8} | {'Std':>8} | {'Median':>8} "
+        f"| {'Skew':>6} | {'Kurt':>6} | {'Profitable':>12} "
+        f"| {'p(t) vs 0':>10} | {'p(W) vs 0':>10}"
+    )
     print("\n" + "-" * len(header))
     print(header)
     print("-" * len(header))
     for name in active:
         pnl = pnl_results[name]
         pct = 100 * np.mean(pnl > 0)
+        skew = stats.skew(pnl)
+        kurt = stats.kurtosis(pnl)  # excess kurtosis (Fisher)
+        p_t = stats.ttest_1samp(pnl, 0.0).pvalue
+        # Wilcoxon errors on all-zero diffs; guard for the degenerate hold-cash case
+        try:
+            p_w = stats.wilcoxon(pnl).pvalue
+        except ValueError:
+            p_w = float('nan')
         print(
-            f"{name:<12} | {np.mean(pnl):>+10.1f} | {np.std(pnl):>10.1f} "
-            f"| {np.median(pnl):>+10.1f} | {np.sum(pnl > 0):>4d}/{len(pnl)} ({pct:.0f}%)"
+            f"{name:<18} | {np.mean(pnl):>+8.2f} | {np.std(pnl):>8.2f} "
+            f"| {np.median(pnl):>+8.2f} | {skew:>+6.2f} | {kurt:>+6.2f} "
+            f"| {np.sum(pnl > 0):>4d}/{len(pnl)} ({pct:.0f}%) "
+            f"| {p_t:>10.3g} | {p_w:>10.3g}"
         )
     print("-" * len(header))
+
+    # Pairwise comparison on per-trajectory PnL differences. Trajectories are
+    # paired across agents because each evaluate_on_trajectories call uses the
+    # same EVAL_SEED → identical OU midprice / arrival paths, so PnL[a] - PnL[b]
+    # cancels the shared market noise. Skew of the differences indicates
+    # whether the t-test's symmetry assumption holds on the *pair* (it can hold
+    # for differences even when the marginals are skewed). Holm correction
+    # controls family-wise error across the C(n, 2) comparisons; applied
+    # independently to the t-test and Wilcoxon p-values.
+    def _holm(raw_p):
+        raw_p = np.asarray(raw_p, dtype=float)
+        order = np.argsort(raw_p)
+        adj = np.empty_like(raw_p)
+        for rank, idx in enumerate(order):
+            adj[idx] = min(1.0, raw_p[idx] * (len(raw_p) - rank))
+        for k in range(1, len(order)):
+            adj[order[k]] = max(adj[order[k]], adj[order[k - 1]])
+        return adj
+
+    if len(active) >= 2:
+        pairs = list(combinations(active, 2))
+        diffs = [pnl_results[a] - pnl_results[b] for a, b in pairs]
+        mean_diffs = np.array([float(np.mean(d)) for d in diffs])
+        med_diffs = np.array([float(np.median(d)) for d in diffs])
+        skew_diffs = np.array([float(stats.skew(d)) for d in diffs])
+        t_raw = np.array([stats.ttest_rel(pnl_results[a], pnl_results[b]).pvalue
+                          for a, b in pairs])
+        w_raw = np.array([
+            stats.wilcoxon(pnl_results[a], pnl_results[b]).pvalue
+            if np.any(pnl_results[a] != pnl_results[b]) else float('nan')
+            for a, b in pairs
+        ])
+        t_adj = _holm(t_raw)
+        w_adj = _holm(np.where(np.isnan(w_raw), 1.0, w_raw))
+
+        pair_header = (
+            f"{'Pair (A vs B)':<40} | {'mean(A-B)':>9} | {'med(A-B)':>8} "
+            f"| {'skew':>6} | {'p(t) raw':>9} | {'p(t) Holm':>9} "
+            f"| {'p(W) raw':>9} | {'p(W) Holm':>9}"
+        )
+        print("\nPairwise tests on PnL differences (paired t-test + Wilcoxon, Holm-corrected):")
+        print("-" * len(pair_header))
+        print(pair_header)
+        print("-" * len(pair_header))
+        for (a, b), md, mdn, sk, pt_r, pt_a, pw_r, pw_a in zip(
+            pairs, mean_diffs, med_diffs, skew_diffs, t_raw, t_adj, w_raw, w_adj
+        ):
+            print(
+                f"{a + ' vs ' + b:<40} | {md:>+9.2f} | {mdn:>+8.2f} "
+                f"| {sk:>+6.2f} | {pt_r:>9.3g} | {pt_a:>9.3g} "
+                f"| {pw_r:>9.3g} | {pw_a:>9.3g}"
+            )
+        print("-" * len(pair_header))
+
+    # Quoting-spread summary across eval trajectories.
+    print_spread_table(attribution_results)
 
     # ==================================================================
     # Phase 3: Collect single-trajectory data for each agent
@@ -1305,6 +2052,20 @@ def main():
             ppo_single = SbAgent(ppo_model, num_trajectories=1)
             single_data.setdefault('PPO', []).append(
                 collect_single_trajectory(env, lambda s, _a=ppo_single, _sb=sb_single, _w=ppo_action_wrapper: _w.unscale(_a.get_action(ppo_vec_normalize.normalize_obs(_sb._flatten_obs(s)))), max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
+
+        if ENABLE_AGENTS.get('PPO_narrow') and ppo_narrow_model is not None:
+            env = create_environment(1, sim_seed)
+            sb_single_n = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
+            ppo_narrow_single = SbAgent(ppo_narrow_model, num_trajectories=1)
+            single_data.setdefault('PPO_narrow', []).append(
+                collect_single_trajectory(
+                    env,
+                    lambda s, _a=ppo_narrow_single, _sb=sb_single_n, _w=ppo_narrow_action_wrapper:
+                        _w.unscale(_a.get_action(
+                            ppo_narrow_vec_normalize.normalize_obs(_sb._flatten_obs(s))
+                        )),
+                    max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE,
+                ))
 
         if ENABLE_AGENTS.get('SAC') and sac_model is not None:
             env = create_environment(1, sim_seed)
@@ -1368,6 +2129,8 @@ def main():
         rl_training_rewards['REINFORCE'] = reinforce_rewards
     if ppo_reward_cb.epoch_rewards:
         rl_training_rewards['PPO'] = ppo_reward_cb.epoch_rewards
+    if ppo_narrow_reward_cb.epoch_rewards:
+        rl_training_rewards['PPO_narrow'] = ppo_narrow_reward_cb.epoch_rewards
     if sac_reward_cb.epoch_rewards:
         rl_training_rewards['SAC'] = sac_reward_cb.epoch_rewards
     if dqn_reward_cb.epoch_rewards:
@@ -1377,13 +2140,43 @@ def main():
         plot_training_rewards(rl_training_rewards)
     if pnl_results:
         plot_pnl_distribution(pnl_results)
+    if attribution_results and REWARD_KIND != 'pnl':
+        utility_results = {n: r['utility'] for n, r in attribution_results.items()}
+        plot_utility_distribution(utility_results)
+    if attribution_results:
+        plot_pnl_attribution_aggregate(attribution_results)
     if single_data:
         plot_price_evolution(single_data)
         plot_pnl_evolution(single_data)
         plot_position_offsets(single_data)
+        plot_pnl_attribution_individual(single_data)
 
     print("\nDone. All figures saved to", FIGURES_DIR)
+    print(f"Results log:        {results_path}")
+
+
+def _run_main_with_logging():
+    """Wrap ``main()`` so sys.stdout is restored and the log file is closed
+    even if main() raises (KeyboardInterrupt, RuntimeError, …)."""
+    # We have to set the tee up before main() can call print(), so the actual
+    # install happens inside main(); here we just ensure cleanup. main() leaves
+    # `_results_file` and `_original_stdout` as module-level attrs would be
+    # heavier than necessary — instead, rely on the fact that sys.stdout is
+    # restored at main()'s last line on success, and restore here on failure.
+    try:
+        main()
+    finally:
+        # If main() crashed mid-run, sys.stdout is still the tee; restore it
+        # and close the underlying file so the partial log isn't lost.
+        if isinstance(sys.stdout, _StdoutTee):
+            for s in sys.stdout.streams:
+                if s is not sys.__stdout__:
+                    try:
+                        s.close()
+                    except Exception:
+                        pass
+            sys.stdout = sys.__stdout__
 
 
 if __name__ == "__main__":
-    main()
+    _run_main_with_logging()
