@@ -15,6 +15,7 @@ import sys
 import os
 import time
 import argparse
+from itertools import combinations
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 import gymnasium
 import numpy as np
@@ -82,6 +83,10 @@ SB3_OBS_KEYS = [
     LP_UPPER_OFFSET_KEY,
     TIME_KEY,
     GAS_COST_KEY,
+    LP_COLLECTED_FEES0_KEY,  # cumulative LP fees in token0 units
+    LP_COLLECTED_FEES1_KEY,  # cumulative LP fees in token1 units (numéraire)
+    LP_TOKEN0_AMOUNT_KEY,    # LP inventory in the risky asset
+    LP_TOKEN1_AMOUNT_KEY,    # LP inventory in the numéraire
 ]
 
 # Output directory: one folder per (array) job under notebooks/results/.
@@ -124,6 +129,7 @@ def save_config_to_file(path: str):
         f.write("\n# ── Derived ──\n")
         f.write(f"SB3_TOTAL_TIMESTEPS = {SB3_TOTAL_TIMESTEPS}\n")
         f.write(f"SB3_OBS_KEYS = {list(SB3_OBS_KEYS)!r}\n")
+
 
 # ============================================================================
 # Environment Factory
@@ -1008,7 +1014,7 @@ def plot_pnl_distribution(pnl_results):
     #ax1.set_title('PnL Distribution')
     ax1.grid(True, alpha=0.3)
     plt.tight_layout()
-    path1 = os.path.join(FIGURES_DIR, 'pnl_boxplot.png')
+    path1 = os.path.join(FIGURES_DIR, f'pnl_boxplot.png')
     fig1.savefig(path1, dpi=150, bbox_inches='tight')
     plt.close(fig1)
     #print(f"  Saved: {path1}")
@@ -1036,7 +1042,7 @@ def plot_pnl_distribution(pnl_results):
     ax2.legend(fontsize=16, loc='upper left')
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
-    path2 = os.path.join(FIGURES_DIR, 'pnl_histogram.png')
+    path2 = os.path.join(FIGURES_DIR, f'pnl_histogram.png')
     fig2.savefig(path2, dpi=150, bbox_inches='tight')
     plt.close(fig2)
     #print(f"  Saved: {path2}")
@@ -1157,7 +1163,7 @@ def plot_price_evolution(single_data):
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'price_evolution.png')
+    path = os.path.join(FIGURES_DIR, f'price_evolution.png')
     fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
@@ -1301,7 +1307,7 @@ def plot_pnl_evolution(single_data):
     ax.legend(fontsize=16, loc='upper left')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'pnl_evolution.png')
+    path = os.path.join(FIGURES_DIR, f'pnl_evolution.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
@@ -1335,7 +1341,7 @@ def plot_training_rewards(rl_rewards: dict):
     ax.legend(fontsize=16, loc='lower right')
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'training_rewards.png')
+    path = os.path.join(FIGURES_DIR, f'training_rewards.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
@@ -1381,7 +1387,7 @@ def plot_position_offsets(single_data):
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
-    path = os.path.join(FIGURES_DIR, 'position_offsets.png')
+    path = os.path.join(FIGURES_DIR, f'position_offsets.png')
     fig.savefig(path, dpi=150, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
@@ -1594,8 +1600,16 @@ def main():
     os.makedirs(FIGURES_DIR, exist_ok=True)
     _config_path = os.path.join(FIGURES_DIR, 'config.txt')
     save_config_to_file(_config_path)
+
+    # Mirror every print() into a results .txt next to the figures. Wrapped in
+    # try/finally further down so we always restore sys.stdout even on error.
+    results_path = os.path.join(FIGURES_DIR, 'results.txt')
+    _results_file = open(results_path, 'w', buffering=1)  # line-buffered
+    _original_stdout = sys.stdout
+    sys.stdout = _StdoutTee(_original_stdout, _results_file)
     print(f"Experiment {CONFIG_IDX} → {FIGURES_DIR}")
     print(f"  Config written to: {_config_path}")
+    print(f"  Stdout logged to:  {results_path}")
 
     # Containers for trained RL models / agents
     reinforce_agent = None

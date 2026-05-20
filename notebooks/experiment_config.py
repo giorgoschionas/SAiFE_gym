@@ -20,7 +20,7 @@ N_STEPS = [1000]
 NUM_TRAJECTORIES_TRAIN = [200]
 NUM_TRAJECTORIES_EVAL = [1000]
 INITIAL_WEALTH = [1000]
-TAU = [15, 20]
+TAU = [15]
 LIQUIDITY_SCALE = [1e5]
 
 INITIAL_PRICE = [1000]
@@ -33,19 +33,32 @@ EXP_VALUE = [1.0001]
 ALPHA0 = [np.array([1.0, 1.0])]
 ALPHA1 = [np.array([15.0, 15.0])]
 ALPHA2 = [np.array([0.0, 0.0])]
-ALPHA3 = [np.array([20000, 20000])]
+ALPHA3 = [np.array([4000, 4000])]
 
 GAMMA_CARTEA = [0.000005]
 
-ARRIVAL_REBALANCE_EVERY = [15000000]
-ARRIVAL_REBALANCE_WIDTH = [1]
+# ── Reward function selector ────────────────────────────────────────
+#   'pnl'         — plain ΔPortfolioValue (risk-neutral; PnL == utility)
+#   'inventory'   — RunningInventoryPenalty: PnL − φ·dt·x_t^p (Cartea–Jaimungal)
+#   'exponential' — ExponentialUtility: sparse terminal CARA −exp(−a·W_T)
+# With INITIAL_WEALTH=1000, x_t∈[0,1] in token0 units, dt=1e-3. Sensible scales:
+#   INVENTORY_PHI ∈ [1, 100] — per-step penalty ≈ phi·1e-3·x² in token1 units.
+#   EXP_RISK_AVERSION ≈ 1e-3 to keep a·W ~ O(1) (default 0.1 underflows).
+REWARD_KIND = ['inventory']           # 'pnl' | 'inventory' | 'exponential'
+INVENTORY_PHI = [3.5]
+INVENTORY_TERMINAL_AVERSION = [0.0]
+INVENTORY_EXPONENT = [2.0]
+EXP_RISK_AVERSION = [1e-3]
+
+ARRIVAL_REBALANCE_EVERY = [150]
+ARRIVAL_REBALANCE_WIDTH = [2]
 ARRIVAL_REBALANCE_LOWER = [-1]
-ARRIVAL_REBALANCE_UPPER = [0]
+ARRIVAL_REBALANCE_UPPER = [1]
 
-DEPLOYONCE_LOWER = [-1]
-DEPLOYONCE_UPPER = [1]
+DEPLOYONCE_LOWER = [-15]
+DEPLOYONCE_UPPER = [15]
 
-REINFORCE_EPOCHS = [500]
+REINFORCE_EPOCHS = [400]
 REINFORCE_LR = [2e-4]
 ACTION_STD_INIT = [1.7]
 
@@ -54,7 +67,7 @@ NUM_SINGLE_SIMS = [15]
 MAX_TRADES_DEBUG = [None]
 
 PPO_ACTION_WRAPPER = ['multidiscrete']  # 'multidiscrete' or 'rescaled'
-DECISION_STRIDE = [250]
+DECISION_STRIDE = [200]
 
 ENABLE_AGENTS = [
     {
@@ -65,6 +78,7 @@ ENABLE_AGENTS = [
         'CarteaDrissiMonga': False,
         'REINFORCE':        False,
         'PPO':              True,
+        'PPO_narrow':       True,
         'SAC':              False,
         'DQN':              False,
     },
@@ -72,11 +86,11 @@ ENABLE_AGENTS = [
 
 # ── PPO hyperparameters ─────────────────────────────────────────────
 PPO_LEARNING_RATE = [3e-4]
-PPO_BATCH_SIZE = [64]
+PPO_BATCH_SIZE = [200]
 PPO_N_EPOCHS = [7]
 PPO_GAMMA = [0.99]
 PPO_GAE_LAMBDA = [0.95]
-PPO_CLIP_RANGE = [0.2]
+PPO_CLIP_RANGE = [0.15]
 PPO_ENT_COEF = [0.03]
 PPO_NET_ARCH = [[256, 256]]
 
@@ -91,6 +105,8 @@ SWEEP_VARS = [
     'FEE_TIER', 'EXP_VALUE',
     'ALPHA0', 'ALPHA1', 'ALPHA2', 'ALPHA3',
     'GAMMA_CARTEA',
+    'REWARD_KIND', 'INVENTORY_PHI', 'INVENTORY_TERMINAL_AVERSION',
+    'INVENTORY_EXPONENT', 'EXP_RISK_AVERSION',
     'ARRIVAL_REBALANCE_EVERY', 'ARRIVAL_REBALANCE_WIDTH',
     'ARRIVAL_REBALANCE_LOWER', 'ARRIVAL_REBALANCE_UPPER',
     'DEPLOYONCE_LOWER', 'DEPLOYONCE_UPPER',
