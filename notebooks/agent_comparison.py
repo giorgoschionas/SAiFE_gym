@@ -100,14 +100,14 @@ FIGURES_DIR = os.path.join(os.path.dirname(__file__), 'results', job_id)
 
 AGENT_NAMES = [name for name, on in ENABLE_AGENTS.items() if on]
 AGENT_COLORS = {
-    'DoNothing':  '#7f7f7f',
+    'DeployNarrow':  "#76e1ff",
     'Uniform':    '#1f77b4',
-    'DeployOnce': '#9467bd',
-    'ArrivalRebalance': '#e377c2',
-    'CarteaDrissiMonga': '#ff7f0e',
-    'REINFORCE':  '#2ca02c',
-    'PPO':        "#e75454",
-    'PPO_narrow': "#5d090b",
+    'DeployWide': '#9467bd',
+    'ArrivalRebalance': "#ff7dd8",
+    'CDM': '#ff7f0e',
+    'REINFORCE':  "#000000",
+    'PPO':        "#fb4545",
+    'PPO_narrow': "#62f848",
     'SAC':        '#17becf',
     'DQN':        '#8c564b',
 }
@@ -828,11 +828,25 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
     hodl_t0 = np.zeros(n)
     hodl_t1 = np.zeros(n)
     ref_set = np.zeros(n, dtype=bool)
-    # Per-trajectory spread accumulators (post-step state). Online mean/var
-    # via Σx, Σx² so we only carry two arrays instead of a (T, n) buffer.
+    # Per-trajectory spread and center-asymmetry accumulators (post-step
+    # state). Online mean/var via Σx, Σx² so we only carry two arrays per
+    # metric instead of a (T, n) buffer. ``center`` is the position midpoint
+    # relative to the current tick — i.e. ``(upper_offset + lower_offset) / 2``
+    # — so 0 is symmetric, positive means the position is skewed above the
+    # current price, negative below.
     spread_sum = np.zeros(n, dtype=np.float64)
     spread_sumsq = np.zeros(n, dtype=np.float64)
+    center_sum = np.zeros(n, dtype=np.float64)
+    center_sumsq = np.zeros(n, dtype=np.float64)
     spread_count = 0
+    # Deploy-time center accumulators: sampled only at refresh events
+    # (rebalance or first deploy). Captures what the agent chose at
+    # deployment, independent of how price drift bends the offset during
+    # holds. ``deploy_count`` is per-trajectory because rebalance schedules
+    # differ across trajectories.
+    deploy_center_sum = np.zeros(n, dtype=np.float64)
+    deploy_center_sumsq = np.zeros(n, dtype=np.float64)
+    deploy_count = np.zeros(n, dtype=np.int64)
     # Per-trajectory rebalance counter. Uses the same mask as the gas charge
     # (first deploy excluded). spread_count doubles as decisions/episode since
     # the outer loop iterates once per agent decision — DecisionStride
@@ -844,6 +858,11 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
         pre_price = state[ASSET_PRICE_KEY].astype(np.float64).copy()
         prev_pv = state[PORTFOLIO_VALUE_KEY].astype(np.float64).copy()
         had_position = state[LP_LIQUIDITY_KEY] > 0
+        # Snapshot current_tick *before* env.step — this is the tick the agent
+        # sees at decision time. Used as the reference for deploy-time center
+        # so the metric isn't biased by trades that move current_tick during
+        # the (possibly multi-step) DecisionStride window.
+        pre_current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.float64).copy()
 
         action = get_action_fn(state)
         hold_flags = action[:, 2] if action.shape[1] >= 3 else -np.ones(n)
@@ -854,12 +873,18 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
         cum_pnl += state[PORTFOLIO_VALUE_KEY].astype(np.float64) - prev_pv
         cum_utility += reward
 
-        # Post-step spread (upper − lower) reflects the agent's actually
+        # Post-step spread (upper − lower) and center asymmetry
+        # ((upper + lower)/2 − current_tick) reflect the agent's actually
         # deployed position after any rebalance fired in this step.
-        spread_step = (state[LP_TICK_UPPER_KEY].astype(np.float64)
-                       - state[LP_TICK_LOWER_KEY].astype(np.float64))
+        upper = state[LP_TICK_UPPER_KEY].astype(np.float64)
+        lower = state[LP_TICK_LOWER_KEY].astype(np.float64)
+        current = state[POOL_CURRENT_TICK_KEY].astype(np.float64)
+        spread_step = upper - lower
+        center_step = 0.5 * (upper + lower) - current
         spread_sum += spread_step
         spread_sumsq += spread_step * spread_step
+        center_sum += center_step
+        center_sumsq += center_step * center_step
         spread_count += 1
 
         new_price = state[ASSET_PRICE_KEY].astype(np.float64)
@@ -890,14 +915,45 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
             hodl_t1 = np.where(refresh, new_t1, hodl_t1)
             ref_set = ref_set | first_deploy  # latches True once set
 
+            # Sample the just-deployed position's center against the *pre-step*
+            # current_tick (the tick the agent saw at decision time). LP bounds
+            # in state are absolute and reflect the new range; subtracting the
+            # pre-step tick recovers the offset the agent quoted, independent
+            # of any same-step trades that moved current_tick afterwards.
+            deploy_center_step = 0.5 * (upper + lower) - pre_current_tick
+            deploy_center_sum += np.where(refresh, deploy_center_step, 0.0)
+            deploy_center_sumsq += np.where(
+                refresh, deploy_center_step * deploy_center_step, 0.0,
+            )
+            deploy_count += refresh.astype(np.int64)
+
     cum_il = cum_hodl_pnl + cum_fees - cum_gas - cum_pnl
 
-    # Per-trajectory spread stats: time-averaged spread, and temporal std of
-    # spread within each trajectory. Var clamped at 0 to absorb numerical noise.
+    # Per-trajectory spread / center stats: time-averaged value and temporal
+    # std within each trajectory. Var clamped at 0 to absorb numerical noise.
     denom = max(spread_count, 1)
     mean_spread = spread_sum / denom
     var_spread = spread_sumsq / denom - mean_spread * mean_spread
     temporal_std_spread = np.sqrt(np.maximum(var_spread, 0.0))
+    mean_center = center_sum / denom
+    var_center = center_sumsq / denom - mean_center * mean_center
+    temporal_std_center = np.sqrt(np.maximum(var_center, 0.0))
+
+    # Deploy-time center stats: per-trajectory mean and within-traj std,
+    # computed only over refresh events. Trajectories that never deployed
+    # (possible only for synthetic stances like DoNothing(hold_cash=True))
+    # get NaN so they don't pollute the averages.
+    has_deploy = deploy_count > 0
+    safe_deploy_count = np.where(has_deploy, deploy_count, 1).astype(np.float64)
+    mean_deploy_center = np.where(
+        has_deploy, deploy_center_sum / safe_deploy_count, np.nan,
+    )
+    var_deploy_center = np.where(
+        has_deploy,
+        deploy_center_sumsq / safe_deploy_count - mean_deploy_center * mean_deploy_center,
+        np.nan,
+    )
+    temporal_std_deploy_center = np.sqrt(np.maximum(var_deploy_center, 0.0))
 
     return {
         'pnl': cum_pnl,
@@ -908,6 +964,11 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
         'hodl_pnl': cum_hodl_pnl,
         'mean_spread': mean_spread,
         'temporal_std_spread': temporal_std_spread,
+        'mean_center': mean_center,
+        'temporal_std_center': temporal_std_center,
+        'mean_deploy_center': mean_deploy_center,
+        'temporal_std_deploy_center': temporal_std_deploy_center,
+        'deploy_count': deploy_count,                 # per-traj, shape (n,)
         'rebalance_count': rebalance_count,           # per-traj, shape (n,)
         'decision_count': int(spread_count),          # scalar: decisions/episode
     }
@@ -948,28 +1009,54 @@ class _StdoutTee:
 # ============================================================================
 
 def print_spread_table(attribution_results):
-    """Print the agent quoting-behavior table.
+    """Print the agent quoting-behavior tables.
 
-    Spread columns:
-      - Mean spread:          E_{traj, step}[upper − lower]
-      - Std (within episode): E_{traj}[ Std_step(spread) ]
-      - Std (between traj):   Std_{traj}[ E_step(spread) ]
+    Two tables are printed: one sampled at every env step (time-averaged
+    behaviour as the LP carries its position through the episode), one
+    sampled only at refresh events (rebalance + first deploy — captures
+    what the agent chose at deployment, before price drift moves the
+    offset).
 
-    Rebalance columns:
-      - Rebalances/ep: mean across trajs of rebalance count per episode
-                       (first deploy not counted — matches gas convention)
-      - Rate (%):      Rebalances/ep / decisions_per_ep × 100
-                       (per-decision-opportunity rate; comparable across strides)
+    Step-averaged table (sampled every env step):
+      Spread (width = upper − lower, in ticks):
+        - Mean spread:          E_{traj, step}[upper − lower]
+        - Std (within episode): E_{traj}[ Std_step(spread) ]
+        - Std (between traj):   Std_{traj}[ E_step(spread) ]
+      Center asymmetry (center = (upper + lower)/2 − current_tick, in ticks;
+      0 = symmetric quote, +/− = position skewed above/below current price):
+        - Mean center:          E_{traj, step}[center]
+        - Std (within episode): E_{traj}[ Std_step(center) ]
+        - Std (between traj):   Std_{traj}[ E_step(center) ]
+      Rebalance columns:
+        - Rebalances/ep: mean across trajs of rebalance count per episode
+                         (first deploy not counted — matches gas convention)
+        - Rate (%):      Rebalances/ep / decisions_per_ep × 100
+                         (per-decision-opportunity rate; comparable across
+                         strides)
+
+    Deploy-time table (sampled only on rebalance + first deploy):
+        - Mean center:          E_{traj}[ E_deploy(center) ] over refreshes
+        - Std (within episode): E_{traj}[ Std_deploy(center) ]
+                                (trajectories with a single deploy event
+                                contribute 0)
+        - Std (between traj):   Std_{traj}[ E_deploy(center) ]
+        - Deploys/ep:           mean deploy events per episode
+                                (= rebalance_count + 1 when the LP ever
+                                deploys; first deploy is included here)
     """
     active = [n for n in AGENT_NAMES if n in attribution_results]
     if not active:
         return
+
+    # ----- Step-averaged table -----
     header = (
         f"  {'Agent':<18} | {'Mean spread':>12} | "
         f"{'Std (within ep)':>16} | {'Std (between traj)':>19} | "
+        f"{'Mean center':>12} | {'Std (within ep)':>16} | "
+        f"{'Std (between traj)':>19} | "
         f"{'Rebalances/ep':>14} | {'Rate (%)':>9}"
     )
-    print("\nQuoting behavior across eval trajectories:")
+    print("\nQuoting behavior across eval trajectories (sampled every step):")
     print("  " + "-" * (len(header) - 2))
     print(header)
     print("  " + "-" * (len(header) - 2))
@@ -977,20 +1064,56 @@ def print_spread_table(attribution_results):
         r = attribution_results[name]
         mean_s = r['mean_spread']
         temp_std = r['temporal_std_spread']
+        mean_c = r['mean_center']
+        temp_std_c = r['temporal_std_center']
         reb_count = r['rebalance_count']
         decisions = max(int(r['decision_count']), 1)
 
         col_mean = float(mean_s.mean())
         col_std_within = float(temp_std.mean())
         col_std_between = float(mean_s.std())
+        col_mean_c = float(mean_c.mean())
+        col_std_within_c = float(temp_std_c.mean())
+        col_std_between_c = float(mean_c.std())
         col_reb_per_ep = float(reb_count.mean())
         col_rate = 100.0 * col_reb_per_ep / decisions
         print(
             f"  {name:<18} | {col_mean:>12.3f} | "
             f"{col_std_within:>16.3f} | {col_std_between:>19.3f} | "
+            f"{col_mean_c:>+12.3f} | {col_std_within_c:>16.3f} | "
+            f"{col_std_between_c:>19.3f} | "
             f"{col_reb_per_ep:>14.2f} | {col_rate:>9.2f}"
         )
     print("  " + "-" * (len(header) - 2))
+
+    # ----- Deploy-time table -----
+    header2 = (
+        f"  {'Agent':<18} | {'Mean center':>12} | "
+        f"{'Std (within ep)':>16} | {'Std (between traj)':>19} | "
+        f"{'Deploys/ep':>11}"
+    )
+    print("\nDeploy-time center asymmetry (sampled only on rebalance + first deploy):")
+    print("  " + "-" * (len(header2) - 2))
+    print(header2)
+    print("  " + "-" * (len(header2) - 2))
+    for name in active:
+        r = attribution_results[name]
+        mean_dc = r['mean_deploy_center']
+        temp_std_dc = r['temporal_std_deploy_center']
+        dep_count = r['deploy_count']
+
+        # nan-safe aggregation: trajs that never deployed are dropped from
+        # the mean/std rather than coerced to 0 (which would bias toward 0).
+        col_mean_dc = float(np.nanmean(mean_dc)) if np.any(~np.isnan(mean_dc)) else float('nan')
+        col_std_within_dc = float(np.nanmean(temp_std_dc)) if np.any(~np.isnan(temp_std_dc)) else float('nan')
+        col_std_between_dc = float(np.nanstd(mean_dc)) if np.any(~np.isnan(mean_dc)) else float('nan')
+        col_deploys = float(dep_count.mean())
+        print(
+            f"  {name:<18} | {col_mean_dc:>+12.3f} | "
+            f"{col_std_within_dc:>16.3f} | {col_std_between_dc:>19.3f} | "
+            f"{col_deploys:>11.2f}"
+        )
+    print("  " + "-" * (len(header2) - 2))
 
 
 # ============================================================================
@@ -1019,20 +1142,35 @@ def plot_pnl_distribution(pnl_results):
     plt.close(fig1)
     #print(f"  Saved: {path1}")
 
-    # Histogram
+    # Histogram. Two-pass render per agent:
+    #   pass 1 — `stepfilled` with very low alpha for a translucent area cue;
+    #   pass 2 — `step` with full opacity for a thin sharp outline.
+    # Keeping the edge in its own call means the outline stays fully
+    # saturated regardless of how transparent the fill is (matplotlib's
+    # `alpha` kwarg on `stepfilled` dims both edge and face together).
     fig2, ax2 = plt.subplots(figsize=(8, 5))
     all_pnl = np.concatenate(list(pnl_results.values()))
     lo, hi = np.percentile(all_pnl, [1, 99])
     bins = np.linspace(lo, hi, 50)
     for name in agents:
+        # Translucent fill (no edge — second pass draws it).
         ax2.hist(
-            pnl_results[name], bins=bins, alpha=0.35,
-            color=AGENT_COLORS[name], density=True,
+            pnl_results[name], bins=bins,
+            histtype='stepfilled',
+            facecolor=AGENT_COLORS[name], alpha=0.12,
+            edgecolor='none', density=True,
+        )
+        # Crisp opaque outline; this is what carries the legend entry.
+        ax2.hist(
+            pnl_results[name], bins=bins,
+            histtype='step',
+            edgecolor=AGENT_COLORS[name], linewidth=1.1,
+            alpha=1.0, density=True,
             label=f"{name} (mean={np.mean(pnl_results[name]):+.1f})",
         )
         ax2.axvline(
             np.mean(pnl_results[name]),
-            color=AGENT_COLORS[name], linestyle='--', linewidth=1.5,
+            color=AGENT_COLORS[name], linestyle='--', linewidth=1.2,
         )
     ax2.axvline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
     ax2.set_xlabel('Cumulative PnL', fontsize=16)
@@ -1073,20 +1211,29 @@ def plot_utility_distribution(utility_results):
     plt.close(fig1)
     #print(f"  Saved: {path1}")
 
-    # Histogram
+    # Histogram. Two-pass render — translucent fill plus crisp outline,
+    # matches plot_pnl_distribution's style.
     fig2, ax2 = plt.subplots(figsize=(8, 5))
     all_u = np.concatenate(list(utility_results.values()))
     lo, hi = np.percentile(all_u, [1, 99])
     bins = np.linspace(lo, hi, 50) if hi > lo else 50
     for name in agents:
         ax2.hist(
-            utility_results[name], bins=bins, alpha=0.35,
-            color=AGENT_COLORS[name], density=True,
+            utility_results[name], bins=bins,
+            histtype='stepfilled',
+            facecolor=AGENT_COLORS[name], alpha=0.12,
+            edgecolor='none', density=True,
+        )
+        ax2.hist(
+            utility_results[name], bins=bins,
+            histtype='step',
+            edgecolor=AGENT_COLORS[name], linewidth=1.3,
+            alpha=1.0, density=True,
             label=f"{name} (mean={np.mean(utility_results[name]):+.3g})",
         )
         ax2.axvline(
             np.mean(utility_results[name]),
-            color=AGENT_COLORS[name], linestyle='--', linewidth=1.5,
+            color=AGENT_COLORS[name], linestyle='--', linewidth=1.2,
         )
     ax2.axvline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.5)
     ax2.set_xlabel(f'Cumulative Utility ({REWARD_KIND})', fontsize=16)
@@ -1158,8 +1305,8 @@ def plot_price_evolution(single_data):
         ax.set_ylabel('Price', fontsize=16)
         ax.tick_params(axis='both', labelsize=14)
         ax.ticklabel_format(axis='y', useOffset=False, style='plain')
-        ax.set_title(name)
-        ax.legend(fontsize=14, loc='upper left')
+        #ax.set_title(name)
+        ax.legend(fontsize=16, loc='upper left')
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -1206,7 +1353,7 @@ def plot_price_evolution(single_data):
         ax_rl.set_ylabel('Price', fontsize=16)
         ax_rl.tick_params(axis='both', labelsize=14)
         ax_rl.ticklabel_format(axis='y', useOffset=False, style='plain')
-        ax_rl.set_title(name)
+        #ax_rl.set_title(name)
         ax_rl.legend(fontsize=16, loc='lower right')
         ax_rl.grid(True, alpha=0.3)
         plt.tight_layout()
@@ -1258,8 +1405,8 @@ def plot_price_evolution(single_data):
                 ax.set_ylabel('Price', fontsize=16)
                 ax.tick_params(axis='both', labelsize=14)
                 ax.ticklabel_format(axis='y', useOffset=False, style='plain')
-                ax.set_title(name)
-                ax.legend(fontsize=14, loc='lower right')
+                #ax.set_title(name)
+                ax.legend(fontsize=16, loc='lower right')
                 ax.grid(True, alpha=0.3)
 
                 # Final PnL for this sim/agent, top-right of the panel.
@@ -1383,7 +1530,7 @@ def plot_position_offsets(single_data):
         ax.set_ylabel('Tick Offset from Current Price', fontsize=16)
         ax.tick_params(axis='both', labelsize=14)
         ax.set_title(name)
-        ax.legend(fontsize=8)
+        ax.legend(fontsize=16)
         ax.grid(True, alpha=0.3)
 
     plt.tight_layout()
@@ -1437,11 +1584,11 @@ def plot_pnl_attribution_individual(single_data):
                     linestyle=':', linewidth=1.0, alpha=sim_alpha,
                     label=lbl('HODL PnL'))
         ax.axhline(0, color='gray', linestyle='-', linewidth=0.6, alpha=0.4)
-        ax.set_xlabel('Time', fontsize=14)
-        ax.set_ylabel('Cumulative value (token1)', fontsize=14)
+        ax.set_xlabel('Time', fontsize=16)
+        ax.set_ylabel('Cumulative value (token1)', fontsize=16)
         ax.set_title(name)
-        ax.tick_params(axis='both', labelsize=12)
-        ax.legend(fontsize=11, loc='best')
+        ax.tick_params(axis='both', labelsize=16)
+        ax.legend(fontsize=16, loc='upper left')
         ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path = os.path.join(FIGURES_DIR, f'pnl_attribution.png')
@@ -1471,23 +1618,23 @@ def plot_pnl_attribution_individual(single_data):
                 ax.plot(d['time'], d['cum_hodl_pnl'], color='gray',
                         linestyle=':', linewidth=1.2, label='HODL PnL')
                 ax.axhline(0, color='gray', linestyle='-', linewidth=0.6, alpha=0.4)
-                # Final values in the top-right corner.
+                # Final values pinned to the upper-left corner.
                 ax.text(
-                    0.97, 0.97,
+                    0.03, 0.97,
                     f"PnL: {d['cumulative_pnl'][-1]:+.2f}\n"
                     f"Fees: {d['cum_fees'][-1]:+.2f}\n"
                     f"IL: {d['cum_il'][-1]:+.2f}\n"
                     f"Gas: {d['cum_gas'][-1]:+.2f}",
-                    transform=ax.transAxes, ha='right', va='top',
+                    transform=ax.transAxes, ha='left', va='top',
                     fontsize=11, family='monospace',
                     bbox=dict(boxstyle='round,pad=0.3', facecolor='white',
                               edgecolor='gray', alpha=0.85),
                 )
-                ax.set_xlabel('Time', fontsize=14)
-                ax.set_ylabel('Cumulative value (token1)', fontsize=14)
+                ax.set_xlabel('Time', fontsize=16)
+                ax.set_ylabel('Cumulative value (token1)', fontsize=16)
                 ax.set_title(name)
                 ax.tick_params(axis='both', labelsize=12)
-                ax.legend(fontsize=10, loc='lower left')
+                ax.legend(fontsize=16, loc='lower left')
                 ax.grid(True, alpha=0.3)
             plt.tight_layout()
             path_i = os.path.join(
@@ -1527,9 +1674,11 @@ def plot_pnl_attribution_aggregate(attribution_results):
             patch.set_facecolor(AGENT_COLORS[name])
             patch.set_alpha(0.6)
         ax.axhline(0, color='gray', linestyle='--', linewidth=0.8)
-        ax.set_ylabel(f'{title} (token1)', fontsize=14)
+        ax.set_ylabel(f'{title} (token1)', fontsize=16)
         ax.set_title(title)
         ax.tick_params(axis='both', labelsize=12)
+        # Match the inclination used in pnl_attribution_means below.
+        plt.setp(ax.get_xticklabels(), rotation=15)
         ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path1 = os.path.join(FIGURES_DIR, f'pnl_attribution_boxplots.png')
@@ -1562,10 +1711,10 @@ def plot_pnl_attribution_aggregate(attribution_results):
     ax.axhline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.6)
     ax.set_xticks(x)
     ax.set_xticklabels(agents, rotation=15)
-    ax.set_ylabel('Mean across eval trajectories (token1)', fontsize=14)
+    ax.set_ylabel('Mean across eval trajectories (token1)', fontsize=16)
     ax.set_title('PnL attribution (mean over eval trajectories)')
     ax.tick_params(axis='both', labelsize=12)
-    ax.legend(fontsize=11, loc='best')
+    ax.legend(fontsize=16, loc='best')
     ax.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
     path2 = os.path.join(FIGURES_DIR, f'pnl_attribution_means.png')
@@ -1821,9 +1970,9 @@ def main():
     # and PnL distribution plots.
     attribution_results = {}
 
-    if ENABLE_AGENTS.get('DoNothing'):
+    if ENABLE_AGENTS.get('DeployNarrow'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        attribution_results['DoNothing'] = evaluate_on_trajectories_with_attribution(
+        attribution_results['DeployNarrow'] = evaluate_on_trajectories_with_attribution(
             env, DoNothingAgent(env).get_action,
         )
 
@@ -1833,9 +1982,9 @@ def main():
             env, UniformAllocationAgent(env).get_action,
         )
 
-    if ENABLE_AGENTS.get('DeployOnce'):
+    if ENABLE_AGENTS.get('DeployWide'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        attribution_results['DeployOnce'] = evaluate_on_trajectories_with_attribution(
+        attribution_results['DeployWide'] = evaluate_on_trajectories_with_attribution(
             env, DeployOnceAgent(
                 env, lower_offset=DEPLOYONCE_LOWER, upper_offset=DEPLOYONCE_UPPER,
             ).get_action,
@@ -1852,10 +2001,14 @@ def main():
             ).get_action,
         )
 
-    if ENABLE_AGENTS.get('CarteaDrissiMonga'):
+    if ENABLE_AGENTS.get('CDM'):
         env = create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED)
-        attribution_results['CarteaDrissiMonga'] = evaluate_on_trajectories_with_attribution(
-            env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action,
+        attribution_results['CDM'] = evaluate_on_trajectories_with_attribution(
+            env, CarteaPLAgent(
+                env, gamma=GAMMA_CARTEA,
+                rebalance_tolerance=REBALANCE_TOLERANCE_CARTEA,
+                seed=SEED,
+            ).get_action,
         )
 
     if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
@@ -2023,9 +2176,9 @@ def main():
     for sim_idx in range(NUM_SINGLE_SIMS):
         sim_seed = SINGLE_SEED_BASE + sim_idx
 
-        if ENABLE_AGENTS.get('DoNothing'):
+        if ENABLE_AGENTS.get('DeployNarrow'):
             env = create_environment(1, sim_seed)
-            single_data.setdefault('DoNothing', []).append(
+            single_data.setdefault('DeployNarrow', []).append(
                 collect_single_trajectory(env, DoNothingAgent(env).get_action, max_trades=MAX_TRADES_DEBUG))
 
         if ENABLE_AGENTS.get('Uniform'):
@@ -2033,9 +2186,9 @@ def main():
             single_data.setdefault('Uniform', []).append(
                 collect_single_trajectory(env, UniformAllocationAgent(env).get_action, max_trades=MAX_TRADES_DEBUG))
 
-        if ENABLE_AGENTS.get('DeployOnce'):
+        if ENABLE_AGENTS.get('DeployWide'):
             env = create_environment(1, sim_seed)
-            single_data.setdefault('DeployOnce', []).append(
+            single_data.setdefault('DeployWide', []).append(
                 collect_single_trajectory(env, DeployOnceAgent(
                     env, lower_offset=DEPLOYONCE_LOWER, upper_offset=DEPLOYONCE_UPPER,
                 ).get_action, max_trades=MAX_TRADES_DEBUG))
@@ -2050,10 +2203,18 @@ def main():
                     upper_offset=ARRIVAL_REBALANCE_UPPER, 
                 ).get_action, max_trades=MAX_TRADES_DEBUG))
 
-        if ENABLE_AGENTS.get('CarteaDrissiMonga'):
+        if ENABLE_AGENTS.get('CDM'):
             env = create_environment(1, sim_seed)
-            single_data.setdefault('CarteaDrissiMonga', []).append(
-                collect_single_trajectory(env, CarteaPLAgent(env, gamma=GAMMA_CARTEA, seed=SEED).get_action, max_trades=MAX_TRADES_DEBUG))
+            single_data.setdefault('CDM', []).append(
+                collect_single_trajectory(
+                    env,
+                    CarteaPLAgent(
+                        env, gamma=GAMMA_CARTEA,
+                        rebalance_tolerance=REBALANCE_TOLERANCE_CARTEA,
+                        seed=SEED,
+                    ).get_action,
+                    max_trades=MAX_TRADES_DEBUG,
+                ))
 
         if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
             env = create_environment(1, sim_seed)

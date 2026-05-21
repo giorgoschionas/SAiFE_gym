@@ -18,15 +18,15 @@ SEED = [6]
 TERMINAL_TIME = [1.0]
 N_STEPS = [1000]
 NUM_TRAJECTORIES_TRAIN = [200]
-NUM_TRAJECTORIES_EVAL = [1000]
+NUM_TRAJECTORIES_EVAL = [500]#[1000]
 INITIAL_WEALTH = [1000]
-TAU = [15]
+TAU = [20]
 LIQUIDITY_SCALE = [1e5]
 
 INITIAL_PRICE = [1000]
 INITIAL_POOL_PRICE = [None]  # None → pool starts at INITIAL_PRICE
 DRIFT = [0]
-VOLATILITY = [0.009]
+VOLATILITY = [0.01]
 FEE_TIER = [0.003]
 EXP_VALUE = [1.0001]
 
@@ -36,6 +36,10 @@ ALPHA2 = [np.array([0.0, 0.0])]
 ALPHA3 = [np.array([4000, 4000])]
 
 GAMMA_CARTEA = [0.000005]
+# Tick-deadband for CarteaPLAgent's deploy-mode rebalance gate. tol=0 recovers
+# the academic "rebalance on every meaningful pool move" policy (high gas);
+# tol=1 (default) absorbs 1-tick drifts; larger values rebalance more sparsely.
+REBALANCE_TOLERANCE_CARTEA = [20]
 
 # ── Reward function selector ────────────────────────────────────────
 #   'pnl'         — plain ΔPortfolioValue (risk-neutral; PnL == utility)
@@ -44,8 +48,8 @@ GAMMA_CARTEA = [0.000005]
 # With INITIAL_WEALTH=1000, x_t∈[0,1] in token0 units, dt=1e-3. Sensible scales:
 #   INVENTORY_PHI ∈ [1, 100] — per-step penalty ≈ phi·1e-3·x² in token1 units.
 #   EXP_RISK_AVERSION ≈ 1e-3 to keep a·W ~ O(1) (default 0.1 underflows).
-REWARD_KIND = ['inventory']           # 'pnl' | 'inventory' | 'exponential'
-INVENTORY_PHI = [3.5]
+REWARD_KIND = ['pnl']           # 'pnl' | 'inventory' | 'exponential'
+INVENTORY_PHI = [0]
 INVENTORY_TERMINAL_AVERSION = [0.0]
 INVENTORY_EXPONENT = [2.0]
 EXP_RISK_AVERSION = [1e-3]
@@ -58,7 +62,7 @@ ARRIVAL_REBALANCE_UPPER = [1]
 DEPLOYONCE_LOWER = [-15]
 DEPLOYONCE_UPPER = [15]
 
-REINFORCE_EPOCHS = [400]
+REINFORCE_EPOCHS = [0]
 REINFORCE_LR = [2e-4]
 ACTION_STD_INIT = [1.7]
 
@@ -71,11 +75,11 @@ DECISION_STRIDE = [200]
 
 ENABLE_AGENTS = [
     {
-        'DoNothing':        True,
+        'DeployNarrow':     True,
         'Uniform':          False,
-        'DeployOnce':       True,
+        'DeployWide':       True,
         'ArrivalRebalance': True,
-        'CarteaDrissiMonga': False,
+        'CDM': True,
         'REINFORCE':        False,
         'PPO':              True,
         'PPO_narrow':       True,
@@ -104,7 +108,7 @@ SWEEP_VARS = [
     'INITIAL_PRICE', 'INITIAL_POOL_PRICE', 'DRIFT', 'VOLATILITY',
     'FEE_TIER', 'EXP_VALUE',
     'ALPHA0', 'ALPHA1', 'ALPHA2', 'ALPHA3',
-    'GAMMA_CARTEA',
+    'GAMMA_CARTEA', 'REBALANCE_TOLERANCE_CARTEA',
     'REWARD_KIND', 'INVENTORY_PHI', 'INVENTORY_TERMINAL_AVERSION',
     'INVENTORY_EXPONENT', 'EXP_RISK_AVERSION',
     'ARRIVAL_REBALANCE_EVERY', 'ARRIVAL_REBALANCE_WIDTH',

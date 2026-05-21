@@ -251,17 +251,25 @@ class CarteaPLAgent(Agent):
     - δₜᵘ* = (2γ + μₜ²σ²)/(8πₜ - σ² + 2μₜ(μₜ - σ²/2)) + μₜ
     """
 
-    def __init__(self, env: AMMEnvironment, gamma: float = 0.005, seed: int = None):
+    def __init__(self, env: AMMEnvironment, gamma: float = 0.005,
+                 rebalance_tolerance: int = 1, seed: int = None):
         """
         Initialize Cartea agent.
 
         Args:
             env: SAiFE_gym AMM environment
             gamma: Risk aversion parameter (default 0.005)
+            rebalance_tolerance: Tick-deadband for the deploy-mode rebalance
+                gate. The agent only re-quotes when the optimal absolute range
+                drifts more than `rebalance_tolerance` ticks from the currently
+                deployed range. `tol=0` recovers the academic "always rebalance"
+                policy (gas drain). `tol=1` (default) is a 1-tick deadband.
             seed: Random seed for reproducibility
         """
         self.env = env
         self.gamma = gamma
+        self.rebalance_tolerance = int(rebalance_tolerance)
+        assert self.rebalance_tolerance >= 0, "rebalance_tolerance must be >= 0"
         self.tau = env.model_dynamics.tau
         self.num_trajectories = env.num_trajectories
         self.rng = np.random.default_rng(seed)
@@ -273,6 +281,13 @@ class CarteaPLAgent(Agent):
         self.drift = self.model_dynamics.midprice_model.drift
         self.volatility = self.model_dynamics.midprice_model.volatility
         self.sigma_squared = self.volatility ** 2
+
+        # Per-trajectory state: True if the agent is currently holding the
+        # synthetic-withdrawal stance (deployed at the bottom of the action
+        # space → price above range → 100% token1). Used to decide whether to
+        # re-pay gas on consecutive negative-denominator steps. Reset on
+        # episode start (detected in get_action via TIME_KEY).
+        self.in_withdrawal = np.zeros(self.num_trajectories, dtype=bool)
 
     def calculate_dynamic_fee_rate(self, state: dict) -> np.ndarray:
         """
@@ -294,21 +309,38 @@ class CarteaPLAgent(Agent):
         total_fees_0 = np.sum(state[FEES0_KEY], axis=1)  # Shape: (num_trajectories,)
         total_fees_1 = np.sum(state[FEES1_KEY], axis=1)  # Shape: (num_trajectories,)
 
-        # Convert to token0 units: fees_1 × price
+        # Convert both fee streams to token1 (numéraire) units so they share
+        # units with pool_size = 2·κ·√P (which is also in token1). Without this
+        # π_t is not dimensionless and the closed-form δ formula gets the wrong
+        # scale. fee0 is in token0 → multiply by price to convert to token1.
         price = sqrt_price ** 2
-        total_fee_income = total_fees_0 + total_fees_1 * price
+        total_fee_income = total_fees_0 * price + total_fees_1
 
-        # Calculate percentage fee rate
-        pi_t = total_fee_income / pool_size
+        # Convert the cumulative dimensionless yield to a per-unit-time rate by
+        # dividing by elapsed simulation time. This matches the Cartea-Drissi-
+        # Monga paper, where π_t is a windowed yield-per-time quantity (1/day in
+        # the paper's ETH/USDC numerical example) comparable to σ² (variance per
+        # time) in the closed-form δ formula. Without the divide, π_t grows
+        # monotonically with episode time and the regime threshold drifts.
+        # Lifetime average converges to the windowed paper quantity in a
+        # stationary fee regime, which our LiquidityKernelArrivalModel produces.
+        elapsed = np.maximum(state[TIME_KEY], self.env.step_size)
+        pi_t = total_fee_income / pool_size / elapsed
 
         return pi_t
 
-    def compute_optimal_deltas(self, state: dict) -> tuple[np.ndarray, np.ndarray]:
+    def compute_optimal_deltas(self, state: dict) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
         """
-        Compute optimal boundary controls δₜˡ* and δₜᵘ* using Cartea formulas.
+        Compute optimal boundary controls δ^ℓ* and δ^u* using Cartea formulas.
 
         Returns:
-            (delta_lower, delta_upper): Optimal boundary controls, each shape (num_trajectories,)
+            (delta_lower, delta_upper, raw_delta_lower, raw_delta_upper, raw_denominator):
+                - delta_lower, delta_upper: clipped to the paper's valid ranges
+                  (0.0001, 2.0] and [0.0, 1.9999); used for the actual action.
+                - raw_delta_lower, raw_delta_upper: un-clipped values; caller
+                  uses these for the paper's profitability check
+                  (δ^ℓ ∈ (0, 2], δ^u ∈ [0, 2)).
+                - raw_denominator: the un-guarded denominator (sign-strict).
         """
         # Get dynamic fee rate
         pi_t = self.calculate_dynamic_fee_rate(state)
@@ -320,27 +352,26 @@ class CarteaPLAgent(Agent):
 
         # Compute common terms
         numerator = 2 * gamma + mu**2 * sigma_sq
-        denominator = 8 * pi_t - sigma_sq + 2 * mu * (mu - sigma_sq/2)
+        raw_denominator = 8 * pi_t - sigma_sq + 2 * mu * (mu - sigma_sq/2)
 
         # Handle edge case: very small or negative denominator
-        # This can happen when fees are very low or drift/volatility parameters are extreme
-        denominator = np.where(np.abs(denominator) < 1e-8, 1e-8, denominator)
+        # This can happen when fees are very low or drift/volatility parameters are extreme.
+        # Note: this guard intentionally flips sign for small negatives — only safe to use
+        # for the division below; sign-aware callers must use raw_denominator.
+        denominator = np.where(np.abs(raw_denominator) < 1e-8, 1e-8, raw_denominator)
 
         # Compute base spread term
         base_term = numerator / denominator
 
-        # Optimal deltas from equations (27)
-        delta_lower = base_term - mu  # δₗ* = base_term - μ
+        # Un-clipped deltas — used downstream for the profitability check.
+        raw_delta_lower = base_term - mu
+        raw_delta_upper = base_term + mu
 
-        # Clip delta_lower to valid bounds [0.0001, 2.0]
-        delta_lower = np.clip(delta_lower, 0.0001, 2.0)
+        # Clipped deltas — what we actually deploy when profitable.
+        delta_lower = np.clip(raw_delta_lower, 0.0001, 2.0)
+        delta_upper = np.clip(raw_delta_upper, 0.0, 1.9999)
 
-        delta_upper = base_term + mu  # δᵤ* = base_term + μ
-
-        # Clip delta_upper to valid bounds [0.0, 1.9999]
-        delta_upper = np.clip(delta_upper, 0.0, 1.9999) 
-
-        return delta_lower, delta_upper
+        return delta_lower, delta_upper, raw_delta_lower, raw_delta_upper, raw_denominator
 
     def deltas_to_tick_offsets(self, delta_lower: np.ndarray, delta_upper: np.ndarray,
                                sqrt_price: np.ndarray, state: dict) -> np.ndarray:
@@ -402,20 +433,87 @@ class CarteaPLAgent(Agent):
         """
         Compute optimal liquidity provision action using Cartea strategy.
 
-        Args:
-            state: Current environment state dictionary
+        Decision rule (per trajectory):
+          - profitable, ¬in_withdrawal, optimal range close to current  → hold
+              (tick-deadband: small drifts absorbed without gas)
+          - profitable, ¬in_withdrawal, optimal range drifted  → rebalance to Cartea
+          - profitable, in_withdrawal  → rebalance to Cartea (exit withdrawal)
+          - ¬profitable, ¬in_withdrawal → rebalance to withdrawal stance
+                (deploy at [-τ, -τ+1] → above-range → 100% token1 numéraire)
+          - ¬profitable, in_withdrawal  → hold (already withdrawn; no gas)
+
+        "Profitable" uses the paper's full criterion (Section 3, eq. 25-26):
+            δ^ℓ ∈ (0, 2], δ^u ∈ [0, 2), and δ^ℓ·δ^u/2 < δ^ℓ + δ^u
+        computed from the UN-clipped deltas. This naturally subsumes the
+        denominator-sign check and, for μ=0, the π > σ²/8 + γ/8 inequality.
 
         Returns:
-            action: [lower_offset, upper_offset] for each trajectory,
-                   shape (num_trajectories, 2)
+            action: [lower_offset, upper_offset, hold_flag] for each trajectory,
+                    shape (num_trajectories, 3)
         """
-        # Compute optimal boundary controls
-        delta_lower, delta_upper = self.compute_optimal_deltas(state)
+        n = self.num_trajectories
 
-        # Convert to tick offsets
+        # Reset internal state on the first step of a new episode.
+        is_episode_start = state[TIME_KEY][0] < self.env.step_size / 2
+        if is_episode_start:
+            self.in_withdrawal = np.zeros(n, dtype=bool)
+
+        # Cartea deltas: both clipped (for deployment) and un-clipped (for the
+        # profitability test).
+        (delta_lower, delta_upper,
+         raw_dl, raw_du, _raw_denominator) = self.compute_optimal_deltas(state)
+
+        # Paper's full profitability criterion. The geometric constraint
+        # (δ^ℓ·δ^u/2 < δ^ℓ + δ^u) is implied by the range constraints when both
+        # δ are in their valid ranges, but we include it for paper completeness.
+        profitable = (
+            (raw_dl > 0) & (raw_dl <= 2) &
+            (raw_du >= 0) & (raw_du < 2) &
+            (raw_dl * raw_du / 2 < raw_dl + raw_du)
+        )  # shape (n,)
+
+        # Cartea optimal range in tick-offset form.
         sqrt_price = state[POOL_SQRT_PRICE_KEY]
-        actions = self.deltas_to_tick_offsets(delta_lower, delta_upper, sqrt_price, state)
+        cartea_offsets = self.deltas_to_tick_offsets(
+            delta_lower, delta_upper, sqrt_price, state,
+        )  # shape (n, 2)
 
-        return actions
+        # Tick-deadband: compare the optimal ABSOLUTE range to the currently
+        # deployed absolute range. Only rebalance in the profitable branch when
+        # the drift exceeds `rebalance_tolerance` on either bound. tol=0
+        # reproduces the academic "rebalance every step" policy.
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+        cartea_abs_lower = current_tick + cartea_offsets[:, 0].astype(np.int64)
+        cartea_abs_upper = current_tick + cartea_offsets[:, 1].astype(np.int64)
+        lp_abs_lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
+        lp_abs_upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
+        drift = np.maximum(
+            np.abs(cartea_abs_lower - lp_abs_lower),
+            np.abs(cartea_abs_upper - lp_abs_upper),
+        )
+        needs_recenter = drift > self.rebalance_tolerance
+
+        # Synthetic-withdrawal offsets: deploy as far below the current tick as
+        # the action space allows → "price above range" → LP holds 100% token1.
+        withdrawal_lower = np.full(n, -self.tau, dtype=np.float32)
+        withdrawal_upper = np.full(n, -self.tau + 1, dtype=np.float32)
+
+        # Per-trajectory branching (see docstring above for the full table).
+        # Rebalance iff: (profitable AND (just left withdrawal OR drifted out of
+        # deadband)) OR (not profitable AND not yet withdrawn).
+        rebalancing = (
+            (profitable & (self.in_withdrawal | needs_recenter)) |
+            (~profitable & ~self.in_withdrawal)
+        )
+
+        lower = np.where(profitable, cartea_offsets[:, 0], withdrawal_lower)
+        upper = np.where(profitable, cartea_offsets[:, 1], withdrawal_upper)
+        hold_flag = np.where(rebalancing, -1.0, 1.0).astype(np.float32)
+
+        # Persist state for the next call: a trajectory is "in withdrawal" iff
+        # the closed-form profitability test currently fails.
+        self.in_withdrawal = ~profitable
+
+        return np.column_stack([lower, upper, hold_flag]).astype(np.float32)
 
 
