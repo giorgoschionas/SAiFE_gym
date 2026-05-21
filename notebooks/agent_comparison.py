@@ -1134,11 +1134,14 @@ def plot_pnl_distribution(pnl_results):
     ax1.axhline(0, color='gray', linestyle='--', linewidth=0.8)
     ax1.set_ylabel('Cumulative PnL', fontsize=16)
     ax1.tick_params(axis='both', labelsize=14)
+    # Match the inclination used in the pnl_attribution boxplot / means
+    # figures so agent labels read consistently across plots.
+    plt.setp(ax1.get_xticklabels(), rotation=24)
     #ax1.set_title('PnL Distribution')
     ax1.grid(True, alpha=0.3)
     plt.tight_layout()
     path1 = os.path.join(FIGURES_DIR, f'pnl_boxplot.png')
-    fig1.savefig(path1, dpi=150, bbox_inches='tight')
+    fig1.savefig(path1, dpi=200, bbox_inches='tight')
     plt.close(fig1)
     #print(f"  Saved: {path1}")
 
@@ -1181,7 +1184,7 @@ def plot_pnl_distribution(pnl_results):
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
     path2 = os.path.join(FIGURES_DIR, f'pnl_histogram.png')
-    fig2.savefig(path2, dpi=150, bbox_inches='tight')
+    fig2.savefig(path2, dpi=200, bbox_inches='tight')
     plt.close(fig2)
     #print(f"  Saved: {path2}")
 
@@ -1204,10 +1207,12 @@ def plot_utility_distribution(utility_results):
     ax1.axhline(0, color='gray', linestyle='--', linewidth=0.8)
     ax1.set_ylabel(f'Cumulative Utility ({REWARD_KIND})', fontsize=16)
     ax1.tick_params(axis='both', labelsize=14)
+    # Match the inclination used in the pnl_attribution figures.
+    plt.setp(ax1.get_xticklabels(), rotation=24)
     ax1.grid(True, alpha=0.3)
     plt.tight_layout()
     path1 = os.path.join(FIGURES_DIR, f'utility_boxplot.png')
-    fig1.savefig(path1, dpi=150, bbox_inches='tight')
+    fig1.savefig(path1, dpi=200, bbox_inches='tight')
     plt.close(fig1)
     #print(f"  Saved: {path1}")
 
@@ -1243,7 +1248,7 @@ def plot_utility_distribution(utility_results):
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
     path2 = os.path.join(FIGURES_DIR, f'utility_histogram.png')
-    fig2.savefig(path2, dpi=150, bbox_inches='tight')
+    fig2.savefig(path2, dpi=200, bbox_inches='tight')
     plt.close(fig2)
     #print(f"  Saved: {path2}")
 
@@ -1421,7 +1426,7 @@ def plot_price_evolution(single_data):
 
             plt.tight_layout()
             path_i = os.path.join(FIGURES_DIR, f'price_evolution_sim{si + 1}.png')
-            fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
+            fig_i.savefig(path_i, dpi=200, bbox_inches='tight')
             plt.close(fig_i)
             #print(f"  Saved: {path_i}")
 
@@ -1455,7 +1460,7 @@ def plot_pnl_evolution(single_data):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path = os.path.join(FIGURES_DIR, f'pnl_evolution.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
+    fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
 
@@ -1489,7 +1494,7 @@ def plot_training_rewards(rl_rewards: dict):
     ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path = os.path.join(FIGURES_DIR, f'training_rewards.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
+    fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
 
@@ -1535,7 +1540,7 @@ def plot_position_offsets(single_data):
 
     plt.tight_layout()
     path = os.path.join(FIGURES_DIR, f'position_offsets.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
+    fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
 
@@ -1592,7 +1597,7 @@ def plot_pnl_attribution_individual(single_data):
         ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path = os.path.join(FIGURES_DIR, f'pnl_attribution.png')
-    fig.savefig(path, dpi=150, bbox_inches='tight')
+    fig.savefig(path, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path}")
 
@@ -1640,7 +1645,7 @@ def plot_pnl_attribution_individual(single_data):
             path_i = os.path.join(
                 FIGURES_DIR, f'pnl_attribution_sim{si + 1}.png'
             )
-            fig_i.savefig(path_i, dpi=150, bbox_inches='tight')
+            fig_i.savefig(path_i, dpi=200, bbox_inches='tight')
             plt.close(fig_i)
             #print(f"  Saved: {path_i}")
 
@@ -1678,11 +1683,11 @@ def plot_pnl_attribution_aggregate(attribution_results):
         ax.set_title(title)
         ax.tick_params(axis='both', labelsize=12)
         # Match the inclination used in pnl_attribution_means below.
-        plt.setp(ax.get_xticklabels(), rotation=15)
+        plt.setp(ax.get_xticklabels(), rotation=40)
         ax.grid(True, alpha=0.3)
     plt.tight_layout()
     path1 = os.path.join(FIGURES_DIR, f'pnl_attribution_boxplots.png')
-    fig.savefig(path1, dpi=150, bbox_inches='tight')
+    fig.savefig(path1, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path1}")
 
@@ -1710,7 +1715,7 @@ def plot_pnl_attribution_aggregate(attribution_results):
 
     ax.axhline(0, color='gray', linestyle='-', linewidth=0.8, alpha=0.6)
     ax.set_xticks(x)
-    ax.set_xticklabels(agents, rotation=15)
+    ax.set_xticklabels(agents, rotation=12)
     ax.set_ylabel('Mean across eval trajectories (token1)', fontsize=16)
     ax.set_title('PnL attribution (mean over eval trajectories)')
     ax.tick_params(axis='both', labelsize=12)
@@ -1718,7 +1723,7 @@ def plot_pnl_attribution_aggregate(attribution_results):
     ax.grid(True, alpha=0.3, axis='y')
     plt.tight_layout()
     path2 = os.path.join(FIGURES_DIR, f'pnl_attribution_means.png')
-    fig.savefig(path2, dpi=150, bbox_inches='tight')
+    fig.savefig(path2, dpi=200, bbox_inches='tight')
     plt.close(fig)
     #print(f"  Saved: {path2}")
 

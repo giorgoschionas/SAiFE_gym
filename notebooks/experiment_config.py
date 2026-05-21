@@ -18,15 +18,15 @@ SEED = [6]
 TERMINAL_TIME = [1.0]
 N_STEPS = [1000]
 NUM_TRAJECTORIES_TRAIN = [200]
-NUM_TRAJECTORIES_EVAL = [500]#[1000]
+NUM_TRAJECTORIES_EVAL = [1000]
 INITIAL_WEALTH = [1000]
-TAU = [20]
+TAU = [15]
 LIQUIDITY_SCALE = [1e5]
 
 INITIAL_PRICE = [1000]
 INITIAL_POOL_PRICE = [None]  # None → pool starts at INITIAL_PRICE
 DRIFT = [0]
-VOLATILITY = [0.01]
+VOLATILITY = [0.001, 0.005, 0.009, 0.013, 0.017, 0.021, 0.04]
 FEE_TIER = [0.003]
 EXP_VALUE = [1.0001]
 
@@ -49,8 +49,8 @@ REBALANCE_TOLERANCE_CARTEA = [20]
 #   INVENTORY_PHI ∈ [1, 100] — per-step penalty ≈ phi·1e-3·x² in token1 units.
 #   EXP_RISK_AVERSION ≈ 1e-3 to keep a·W ~ O(1) (default 0.1 underflows).
 REWARD_KIND = ['pnl']           # 'pnl' | 'inventory' | 'exponential'
-INVENTORY_PHI = [0]
-INVENTORY_TERMINAL_AVERSION = [0.0]
+INVENTORY_PHI = [0] #[5,10,15,20,50]
+INVENTORY_TERMINAL_AVERSION = [0.0] #[0, 50, 100]
 INVENTORY_EXPONENT = [2.0]
 EXP_RISK_AVERSION = [1e-3]
 
@@ -62,7 +62,7 @@ ARRIVAL_REBALANCE_UPPER = [1]
 DEPLOYONCE_LOWER = [-15]
 DEPLOYONCE_UPPER = [15]
 
-REINFORCE_EPOCHS = [0]
+REINFORCE_EPOCHS = [300]
 REINFORCE_LR = [2e-4]
 ACTION_STD_INIT = [1.7]
 
@@ -71,7 +71,7 @@ NUM_SINGLE_SIMS = [15]
 MAX_TRADES_DEBUG = [None]
 
 PPO_ACTION_WRAPPER = ['multidiscrete']  # 'multidiscrete' or 'rescaled'
-DECISION_STRIDE = [200]
+DECISION_STRIDE = [100]
 
 ENABLE_AGENTS = [
     {
@@ -79,7 +79,7 @@ ENABLE_AGENTS = [
         'Uniform':          False,
         'DeployWide':       True,
         'ArrivalRebalance': True,
-        'CDM': True,
+        'CDM':              True,
         'REINFORCE':        False,
         'PPO':              True,
         'PPO_narrow':       True,
