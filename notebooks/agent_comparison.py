@@ -838,7 +838,16 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
     spread_sumsq = np.zeros(n, dtype=np.float64)
     center_sum = np.zeros(n, dtype=np.float64)
     center_sumsq = np.zeros(n, dtype=np.float64)
-    spread_count = 0
+    # Per-trajectory count of outer steps where the LP *had* a deployed
+    # position. Used as the denominator for the spread / step-center means
+    # so that pre-deploy placeholder LP-tick values (which still sit in
+    # state until the first rebalance) do not pollute the metric. Different
+    # trajectories may deploy at different decisions, so this must be a
+    # per-trajectory array, not a scalar.
+    spread_sample_count = np.zeros(n, dtype=np.int64)
+    # Scalar count of outer steps in the episode. Drives the rebalance
+    # rate (which is defined per decision opportunity, not per held step).
+    decision_count = 0
     # Deploy-time center accumulators: sampled only at refresh events
     # (rebalance or first deploy). Captures what the agent chose at
     # deployment, independent of how price drift bends the offset during
@@ -875,17 +884,23 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
 
         # Post-step spread (upper − lower) and center asymmetry
         # ((upper + lower)/2 − current_tick) reflect the agent's actually
-        # deployed position after any rebalance fired in this step.
+        # deployed position after any rebalance fired in this step. We gate
+        # the accumulation on the post-step `has_position_post` mask so
+        # that pre-deploy placeholder LP-tick values
+        # ([pool_tick − tau, pool_tick + tau], width = 2·tau) do not enter
+        # the metric on steps where the agent held without ever deploying.
         upper = state[LP_TICK_UPPER_KEY].astype(np.float64)
         lower = state[LP_TICK_LOWER_KEY].astype(np.float64)
         current = state[POOL_CURRENT_TICK_KEY].astype(np.float64)
         spread_step = upper - lower
         center_step = 0.5 * (upper + lower) - current
-        spread_sum += spread_step
-        spread_sumsq += spread_step * spread_step
-        center_sum += center_step
-        center_sumsq += center_step * center_step
-        spread_count += 1
+        has_position_post = state[LP_LIQUIDITY_KEY] > 0
+        spread_sum += np.where(has_position_post, spread_step, 0.0)
+        spread_sumsq += np.where(has_position_post, spread_step * spread_step, 0.0)
+        center_sum += np.where(has_position_post, center_step, 0.0)
+        center_sumsq += np.where(has_position_post, center_step * center_step, 0.0)
+        spread_sample_count += has_position_post.astype(np.int64)
+        decision_count += 1
 
         new_price = state[ASSET_PRICE_KEY].astype(np.float64)
 
@@ -930,13 +945,25 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
     cum_il = cum_hodl_pnl + cum_fees - cum_gas - cum_pnl
 
     # Per-trajectory spread / center stats: time-averaged value and temporal
-    # std within each trajectory. Var clamped at 0 to absorb numerical noise.
-    denom = max(spread_count, 1)
-    mean_spread = spread_sum / denom
-    var_spread = spread_sumsq / denom - mean_spread * mean_spread
+    # std within each trajectory, computed *only* over steps where the LP
+    # actually held a position. Var clamped at 0 to absorb numerical noise.
+    # Trajectories that never deployed receive NaN so they don't pollute the
+    # population averages (mirroring the deploy-time center treatment).
+    has_held = spread_sample_count > 0
+    safe_sample_count = np.where(has_held, spread_sample_count, 1).astype(np.float64)
+    mean_spread = np.where(has_held, spread_sum / safe_sample_count, np.nan)
+    var_spread = np.where(
+        has_held,
+        spread_sumsq / safe_sample_count - mean_spread * mean_spread,
+        np.nan,
+    )
     temporal_std_spread = np.sqrt(np.maximum(var_spread, 0.0))
-    mean_center = center_sum / denom
-    var_center = center_sumsq / denom - mean_center * mean_center
+    mean_center = np.where(has_held, center_sum / safe_sample_count, np.nan)
+    var_center = np.where(
+        has_held,
+        center_sumsq / safe_sample_count - mean_center * mean_center,
+        np.nan,
+    )
     temporal_std_center = np.sqrt(np.maximum(var_center, 0.0))
 
     # Deploy-time center stats: per-trajectory mean and within-traj std,
@@ -970,7 +997,8 @@ def evaluate_on_trajectories_with_attribution(env, get_action_fn):
         'temporal_std_deploy_center': temporal_std_deploy_center,
         'deploy_count': deploy_count,                 # per-traj, shape (n,)
         'rebalance_count': rebalance_count,           # per-traj, shape (n,)
-        'decision_count': int(spread_count),          # scalar: decisions/episode
+        'decision_count': int(decision_count),        # scalar: decisions/episode
+        'held_sample_count': spread_sample_count,     # per-traj decisions where LP held a position
     }
 
 # ============================================================================
@@ -1069,12 +1097,15 @@ def print_spread_table(attribution_results):
         reb_count = r['rebalance_count']
         decisions = max(int(r['decision_count']), 1)
 
-        col_mean = float(mean_s.mean())
-        col_std_within = float(temp_std.mean())
-        col_std_between = float(mean_s.std())
-        col_mean_c = float(mean_c.mean())
-        col_std_within_c = float(temp_std_c.mean())
-        col_std_between_c = float(mean_c.std())
+        # NaN-safe: trajectories that never deployed have NaN in mean_spread /
+        # mean_center / temporal_std_*. Drop them from the population averages
+        # rather than letting NaN propagate.
+        col_mean = float(np.nanmean(mean_s)) if np.any(~np.isnan(mean_s)) else float('nan')
+        col_std_within = float(np.nanmean(temp_std)) if np.any(~np.isnan(temp_std)) else float('nan')
+        col_std_between = float(np.nanstd(mean_s)) if np.any(~np.isnan(mean_s)) else float('nan')
+        col_mean_c = float(np.nanmean(mean_c)) if np.any(~np.isnan(mean_c)) else float('nan')
+        col_std_within_c = float(np.nanmean(temp_std_c)) if np.any(~np.isnan(temp_std_c)) else float('nan')
+        col_std_between_c = float(np.nanstd(mean_c)) if np.any(~np.isnan(mean_c)) else float('nan')
         col_reb_per_ep = float(reb_count.mean())
         col_rate = 100.0 * col_reb_per_ep / decisions
         print(
