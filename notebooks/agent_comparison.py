@@ -77,14 +77,14 @@ SB3_TOTAL_TIMESTEPS = REINFORCE_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS // DEC
 # policy can express asymmetric quotes without inverting a non-linear compression.
 SB3_OBS_KEYS = [
     MISPRICING_KEY,
-    ASSET_PRICE_KEY,         # midprice
-    POOL_SQRT_PRICE_KEY,     # exposed as squared (= pool price) by the SB3 wrapper
+    #ASSET_PRICE_KEY,         # midprice
+    #POOL_SQRT_PRICE_KEY,     # exposed as squared (= pool price) by the SB3 wrapper
     LP_LOWER_OFFSET_KEY,
     LP_UPPER_OFFSET_KEY,
     TIME_KEY,
     GAS_COST_KEY,
-    LP_COLLECTED_FEES0_KEY,  # cumulative LP fees in token0 units
-    LP_COLLECTED_FEES1_KEY,  # cumulative LP fees in token1 units (numéraire)
+    #LP_COLLECTED_FEES0_KEY,  # cumulative LP fees in token0 units
+    #LP_COLLECTED_FEES1_KEY,  # cumulative LP fees in token1 units (numéraire)
     LP_TOKEN0_AMOUNT_KEY,    # LP inventory in the risky asset
     LP_TOKEN1_AMOUNT_KEY,    # LP inventory in the numéraire
 ]
@@ -1892,6 +1892,16 @@ def main():
         ppo_model.learn(total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_reward_cb)
         print(f"  PPO training time: {time.time() - t0:.1f}s")
 
+        # Persist the trained model + VecNormalize stats so evaluation can be
+        # replayed later. Loading needs BOTH files: PPO.load() for the policy,
+        # VecNormalize.load() for the obs/reward running stats.
+        _ppo_model_path = os.path.join(FIGURES_DIR, 'ppo_model')
+        _ppo_vecnorm_path = os.path.join(FIGURES_DIR, 'ppo_vec_normalize.pkl')
+        ppo_model.save(_ppo_model_path)
+        ppo_vec_normalize.save(_ppo_vecnorm_path)
+        print(f"  PPO model saved to: {_ppo_model_path}.zip")
+        print(f"  PPO VecNormalize stats saved to: {_ppo_vecnorm_path}")
+
     if ENABLE_AGENTS.get('PPO_narrow'):
         print("\n" + "=" * 60)
         print("Phase 1b': Training PPO_narrow agent (half_width fixed to 1)")
@@ -1931,6 +1941,14 @@ def main():
             total_timesteps=SB3_TOTAL_TIMESTEPS, callback=ppo_narrow_reward_cb,
         )
         print(f"  PPO_narrow training time: {time.time() - t0:.1f}s")
+
+        # Persist trained model + VecNormalize stats (see PPO save block above).
+        _ppo_n_model_path = os.path.join(FIGURES_DIR, 'ppo_narrow_model')
+        _ppo_n_vecnorm_path = os.path.join(FIGURES_DIR, 'ppo_narrow_vec_normalize.pkl')
+        ppo_narrow_model.save(_ppo_n_model_path)
+        ppo_narrow_vec_normalize.save(_ppo_n_vecnorm_path)
+        print(f"  PPO_narrow model saved to: {_ppo_n_model_path}.zip")
+        print(f"  PPO_narrow VecNormalize stats saved to: {_ppo_n_vecnorm_path}")
 
     if ENABLE_AGENTS.get('SAC'):
         print("\n" + "=" * 60)
