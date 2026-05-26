@@ -158,11 +158,47 @@ HOLD_CMAP = ListedColormap(["#ff7f0e", "#1f77b4"])  # orange = rebalance, blue =
 HOLD_NORM = BoundaryNorm(boundaries=[-1.5, 0.0, 1.5], ncolors=HOLD_CMAP.N)
 
 
-def _line_panel(ax, x, y_matrix, color_values, color_label, ylabel, title):
-    """Draw one line plot: one curve per row of `y_matrix`, coloured by `color_values`."""
+def _overlay_hold_hatch(
+    ax, mispricing: np.ndarray, inventory: np.ndarray,
+    hold_flat: np.ndarray,
+) -> None:
+    """Overlay diagonal hatching where hold == +1.
+
+    Marks regions where the policy's hold-head suppresses the rebalance, so
+    the underlying centre / half-width values shown by the heatmap are NOT
+    executed by the environment that step ("ghost actions"). Hatching is
+    transparent so the underlying colour stays visible for diagnostic
+    inspection.
+    """
+    hold_grid = (hold_flat.reshape(mispricing.size, inventory.size) == 1).T
+    if not np.any(hold_grid):
+        return
+    ax.contourf(
+        mispricing, inventory, hold_grid.astype(float),
+        levels=[0.5, 1.5], colors="none", hatches=["///"],
+    )
+
+
+def _line_panel(ax, x, y_matrix, color_values, color_label, ylabel, title,
+                hold_matrix=None):
+    """Draw one line plot: one curve per row of `y_matrix`, coloured by `color_values`.
+
+    If `hold_matrix` is provided (same shape as `y_matrix`, values ±1), segments
+    where hold == +1 are drawn dashed + faded to mark "ghost" actions the env
+    does not execute. Segments where hold == -1 (rebalance) are drawn solid.
+    """
     norm = Normalize(vmin=color_values.min(), vmax=color_values.max())
     for i, cv in enumerate(color_values):
-        ax.plot(x, y_matrix[i], "-", color=CMAP(norm(cv)), alpha=0.7, linewidth=1.4)
+        color = CMAP(norm(cv))
+        y = y_matrix[i]
+        if hold_matrix is None:
+            ax.plot(x, y, "-", color=color, alpha=0.7, linewidth=1.4)
+        else:
+            held = hold_matrix[i] == 1
+            y_exec = np.where(~held, y, np.nan)
+            y_held = np.where( held, y, np.nan)
+            ax.plot(x, y_exec, "-",  color=color, alpha=0.85, linewidth=1.4)
+            ax.plot(x, y_held, "--", color=color, alpha=0.35, linewidth=1.0)
     ax.set_xlabel("", fontsize=12)
     ax.set_ylabel(ylabel, fontsize=12)
     ax.set_title(title, fontsize=12)
@@ -182,22 +218,28 @@ def plot_center_halfwidth(
     # Reshape (N1*N2,) → (N1, N2). swept_order was [mispricing, inventory] in __main__.
     center = actions["center"].reshape(n_misp, n_inv)
     half_w = actions["half_width"].reshape(n_misp, n_inv)
+    hold   = actions["hold"].reshape(n_misp, n_inv)
 
     fig, axes = plt.subplots(2, 2, figsize=(11, 8), constrained_layout=True)
-    fig.suptitle(f"Policy probe — {agent}  (center & half-width vs state)",
-                 fontsize=13, y=1.02)
+    fig.suptitle(
+        f"Policy probe — {agent}  (centre & half-width vs state; "
+        f"solid = rebalance, dashed = hold)",
+        fontsize=13, y=1.02,
+    )
 
     # Row 0: center as function of mispricing (cols) and inventory (cols)
     _line_panel(
         axes[0, 0], mispricing, center.T, inventory,
         color_label="LP token0 (inventory)", ylabel="Center (ticks)",
         title="Center vs mispricing",
+        hold_matrix=hold.T,
     )
     axes[0, 0].set_xlabel("Mispricing  (S − Z)", fontsize=12)
     _line_panel(
         axes[0, 1], inventory, center, mispricing,
         color_label="Mispricing (S − Z)", ylabel="Center (ticks)",
         title="Center vs LP inventory",
+        hold_matrix=hold,
     )
     axes[0, 1].set_xlabel("LP token0 amount", fontsize=12)
 
@@ -206,12 +248,14 @@ def plot_center_halfwidth(
         axes[1, 0], mispricing, half_w.T, inventory,
         color_label="LP token0 (inventory)", ylabel="Half-width (ticks)",
         title="Half-width vs mispricing",
+        hold_matrix=hold.T,
     )
     axes[1, 0].set_xlabel("Mispricing  (S − Z)", fontsize=12)
     _line_panel(
         axes[1, 1], inventory, half_w, mispricing,
         color_label="Mispricing (S − Z)", ylabel="Half-width (ticks)",
         title="Half-width vs LP inventory",
+        hold_matrix=hold,
     )
     axes[1, 1].set_xlabel("LP token0 amount", fontsize=12)
 
@@ -234,9 +278,10 @@ def plot_center_heatmap(
         cmap="RdBu_r", vmin=-tau, vmax=tau, interpolation="nearest",
     )
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Center (ticks)")
+    _overlay_hold_hatch(ax, mispricing, inventory, actions["hold"])
     ax.set_xlabel("Mispricing  (S − Z)", fontsize=12)
     ax.set_ylabel("LP token0 amount", fontsize=12)
-    ax.set_title(f"Position center — {agent}", fontsize=13)
+    ax.set_title(f"Position center — {agent}  (hatched = hold)", fontsize=13)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     print(f"Saved: {out_path}")
     plt.close(fig)
@@ -256,9 +301,10 @@ def plot_halfwidth_heatmap(
         cmap="viridis", vmin=1, vmax=tau, interpolation="nearest",
     )
     plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04, label="Half-width (ticks)")
+    _overlay_hold_hatch(ax, mispricing, inventory, actions["hold"])
     ax.set_xlabel("Mispricing  (S − Z)", fontsize=12)
     ax.set_ylabel("LP token0 amount", fontsize=12)
-    ax.set_title(f"Position half-width — {agent}", fontsize=13)
+    ax.set_title(f"Position half-width — {agent}  (hatched = hold)", fontsize=13)
     fig.savefig(out_path, dpi=200, bbox_inches="tight")
     print(f"Saved: {out_path}")
     plt.close(fig)
