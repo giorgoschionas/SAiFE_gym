@@ -25,35 +25,102 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+from matplotlib.cm import ScalarMappable
+from matplotlib.colors import Normalize
 from stable_baselines3 import PPO
 
 
 # ────────────────────────────────────────────────────────────────────────
 # Conditioning states
 # ────────────────────────────────────────────────────────────────────────
-# Each dict defines one line in the figure. The (lower, upper, token0)
-# triple is chosen so the cell is physically consistent: out-of-range
-# states pin token0 to 0 (price above range → 100% token1) or to ~1
-# (price below range → 100% token0); in-range states use a plausible
-# midway value. ``lp_token1_amount`` is held at INITIAL_WEALTH/2 for all
-# slices (see ``fixed`` in main).
+# Each dict defines one line in the figure. Lines are *grouped by direction*
+# and shaded by how far the price has drifted out of the LP's range:
+#
+#   group ∈ {"top", "bottom", "neutral"}
+#       "top"     — price above the range (out the top);    token0 → 0
+#       "bottom"  — price below the range (out the bottom);  token0 → 1
+#       "neutral" — centred / symmetric in-range;            token0 ≈ 0.5
+#   depth — how extreme the state is *within its group*.
+#       top/bottom : ticks the price sits outside the range.
+#       neutral    : the (symmetric) half-width.
+#
+# Within a group every line shares one hue and gets BOLDER (darker + thicker)
+# as ``depth`` grows, so "deep out" reads as a heavier version of "drifted
+# out" / "in-range asymmetric" in the same colour. ``depth`` is normalised
+# against the largest depth present in the group, so adding more lines just
+# re-spaces the ramp — extend the roster freely. An in-range-but-asymmetric
+# slice belongs to whichever side it leans toward (``top``/``bottom``) with a
+# small ``depth``, giving the requested "less bold version of its deep-out
+# correspondent". The (lower, upper, token0) triple is kept physically
+# consistent (out-of-range states pin token0 to its limit); ``lp_token1_amount``
+# is held at INITIAL_WEALTH/2 for every slice (see ``fixed`` in main).
 
-STATES_COMMON = [
-    dict(name="A: centred narrow",      lower=1,  upper=1,  token0=0.5, color="#1f77b4"),
-    dict(name="B: drifted out top",     lower=3,  upper=-1, token0=0.0, color="#ff7f0e"),
-    dict(name="C: drifted out bottom",  lower=-1, upper=3,  token0=1.0, color="#2ca02c"),
-    dict(name="E: deep out top",        lower=5,  upper=-3, token0=0.0, color="#d62728"),
-    dict(name="F: deep out bottom",     lower=-3, upper=5,  token0=1.0, color="#9467bd"),
-]
+# Gym offset convention (see StableBaselinesAMMEnvironment._compute_derived):
+#   lower = lp_lower_offset = current_tick - lp_tick_lower  (price → lower bound)
+#   upper = lp_upper_offset = lp_tick_upper - current_tick  (price → upper bound)
+#
+# Each line is a width-2 LP range that differs only by its CENTRE offset c — the
+# signed tick distance from the current price to the middle of the range. With
+# the width pinned at 2:
+#       lower = 1 - c ,   upper = 1 + c        (width = lower + upper = 2)
+#   c = 0  → centred: price in the middle, in range, ~balanced inventory.
+#   c < 0  → range BELOW the price → price toward/out the TOP    (token0 → 0).
+#   c > 0  → range ABOVE the price → price toward/out the BOTTOM (token0 → 1).
+# |c| = 1 are the in-range edges; |c| > 1 is out of range. Colour comes from the
+# viridis ramp keyed on c (so the lines form a smooth gradient across the sweep)
+# and line weight ramps with |c|, so adding centre offsets just re-spaces the
+# ramp — extend freely.
+CENTER_OFFSETS = [-7, -5, -3, -2, -1, 0, 1, 2, 3, 5, 7]
 
-# Extra states meaningful only for the variable-width agent. PPO_narrow's
-# action space forces half_width = 1, so positions wider than ±1 are
-# unreachable by that agent and probing them would be off-distribution
-# in a way that says nothing about the agent's learned behaviour.
-STATES_PPO_ONLY = [
-    dict(name="G: slightly wider in-range", lower=2, upper=2, token0=0.5, color="#e377c2"),
-    dict(name="D: wide in-range",           lower=5, upper=5, token0=0.5, color="#8c564b"),
-]
+
+def state_for_center(c: int) -> dict:
+    """Build a width-2 conditioning state from its centre offset ``c``."""
+    if c == 0:
+        group, token0, name = "neutral", 0.5, "centred"
+    else:
+        region = "in range" if abs(c) == 1 else "out"
+        if c < 0:                       # range below price → price toward top
+            group, token0 = "top", 0.0
+        else:                           # range above price → price toward bottom
+            group, token0 = "bottom", 1.0
+        name = f"center {c:+d} ({region})"
+    return dict(name=name, lower=1 - c, upper=1 + c,
+                token0=token0, group=group, depth=abs(c))
+
+
+STATES_COMMON = [state_for_center(c) for c in CENTER_OFFSETS]
+
+# With width fixed to 2 (half_width = 1) every state above is reachable by both
+# PPO and PPO_narrow, so there are no variable-width-only slices to probe here.
+# Kept as an extension hook for future wider-position experiments.
+STATES_PPO_ONLY = []
+
+
+# ────────────────────────────────────────────────────────────────────────
+# Colour + boldness
+# ────────────────────────────────────────────────────────────────────────
+# A single perceptually-uniform ramp (viridis) keyed on the position's CENTRE
+# offset c: the two ends of the ramp are the deepest "out the top" / "out the
+# bottom" centres, with centred (c=0) in the middle. Line weight additionally
+# ramps with |c| so further-out positions read bolder. Swap CMAP for any other
+# matplotlib colormap to restyle.
+CMAP = plt.cm.viridis
+
+
+def style_for(center: float, c_min: float, c_max: float, c_abs_max: float) -> dict:
+    """Map a position centre offset to a viridis colour + line weight.
+
+    Colour position is the centre normalised to [0, 1] across the swept range;
+    line width grows with |centre| so deeper-out positions read bolder.
+    """
+    span = (c_max - c_min) or 1.0
+    cval = (center - c_min) / span                      # 0 … 1 along viridis
+    frac = abs(center) / c_abs_max if c_abs_max else 0.0
+    return dict(
+        color=CMAP(cval),
+        linewidth=1.2 + 2.2 * frac,
+        alpha=0.9,
+    )
 
 
 # ────────────────────────────────────────────────────────────────────────
@@ -198,10 +265,12 @@ def main():
         raw_actions, _ = model.predict(norm_obs, deterministic=True)
         actions_per_state[s["name"]] = decode_action(raw_actions, args.agent, tau)
 
-    # ── Plot: 2-panel figure ──
-    # The hold dimension is conveyed by the dashed segments on each line, so
-    # a standalone hold panel would just restate the same information.
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5), constrained_layout=True)
+    # ── Plot: single centre-response panel ──
+    # The half-width panel is disabled because the conditioning states pin the
+    # position width to 2, so centre is the only varying degree of freedom worth
+    # reading. The hold dimension is conveyed by the dashed segments on each line.
+    fig, ax0 = plt.subplots(1, 1, figsize=(7, 5), constrained_layout=True)
+    axes = [ax0]
     fig.suptitle(
         f"Policy response to mispricing — {args.agent}  "
         f"(solid = rebalance, dashed = hold;  time={args.time}, gas={gas})",
@@ -209,31 +278,44 @@ def main():
     )
 
     panels = [
-        ("center",     "Center (ticks)",     (-tau - 1, tau + 1)),
-        ("half_width", "Half-width (ticks)", (0,         tau + 1)),
+        ("center",     "Chosen centre (ticks)",     (-tau - 1, tau + 1)),
     ]
+
+    # Colour each line by its centre offset c = (upper - lower) / 2 along the
+    # viridis ramp; line weight ramps with |c|.
+    centers = {s["name"]: (s["upper"] - s["lower"]) / 2.0 for s in states}
+    c_vals = list(centers.values())
+    c_min, c_max = min(c_vals), max(c_vals)
+    c_abs_max = max(abs(v) for v in c_vals)
+    styles = {
+        name: style_for(c, c_min, c_max, c_abs_max) for name, c in centers.items()
+    }
 
     for ax, (key, ylabel, ylim) in zip(axes, panels):
         for s in states:
             y = actions_per_state[s["name"]][key]
-            color = s["color"]
+            st = styles[s["name"]]
             # Mask cells where hold == +1 so dashed segments mark "ghost"
             # actions the env won't execute.
             hold = actions_per_state[s["name"]]["hold"]
             held = hold == 1
             y_exec = np.where(~held, y, np.nan)
             y_held = np.where( held, y, np.nan)
-            ax.plot(mispricing, y_exec, "-",  color=color, linewidth=1.5,
-                    alpha=0.85, label=s["name"])
-            ax.plot(mispricing, y_held, "--", color=color, linewidth=1.0,
-                    alpha=0.4)
+            ax.plot(mispricing, y_exec, "-",  color=st["color"],
+                    linewidth=st["linewidth"], alpha=st["alpha"])
+            ax.plot(mispricing, y_held, "--", color=st["color"],
+                    linewidth=0.85 * st["linewidth"], alpha=0.45 * st["alpha"])
         ax.set_xlabel("Mispricing  (S − Z)", fontsize=12)
         ax.set_ylabel(ylabel, fontsize=12)
         ax.set_ylim(ylim)
         ax.axvline(0, color="gray", linestyle=":", linewidth=0.8)
         ax.grid(alpha=0.3)
 
-    axes[0].legend(loc="best", fontsize=8)
+    # Colorbar maps the viridis ramp to the centre offset; line weight (not the
+    # bar) conveys |c|, so a thicker line is further out of range.
+    sm = ScalarMappable(norm=Normalize(vmin=c_min, vmax=c_max), cmap=CMAP)
+    cbar = fig.colorbar(sm, ax=axes[0])
+    cbar.set_label("Current centre (ticks)", fontsize=11)
 
     out_path = (args.run_dir /
                 f"{args.agent}_mispricing_response__time{args.time:g}__gas{gas:g}.png")
