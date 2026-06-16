@@ -93,10 +93,10 @@ class TestLiquidityKernelArrivalModelStateful:
         np.testing.assert_array_equal(model.current_state, after)
 
     def test_kernel_weights_precomputed(self):
-        """kernel_weights should be exp(-beta * [1..K])."""
+        """kernel_weights should be exp(-beta * [0..K-1])."""
         beta, K = 0.3, 7
         model = LiquidityKernelArrivalModel(beta=beta, K=K, seed=42)
-        expected = np.exp(-beta * np.arange(1, K + 1))
+        expected = np.exp(-beta * np.arange(K))
         np.testing.assert_allclose(model.kernel_weights, expected)
 
 
@@ -350,10 +350,10 @@ class TestFormulaVerification:
         liq[0, 9] = 3e6   # d=1
         liq[0, 8] = 1e6   # d=2
         liq[0, 7] = 2e6   # d=3
-        # Right ticks (buy direction): indices 11, 12, 13
+        # Buy direction: current interval and intervals to the right, indices 10, 11, 12
+        liq[0, 10] = 0.0  # d=0
         liq[0, 11] = 1e6  # d=1
         liq[0, 12] = 4e6  # d=2
-        liq[0, 13] = 0.0  # d=3
 
         amm_price = 95.0
         midprice = 100.0
@@ -362,12 +362,12 @@ class TestFormulaVerification:
         model.update(None, None, None, state)
 
         # Manual calculation
-        w = np.exp(-beta * np.array([1, 2, 3]))
+        w = np.exp(-beta * np.array([0, 1, 2]))
         wl_sell = (w[0] * 3e6 + w[1] * 1e6 + w[2] * 2e6) / liq_scale
-        wl_buy = (w[0] * 1e6 + w[1] * 4e6 + w[2] * 0.0) / liq_scale
+        wl_buy = (w[0] * 0.0 + w[1] * 1e6 + w[2] * 4e6) / liq_scale
         mispricing = midprice - amm_price  # +5
 
-        expected_sell = max(0.0, 100.0 + 50.0 * wl_sell - 20.0 * mispricing)
+        expected_sell = max(0.0, 100.0 + 50.0 * wl_sell)
         expected_buy = max(0.0, 100.0 + 50.0 * wl_buy + 20.0 * mispricing)
 
         np.testing.assert_allclose(model.current_state[0, 0], expected_sell, rtol=1e-10)
@@ -395,7 +395,7 @@ class TestFormulaVerification:
         model.update(None, None, None, state)
 
         mispricing = midprice - amm_price  # 5.0
-        expected_sell = max(10.0, 100.0 + 0.0 - 20.0 * 5.0)  # max(10, 0) = 10
+        expected_sell = max(10.0, 100.0 + 0.0)  # one-sided arb leaves the opposite side at baseline
         expected_buy = max(10.0, 100.0 + 0.0 + 20.0 * 5.0)   # max(10, 200) = 200
 
         np.testing.assert_allclose(model.current_state[:, 0], expected_sell, rtol=1e-10)
