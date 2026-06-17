@@ -323,6 +323,13 @@ class TestVecEnvInterface:
 # ---------------------------------------------------------------------------
 
 class TestRelativeObsKeys:
+    RAW_OFFSET_OBS_KEYS = [
+        MISPRICING_KEY,
+        LP_LOWER_OFFSET_KEY,
+        LP_UPPER_OFFSET_KEY,
+        TIME_KEY,
+    ]
+
     def _get_state_and_obs(self, env: StableBaselinesAMMEnvironment):
         """Reset env and return (raw_state_dict, flat_obs)."""
         obs = env.reset()
@@ -341,7 +348,7 @@ class TestRelativeObsKeys:
 
     def test_lp_lower_offset_value(self):
         """lp_lower_offset = current_tick - lp_tick_lower"""
-        env = create_sb3_env(num_trajectories=1)
+        env = create_sb3_env(num_trajectories=1, obs_keys=self.RAW_OFFSET_OBS_KEYS)
         state, obs = self._get_state_and_obs(env)
 
         expected = state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]
@@ -351,7 +358,7 @@ class TestRelativeObsKeys:
 
     def test_lp_upper_offset_value(self):
         """lp_upper_offset = lp_tick_upper - current_tick"""
-        env = create_sb3_env(num_trajectories=1)
+        env = create_sb3_env(num_trajectories=1, obs_keys=self.RAW_OFFSET_OBS_KEYS)
         state, obs = self._get_state_and_obs(env)
 
         expected = state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]
@@ -361,7 +368,7 @@ class TestRelativeObsKeys:
 
     def test_offsets_non_negative_when_in_range(self):
         """After reset with default uniform LP position, both offsets should be ≥ 0."""
-        env = create_sb3_env(num_trajectories=2)
+        env = create_sb3_env(num_trajectories=2, obs_keys=self.RAW_OFFSET_OBS_KEYS)
         state, obs = self._get_state_and_obs(env)
 
         lower_col = env.obs_keys.index(LP_LOWER_OFFSET_KEY)
@@ -371,7 +378,7 @@ class TestRelativeObsKeys:
 
     def test_offsets_change_after_rebalance(self):
         """After a step that rebalances to a new tick range, offsets reflect new position."""
-        env = create_sb3_env(num_trajectories=1)
+        env = create_sb3_env(num_trajectories=1, obs_keys=self.RAW_OFFSET_OBS_KEYS)
         env.reset()
 
         # Step with action [lower_offset=-3, upper_offset=3]
