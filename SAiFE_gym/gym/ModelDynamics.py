@@ -114,7 +114,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
     def get_action_space(self):
         """
-        Return the action space for the agent.
+        Return the low-level command action space for the model dynamics.
+
+        This raw Box is the simulator execution format, not the canonical
+        discrete LP decision space. For agents that should choose one unique
+        no-op plus finite rebalance ranges, wrap the environment with
+        SAiFE_gym.wrappers.DiscreteActionWrapper or DiscreteActionVecEnv.
 
         Action format: [lower_offset, upper_offset, hold_flag]
         - lower_offset: Tick offset from current tick (range: -tau to tau-1)
@@ -556,5 +561,4 @@ class UniswapV3ModelDynamics(ModelDynamics):
             arrivals = self.arrival_model.get_arrivals()
         self.last_arrivals = arrivals
         return arrivals
-
 

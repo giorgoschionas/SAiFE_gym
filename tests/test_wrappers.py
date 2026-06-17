@@ -13,6 +13,7 @@ from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpric
 from SAiFE_gym.wrappers import (
     DiscreteActionVecEnv,
     DiscreteActionWrapper,
+    StructuredMultiDiscreteVecEnv,
     build_discrete_action_table,
 )
 
@@ -137,3 +138,40 @@ class TestDiscreteActionVecEnv:
         assert rewards.shape == (2,)
         assert dones.shape == (2,)
         assert len(infos) == 2
+
+
+class TestStructuredMultiDiscreteVecEnv:
+    def test_exposes_center_width_hold_space(self):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
+
+        assert isinstance(wrapped.action_space, gymnasium.spaces.MultiDiscrete)
+        np.testing.assert_array_equal(wrapped.action_space.nvec, np.array([11, 5, 2]))
+
+    def test_unscale_maps_center_width_hold_to_internal_action(self):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
+
+        actions = np.array([
+            [5, 1, 0],   # center=0, half_width=2, rebalance
+            [10, 4, 1],  # center=5, half_width=5, hold
+        ])
+        mapped = wrapped.unscale(actions)
+
+        np.testing.assert_array_equal(
+            mapped,
+            np.array([[-2.0, 2.0, -1.0], [0.0, 5.0, 1.0]], dtype=np.float32),
+        )
+
+    def test_step_async_maps_structured_actions(self):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
+
+        wrapped.reset()
+        actions = np.array([[5, 0, 0], [4, 1, 1]])
+        wrapped.step_async(actions)
+
+        np.testing.assert_array_equal(sb_env.actions, wrapped.unscale(actions))

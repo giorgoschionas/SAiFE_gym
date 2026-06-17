@@ -90,7 +90,8 @@ class AMMEnvironment(gymnasium.Env):
         # Create reward function (default to PnL which works with both array and dict states)
         self.reward_function = reward_function if reward_function else PnL()
 
-        # Define observation and action spaces
+        # Define observation and low-level command action spaces.
+        # Use SAiFE_gym.wrappers for canonical discrete LP decision spaces.
         self.observation_space = self._create_observation_space()
         self.action_space = self.model_dynamics.get_action_space()
 

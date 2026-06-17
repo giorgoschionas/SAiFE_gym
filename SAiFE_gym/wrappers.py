@@ -130,3 +130,72 @@ class DiscreteActionVecEnv(VecEnv):
 
     def get_images(self) -> Sequence[np.ndarray]:
         return self._wrapped.get_images()
+
+
+class StructuredMultiDiscreteVecEnv(VecEnv):
+    """Expose decoupled ``center``, ``half_width``, and ``hold`` action heads.
+
+    The SB3-facing action space is ``MultiDiscrete([2*tau + 1, tau, 2])``:
+    center tick in ``[-tau, tau]``, half-width in ``[1, tau]``, and a binary
+    rebalance/hold choice. Actions are mapped to the wrapped env's internal
+    ``[lower_offset, upper_offset, hold_flag]`` command format.
+    """
+
+    def __init__(self, vec_env: VecEnv, tau: int):
+        self._wrapped = vec_env
+        self.tau = int(tau)
+        if self.tau < 1:
+            raise ValueError(f"tau must be >= 1, got {self.tau}")
+        action_space = gymnasium.spaces.MultiDiscrete([2 * self.tau + 1, self.tau, 2])
+        super().__init__(vec_env.num_envs, vec_env.observation_space, action_space)
+
+    def unscale(self, actions: np.ndarray) -> np.ndarray:
+        """Map MultiDiscrete indices to ``[lower, upper, hold_flag]`` actions."""
+        actions = np.asarray(actions, dtype=np.int64)
+        center = actions[..., 0] - self.tau
+        half_width = actions[..., 1] + 1
+        hold_flag = np.where(actions[..., 2] == 0, -1.0, 1.0).astype(np.float32)
+
+        lower = np.clip(center - half_width, -self.tau, self.tau - 1).astype(np.float32)
+        upper = np.clip(center + half_width, -self.tau + 1, self.tau).astype(np.float32)
+        return np.stack([lower, upper, hold_flag], axis=-1)
+
+    def reset(self) -> VecEnvObs:
+        return self._wrapped.reset()
+
+    def step_async(self, actions: np.ndarray) -> None:
+        self._wrapped.step_async(self.unscale(actions))
+
+    def step_wait(self) -> VecEnvStepReturn:
+        return self._wrapped.step_wait()
+
+    def close(self) -> None:
+        self._wrapped.close()
+
+    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+        return self._wrapped.get_attr(attr_name, indices)
+
+    def set_attr(self, attr_name: str, value: Any, indices: VecEnvIndices = None) -> None:
+        self._wrapped.set_attr(attr_name, value, indices)
+
+    def env_method(
+        self,
+        method_name: str,
+        *method_args,
+        indices: VecEnvIndices = None,
+        **method_kwargs,
+    ) -> List[Any]:
+        return self._wrapped.env_method(
+            method_name, *method_args, indices=indices, **method_kwargs
+        )
+
+    def env_is_wrapped(
+        self, wrapper_class: Type, indices: VecEnvIndices = None
+    ) -> List[bool]:
+        return self._wrapped.env_is_wrapped(wrapper_class, indices)
+
+    def seed(self, seed: Optional[int] = None) -> List[Optional[int]]:
+        return self._wrapped.seed(seed)
+
+    def get_images(self) -> Sequence[np.ndarray]:
+        return self._wrapped.get_images()

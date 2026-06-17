@@ -108,6 +108,14 @@ SAiFE_gym/
 
 ### Action Space
 
+`AMMEnvironment.action_space` is the low-level simulator command space. It is
+kept as a 3D `Box` because the model dynamics execute batched
+`[lower_offset, upper_offset, hold_flag]` commands directly. It is not the
+canonical discrete LP decision space: when `hold_flag > 0`, the offsets are
+ignored, so many raw commands represent the same hold/no-op decision. Use
+`SAiFE_gym.wrappers.DiscreteActionWrapper` or `DiscreteActionVecEnv` when an
+agent should see one unique hold action plus discrete rebalance ranges.
+
 `Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,), dtype=float32)`
 
 | Idx | Name | Range | Description |

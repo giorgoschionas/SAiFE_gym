@@ -29,7 +29,7 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
-from SAiFE_gym.wrappers import DiscreteActionVecEnv
+from SAiFE_gym.wrappers import DiscreteActionVecEnv, StructuredMultiDiscreteVecEnv
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, OrnsteinUhlenbeckMidpriceModel, GeometricBrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.agents.BaselineAgents import (
@@ -385,75 +385,6 @@ class RescaledActionVecEnv(VecEnv):
     def get_images(self):
         return self._wrapped.get_images()
 
-
-class StructuredMultiDiscreteVecEnv(VecEnv):
-    """Re-exposes a VecEnv with a ``MultiDiscrete([2·tau+1, tau, 2])`` action space:
-
-      dim 0: center_idx     ∈ {0, …, 2·tau}    → center tick ∈ {-tau, …, +tau}
-      dim 1: half_width_idx ∈ {0, …, tau-1}    → half_width ∈ {1, …, tau}
-      dim 2: hold_idx       ∈ {0, 1}           → hold flag ∈ {-1, +1}
-
-    Output to the wrapped env is ``[center − half_width, center + half_width,
-    ±1]``, so:
-      * ``lower < upper`` is guaranteed by construction (no
-        ``validate_action`` auto-correction needed),
-      * the hold flag is a true ``Categorical(2)`` from the policy's
-        perspective, with a clean Bernoulli-equivalent log-prob (no
-        sign-thresholding waste),
-      * the discretisation matches the env's actual action granularity:
-        ``validate_action`` rounds to integer ticks anyway, so a continuous
-        head over the same range carries no extra information.
-
-    SB3 PPO supports ``MultiDiscrete`` natively via three independent
-    ``Categorical`` distributions — no custom policy needed. Initial
-    exploration is uniform over all ``(2·tau+1)·tau·2`` valid actions.
-    """
-
-    def __init__(self, vec_env: VecEnv, tau: int):
-        self._wrapped = vec_env
-        self.tau = int(tau)
-        act_space = gymnasium.spaces.MultiDiscrete([2 * self.tau + 1, self.tau, 2])
-        super().__init__(vec_env.num_envs, vec_env.observation_space, act_space)
-
-    def unscale(self, action: np.ndarray) -> np.ndarray:
-        """Map MultiDiscrete indices to the env's ``[lower, upper, hold_flag]``."""
-        a = np.asarray(action, dtype=np.int64)
-        center = a[..., 0] - self.tau              # {-tau, …, +tau}
-        half_width = a[..., 1] + 1                  # {1, …, tau}
-        hold = np.where(a[..., 2] == 0, -1.0, 1.0).astype(np.float32)
-        lower = np.clip(center - half_width, -self.tau, self.tau - 1).astype(np.float32)
-        upper = np.clip(center + half_width, -self.tau + 1, self.tau).astype(np.float32)
-        return np.stack([lower, upper, hold], axis=-1)
-
-    def reset(self):
-        return self._wrapped.reset()
-
-    def step_async(self, actions):
-        self._wrapped.step_async(self.unscale(actions))
-
-    def step_wait(self):
-        return self._wrapped.step_wait()
-
-    def close(self):
-        self._wrapped.close()
-
-    def get_attr(self, attr_name, indices=None):
-        return self._wrapped.get_attr(attr_name, indices)
-
-    def set_attr(self, attr_name, value, indices=None):
-        self._wrapped.set_attr(attr_name, value, indices)
-
-    def env_method(self, method_name, *args, indices=None, **kwargs):
-        return self._wrapped.env_method(method_name, *args, indices=indices, **kwargs)
-
-    def env_is_wrapped(self, wrapper_class, indices=None):
-        return self._wrapped.env_is_wrapped(wrapper_class, indices)
-
-    def seed(self, seed=None):
-        return self._wrapped.seed(seed)
-
-    def get_images(self):
-        return self._wrapped.get_images()
 
 # ============================================================================
 # REINFORCE Policy Network
