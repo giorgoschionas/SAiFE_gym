@@ -133,6 +133,13 @@ The state is a **dictionary** with the following keys:
 
 ### Action Space - 3D Offset Format
 
+`AMMEnvironment.action_space` is the low-level simulator command space, not the
+canonical discrete LP decision space. The raw 3D Box is useful for direct model
+execution and continuous-control agents, but it contains redundant hold
+commands because offsets are ignored whenever `hold_flag > 0`. Use
+`SAiFE_gym.wrappers.DiscreteActionWrapper` or `DiscreteActionVecEnv` when an
+agent should see one unique hold action plus finite rebalance ranges.
+
 **Action format**: `[lower_offset, upper_offset, hold_flag]` - tick offsets relative to current tick plus a hold/rebalance flag.
 
 **Action space**: `Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,))`
@@ -223,7 +230,6 @@ When creating `UniswapV3ModelDynamics`:
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
-
 
 
 
