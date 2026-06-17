@@ -113,10 +113,9 @@ class UniformAllocationAgent(Agent):
 
 
     def get_action(self, state: dict) -> np.ndarray:
-
-        #action = np.array([[-self.tau, self.tau]])
-        action = np.array([[-0.4, 0.4]])
+        action = np.array([[-self.tau, self.tau, -1.0]], dtype=np.float32)
         return np.repeat(action, self.env.num_trajectories, axis=0)
+
 
 class DeployOnceAgent(Agent):
     """
@@ -394,8 +393,9 @@ class CarteaPLAgent(Agent):
         upper_offset = np.where(invalid, lower_offset + 1, upper_offset)
         upper_offset = np.clip(upper_offset, -self.tau + 1, self.tau)
 
-        # Stack into action format
-        actions = np.column_stack([lower_offset, upper_offset])
+        # Stack into action format; hold_flag=-1.0 means always rebalance.
+        hold_flag = np.full(self.num_trajectories, -1.0, dtype=np.float32)
+        actions = np.column_stack([lower_offset, upper_offset, hold_flag])
         return actions.astype(np.float32)
 
     def get_action(self, state: dict) -> np.ndarray:
@@ -406,8 +406,8 @@ class CarteaPLAgent(Agent):
             state: Current environment state dictionary
 
         Returns:
-            action: [lower_offset, upper_offset] for each trajectory,
-                   shape (num_trajectories, 2)
+            action: [lower_offset, upper_offset, hold_flag] for each trajectory,
+                   shape (num_trajectories, 3)
         """
         # Compute optimal boundary controls
         delta_lower, delta_upper = self.compute_optimal_deltas(state)
@@ -417,5 +417,4 @@ class CarteaPLAgent(Agent):
         actions = self.deltas_to_tick_offsets(delta_lower, delta_upper, sqrt_price, state)
 
         return actions
-
 

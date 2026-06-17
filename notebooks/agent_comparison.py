@@ -29,6 +29,7 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
+from SAiFE_gym.wrappers import DiscreteActionVecEnv
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, OrnsteinUhlenbeckMidpriceModel, GeometricBrownianMotionMidpriceModel
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.agents.BaselineAgents import (
@@ -205,74 +206,6 @@ def create_environment(num_trajectories: int, seed: int = None):
         initial_pool_price=INITIAL_POOL_PRICE,
         seed=seed,
     )
-
-# ============================================================================
-# DQN Discrete-Action Wrapper
-# ============================================================================
-
-def build_discrete_action_table(tau: int, tick_stride: int) -> np.ndarray:
-    """Build lookup table mapping discrete index → [lower, upper, hold_flag].
-
-    Index 0 is the HOLD action (hold_flag=+1, offsets ignored).
-    Indices 1..N are REBALANCE actions at every valid (lower, upper) pair
-    sampled at the given tick stride.
-    """
-    # Action 0: HOLD (offsets are arbitrary — ignored when hold_flag > 0)
-    actions = [[0.0, 1.0, 1.0]]
-    # Remaining actions: rebalance to each valid (lower, upper) pair
-    offsets = np.arange(-tau, tau + 1, tick_stride, dtype=np.float32)
-    for i, lo in enumerate(offsets):
-        for hi in offsets[i + 1:]:
-            actions.append([lo, hi, -1.0])
-    return np.array(actions, dtype=np.float32)
-
-
-class DiscreteActionVecEnv(VecEnv):
-    """Wraps StableBaselinesAMMEnvironment with a Discrete action space for DQN.
-
-    Discretizes the continuous (lower_offset, upper_offset) tick offsets into a
-    finite set of valid pairs at a configurable stride, plus a dedicated HOLD
-    action (index 0).
-    """
-
-    def __init__(self, sb_env: StableBaselinesAMMEnvironment, tau: int,
-                 tick_stride: int = DQN_TICK_STRIDE):
-        self._wrapped = sb_env
-        self.action_table = build_discrete_action_table(tau, tick_stride)
-        act_space = gymnasium.spaces.Discrete(len(self.action_table))
-        super().__init__(sb_env.num_envs, sb_env.observation_space, act_space)
-
-    def reset(self):
-        return self._wrapped.reset()
-
-    def step_async(self, actions):
-        continuous = self.action_table[actions]
-        self._wrapped.step_async(continuous)
-
-    def step_wait(self):
-        return self._wrapped.step_wait()
-
-    def close(self):
-        self._wrapped.close()
-
-    def get_attr(self, attr_name, indices=None):
-        return self._wrapped.get_attr(attr_name, indices)
-
-    def set_attr(self, attr_name, value, indices=None):
-        self._wrapped.set_attr(attr_name, value, indices)
-
-    def env_method(self, method_name, *args, indices=None, **kwargs):
-        return self._wrapped.env_method(method_name, *args, indices=indices, **kwargs)
-
-    def env_is_wrapped(self, wrapper_class, indices=None):
-        return self._wrapped.env_is_wrapped(wrapper_class, indices)
-
-    def seed(self, seed=None):
-        return self._wrapped.seed(seed)
-
-    def get_images(self):
-        return self._wrapped.get_images()
-
 
 class DecisionStrideEnv:
     """Decision-stride wrapper for ``AMMEnvironment`` (REINFORCE / eval path).
