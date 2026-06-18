@@ -16,6 +16,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
 )
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
+    BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_TICK_LOWER_KEY,
@@ -24,7 +25,12 @@ from SAiFE_gym.gym.index_names import (
     MISPRICING_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
+    POSITION_WIDTH_KEY,
     TIME_KEY,
+)
+from SAiFE_gym.gym.observation_features import (
+    SB3_DERIVED_OBS_KEYS,
+    compute_sb3_observation_features,
 )
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
@@ -136,6 +142,45 @@ class TestStepWait:
 
 
 # ---------------------------------------------------------------------------
+# TestRawInfo
+# ---------------------------------------------------------------------------
+
+class TestRawInfo:
+    INFO_KEYS = {"asset_price", "pool_price", "time", "action", "reward"}
+
+    def test_batched_info_contains_post_step_values(self):
+        env = create_test_amm_env(num_trajectories=2, n_steps=5)
+        env.reset()
+        action = np.array([[-2.0, 2.0, -1.0], [0.0, 1.0, 1.0]], dtype=np.float32)
+
+        state, rewards, _, _, info = env.step(action)
+
+        assert set(info) == self.INFO_KEYS
+        assert info["asset_price"].shape == (2,)
+        assert info["pool_price"].shape == (2,)
+        assert info["time"].shape == (2,)
+        assert info["action"].shape == (2, 3)
+        assert info["reward"].shape == (2,)
+        np.testing.assert_allclose(info["asset_price"], state[ASSET_PRICE_KEY])
+        np.testing.assert_allclose(info["pool_price"], state[POOL_SQRT_PRICE_KEY] ** 2)
+        np.testing.assert_allclose(info["time"], state[TIME_KEY])
+        np.testing.assert_allclose(info["action"], action)
+        np.testing.assert_allclose(info["reward"], rewards)
+
+    def test_batched_info_copies_mutable_arrays(self):
+        env = create_test_amm_env(num_trajectories=1, n_steps=5)
+        env.reset()
+        action = np.array([[-2.0, 2.0, -1.0]], dtype=np.float32)
+
+        _, rewards, _, _, info = env.step(action)
+        action[0, 0] = 99.0
+        rewards[0] = 99.0
+
+        assert info["action"][0, 0] == -2.0
+        assert info["reward"][0] != 99.0
+
+
+# ---------------------------------------------------------------------------
 # TestInfosList
 # ---------------------------------------------------------------------------
 
@@ -162,6 +207,23 @@ class TestInfosList:
         env = create_sb3_env(num_trajectories=2)
         infos = self._get_infos(env)
         assert all(isinstance(info, dict) for info in infos)
+
+    def test_contains_per_trajectory_step_info(self):
+        env = create_sb3_env(num_trajectories=2)
+        env.reset()
+        actions = np.array([[-2.0, 2.0, -1.0], [0.0, 1.0, 1.0]], dtype=np.float32)
+        env.step_async(actions)
+
+        _, rewards, _, infos = env.step_wait()
+
+        for i, info in enumerate(infos):
+            assert {"asset_price", "pool_price", "time", "action", "reward"} <= set(info)
+            assert np.isscalar(info["asset_price"])
+            assert np.isscalar(info["pool_price"])
+            assert np.isscalar(info["time"])
+            assert info["action"].shape == (3,)
+            np.testing.assert_allclose(info["action"], actions[i])
+            np.testing.assert_allclose(info["reward"], rewards[i])
 
 
 # ---------------------------------------------------------------------------
@@ -236,6 +298,13 @@ class TestTerminalObs:
         assert final_infos is not None
         assert "terminal_observation" not in final_infos[0]
 
+    def test_step_info_present_on_done(self):
+        env = create_sb3_env(num_trajectories=1, n_steps=5)
+        _, final_infos = self._run_episode(env)
+        assert final_infos is not None
+        assert {"asset_price", "pool_price", "time", "action", "reward"} <= set(final_infos[0])
+        assert "terminal_observation" in final_infos[0]
+
 
 # ---------------------------------------------------------------------------
 # TestCustomObsKeys
@@ -251,6 +320,32 @@ class TestCustomObsKeys:
     def test_array_key_raises(self):
         with pytest.raises(ValueError, match="array key"):
             create_sb3_env(num_trajectories=1, obs_keys=[FEES0_KEY])
+
+
+# ---------------------------------------------------------------------------
+# TestObservationFeatures
+# ---------------------------------------------------------------------------
+
+class TestObservationFeatures:
+    def test_compute_sb3_observation_features(self):
+        env = create_test_amm_env(num_trajectories=2)
+        state, _ = env.reset()
+
+        features = compute_sb3_observation_features(state)
+        lower_offset = state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]
+        upper_offset = state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+
+        assert set(features) == SB3_DERIVED_OBS_KEYS
+        np.testing.assert_allclose(features[MISPRICING_KEY], state[ASSET_PRICE_KEY] - pool_price)
+        np.testing.assert_allclose(features[POOL_SQRT_PRICE_KEY], pool_price)
+        np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
+        np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
+        np.testing.assert_allclose(
+            features[BOUNDARY_PROXIMITY_KEY],
+            np.minimum(lower_offset, upper_offset),
+        )
+        np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
 
 
 # ---------------------------------------------------------------------------
@@ -308,6 +403,49 @@ class TestVecEnvInterface:
         import gymnasium as gym_mod
         result = env.env_is_wrapped(gym_mod.Wrapper)
         assert result == [False, False]
+
+    def test_get_attr_respects_indices(self):
+        env = create_sb3_env(num_trajectories=3, n_steps=5)
+
+        assert env.get_attr("n_steps", indices=1) == [5]
+        assert env.get_attr("n_steps", indices=[2, 0]) == [5, 5]
+        assert env.get_attr("render_mode", indices=[1]) == [None]
+
+    def test_env_is_wrapped_respects_indices(self):
+        env = create_sb3_env(num_trajectories=3)
+        import gymnasium as gym_mod
+
+        assert env.env_is_wrapped(gym_mod.Wrapper, indices=2) == [False]
+        assert env.env_is_wrapped(gym_mod.Wrapper, indices=[2, 0]) == [False, False]
+
+    def test_set_attr_allows_full_selection(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        env.set_attr("_test_shared_attr", "value")
+        assert env.env._test_shared_attr == "value"
+
+        env.set_attr("_test_shared_attr", "updated", indices=[0, 1])
+        assert env.env._test_shared_attr == "updated"
+
+    def test_set_attr_rejects_partial_indices(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        with pytest.raises(NotImplementedError, match="Partial set_attr"):
+            env.set_attr("_test_shared_attr", "value", indices=0)
+        assert not hasattr(env.env, "_test_shared_attr")
+
+    def test_env_method_allows_full_selection(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        result = env.env_method("seed", 123)
+
+        assert result == [None, None]
+
+    def test_env_method_rejects_partial_indices(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        with pytest.raises(NotImplementedError, match="Partial env_method"):
+            env.env_method("seed", 123, indices=0)
 
     def test_obs_space_is_gymnasium_box(self):
         env = create_sb3_env(num_trajectories=1)

@@ -378,8 +378,8 @@ class AMMEnvironment(gymnasium.Env):
 
         # Calculate rewards
         rewards = self.reward_function.calculate(current_state, action, next_state, terminated[0])
-        # Calculate info dict
-        info = self._calculate_infos(current_state, action, rewards)
+        # Calculate post-step info dict
+        info = self._calculate_infos(next_state, action, rewards)
         return next_state, rewards, terminated, truncated, info
 
     def _compute_derived_obs(self):
@@ -430,10 +430,15 @@ class AMMEnvironment(gymnasium.Env):
         done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
         return np.full((self.num_trajectories,), done, dtype=bool)
 
-    def _calculate_infos(self, current_state, action, rewards):
-        """Calculate info dict for step return."""
-        # Placeholder - can be extended with additional metrics
-        return {}
+    def _calculate_infos(self, state, action, rewards):
+        """Return lightweight batched diagnostics for the completed step."""
+        return {
+            "asset_price": state[ASSET_PRICE_KEY].copy(),
+            "pool_price": (state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
+            "time": state[TIME_KEY].copy(),
+            "action": np.asarray(action).copy(),
+            "reward": rewards.copy(),
+        }
     
     @property
     def initial_state(self):

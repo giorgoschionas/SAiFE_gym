@@ -7,26 +7,20 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvO
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.index_names import (
-    ASSET_PRICE_KEY,
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
     GAS_COST_KEY,
-    LP_ALPHA_KEY,
-    PORTFOLIO_VALUE_KEY,
-    LP_COLLECTED_FEES0_KEY,
-    LP_COLLECTED_FEES1_KEY,
-    LP_LIQUIDITY_KEY,
     LP_LOWER_OFFSET_KEY,
-    LP_TICK_LOWER_KEY,
-    LP_TICK_UPPER_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
-    POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
-    POOL_SQRT_PRICE_KEY,
     POSITION_WIDTH_KEY,
     TIME_KEY,
+)
+from SAiFE_gym.gym.observation_features import (
+    SB3_DERIVED_OBS_KEYS,
+    compute_sb3_observation_features,
 )
 
 DEFAULT_OBS_KEYS = [
@@ -44,9 +38,6 @@ DEFAULT_OBS_KEYS = [
 ]  # obs_dim = 5
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
-_DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
-                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY,
-                 POOL_SQRT_PRICE_KEY}  # exposed as squared pool price in obs
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -93,32 +84,31 @@ class StableBaselinesAMMEnvironment(VecEnv):
     # Core VecEnv methods
     # ------------------------------------------------------------------
 
-    def _compute_derived(self, state_dict: dict) -> dict:
-        """Compute derived observation features from raw state."""
-        lower_offset = (state_dict[POOL_CURRENT_TICK_KEY]
-                        - state_dict[LP_TICK_LOWER_KEY])
-        upper_offset = (state_dict[LP_TICK_UPPER_KEY]
-                        - state_dict[POOL_CURRENT_TICK_KEY])
-        return {
-            MISPRICING_KEY:          state_dict[ASSET_PRICE_KEY]
-                                     - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
-            POOL_SQRT_PRICE_KEY:     state_dict[POOL_SQRT_PRICE_KEY] ** 2,
-            LP_LOWER_OFFSET_KEY:     lower_offset,
-            LP_UPPER_OFFSET_KEY:     upper_offset,
-            BOUNDARY_PROXIMITY_KEY:  np.minimum(lower_offset, upper_offset),
-            POSITION_WIDTH_KEY:      lower_offset + upper_offset,
-        }
-
     def _flatten_obs(self, state_dict: dict) -> np.ndarray:
         """Return shape (num_trajectories, obs_dim) float32 array."""
         n = self.env.num_trajectories
-        derived = self._compute_derived(state_dict)
+        derived = compute_sb3_observation_features(state_dict)
         cols = [
-            derived[k].reshape(n, 1) if k in _DERIVED_KEYS
+            derived[k].reshape(n, 1) if k in SB3_DERIVED_OBS_KEYS
             else state_dict[k].reshape(n, 1)
             for k in self.obs_keys
         ]
         return np.concatenate(cols, axis=1).astype(np.float32)
+
+    def _split_batched_info(self, batched_info: dict) -> List[dict]:
+        """Convert AMMEnvironment's batched info dict to SB3's list-of-dicts."""
+        n = self.env.num_trajectories
+        infos = [{} for _ in range(n)]
+        for key, value in batched_info.items():
+            value_array = np.asarray(value)
+            if value_array.ndim > 0 and value_array.shape[0] == n:
+                for i, info in enumerate(infos):
+                    item = value_array[i]
+                    info[key] = item.copy() if isinstance(item, np.ndarray) else item.item()
+            else:
+                for info in infos:
+                    info[key] = value
+        return infos
 
     def reset(self) -> VecEnvObs:
         obs, _ = self.env.reset()
@@ -128,10 +118,10 @@ class StableBaselinesAMMEnvironment(VecEnv):
         self.actions = actions
 
     def step_wait(self) -> VecEnvStepReturn:
-        state_dict, rewards, terminated, truncated, _ = self.env.step(self.actions)
+        state_dict, rewards, terminated, truncated, raw_info = self.env.step(self.actions)
         dones = terminated | truncated
         flat_obs = self._flatten_obs(state_dict)
-        infos = [{} for _ in range(self.env.num_trajectories)]
+        infos = self._split_batched_info(raw_info)
         if dones.all():
             if self.store_terminal_observation_info:
                 for i, info in enumerate(infos):
@@ -147,14 +137,34 @@ class StableBaselinesAMMEnvironment(VecEnv):
     # VecEnv stubs
     # ------------------------------------------------------------------
 
+    def _selected_indices(self, indices: VecEnvIndices = None) -> List[int]:
+        selected = list(self._get_indices(indices))
+        n = self.env.num_trajectories
+        for index in selected:
+            if index < 0 or index >= n:
+                raise IndexError(f"env index {index} out of range for {n} envs")
+        return selected
+
+    def _require_full_selection(self, indices: VecEnvIndices, method_name: str) -> List[int]:
+        selected = self._selected_indices(indices)
+        all_indices = list(range(self.env.num_trajectories))
+        if sorted(selected) != all_indices:
+            raise NotImplementedError(
+                f"Partial {method_name} is not supported because "
+                "StableBaselinesAMMEnvironment wraps one shared vectorized AMMEnvironment"
+            )
+        return selected
+
     def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+        selected = self._selected_indices(indices)
         if attr_name == "render_mode":
-            return [None] * self.env.num_trajectories
-        return [getattr(self.env, attr_name)] * self.env.num_trajectories
+            return [None] * len(selected)
+        return [getattr(self.env, attr_name)] * len(selected)
 
     def set_attr(
         self, attr_name: str, value: Any, indices: VecEnvIndices = None
     ) -> None:
+        self._require_full_selection(indices, "set_attr")
         setattr(self.env, attr_name, value)
 
     def env_method(
@@ -164,13 +174,15 @@ class StableBaselinesAMMEnvironment(VecEnv):
         indices: VecEnvIndices = None,
         **method_kwargs,
     ) -> List[Any]:
+        selected = self._require_full_selection(indices, "env_method")
         result = getattr(self.env, method_name)(*method_args, **method_kwargs)
-        return [result] * self.env.num_trajectories
+        return [result] * len(selected)
 
     def env_is_wrapped(
         self, wrapper_class: Type, indices: VecEnvIndices = None
     ) -> List[bool]:
-        return [False] * self.env.num_trajectories
+        selected = self._selected_indices(indices)
+        return [False] * len(selected)
 
     def seed(self, seed: Optional[int] = None) -> List[Optional[int]]:
         self.env.seed(seed)
