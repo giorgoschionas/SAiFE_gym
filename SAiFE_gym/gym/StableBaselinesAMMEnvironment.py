@@ -120,6 +120,21 @@ class StableBaselinesAMMEnvironment(VecEnv):
         ]
         return np.concatenate(cols, axis=1).astype(np.float32)
 
+    def _split_batched_info(self, batched_info: dict) -> List[dict]:
+        """Convert AMMEnvironment's batched info dict to SB3's list-of-dicts."""
+        n = self.env.num_trajectories
+        infos = [{} for _ in range(n)]
+        for key, value in batched_info.items():
+            value_array = np.asarray(value)
+            if value_array.ndim > 0 and value_array.shape[0] == n:
+                for i, info in enumerate(infos):
+                    item = value_array[i]
+                    info[key] = item.copy() if isinstance(item, np.ndarray) else item.item()
+            else:
+                for info in infos:
+                    info[key] = value
+        return infos
+
     def reset(self) -> VecEnvObs:
         obs, _ = self.env.reset()
         return self._flatten_obs(obs)
@@ -128,10 +143,10 @@ class StableBaselinesAMMEnvironment(VecEnv):
         self.actions = actions
 
     def step_wait(self) -> VecEnvStepReturn:
-        state_dict, rewards, terminated, truncated, _ = self.env.step(self.actions)
+        state_dict, rewards, terminated, truncated, raw_info = self.env.step(self.actions)
         dones = terminated | truncated
         flat_obs = self._flatten_obs(state_dict)
-        infos = [{} for _ in range(self.env.num_trajectories)]
+        infos = self._split_batched_info(raw_info)
         if dones.all():
             if self.store_terminal_observation_info:
                 for i, info in enumerate(infos):

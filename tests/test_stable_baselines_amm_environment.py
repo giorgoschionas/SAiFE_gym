@@ -136,6 +136,45 @@ class TestStepWait:
 
 
 # ---------------------------------------------------------------------------
+# TestRawInfo
+# ---------------------------------------------------------------------------
+
+class TestRawInfo:
+    INFO_KEYS = {"asset_price", "pool_price", "time", "action", "reward"}
+
+    def test_batched_info_contains_post_step_values(self):
+        env = create_test_amm_env(num_trajectories=2, n_steps=5)
+        env.reset()
+        action = np.array([[-2.0, 2.0, -1.0], [0.0, 1.0, 1.0]], dtype=np.float32)
+
+        state, rewards, _, _, info = env.step(action)
+
+        assert set(info) == self.INFO_KEYS
+        assert info["asset_price"].shape == (2,)
+        assert info["pool_price"].shape == (2,)
+        assert info["time"].shape == (2,)
+        assert info["action"].shape == (2, 3)
+        assert info["reward"].shape == (2,)
+        np.testing.assert_allclose(info["asset_price"], state[ASSET_PRICE_KEY])
+        np.testing.assert_allclose(info["pool_price"], state[POOL_SQRT_PRICE_KEY] ** 2)
+        np.testing.assert_allclose(info["time"], state[TIME_KEY])
+        np.testing.assert_allclose(info["action"], action)
+        np.testing.assert_allclose(info["reward"], rewards)
+
+    def test_batched_info_copies_mutable_arrays(self):
+        env = create_test_amm_env(num_trajectories=1, n_steps=5)
+        env.reset()
+        action = np.array([[-2.0, 2.0, -1.0]], dtype=np.float32)
+
+        _, rewards, _, _, info = env.step(action)
+        action[0, 0] = 99.0
+        rewards[0] = 99.0
+
+        assert info["action"][0, 0] == -2.0
+        assert info["reward"][0] != 99.0
+
+
+# ---------------------------------------------------------------------------
 # TestInfosList
 # ---------------------------------------------------------------------------
 
@@ -162,6 +201,23 @@ class TestInfosList:
         env = create_sb3_env(num_trajectories=2)
         infos = self._get_infos(env)
         assert all(isinstance(info, dict) for info in infos)
+
+    def test_contains_per_trajectory_step_info(self):
+        env = create_sb3_env(num_trajectories=2)
+        env.reset()
+        actions = np.array([[-2.0, 2.0, -1.0], [0.0, 1.0, 1.0]], dtype=np.float32)
+        env.step_async(actions)
+
+        _, rewards, _, infos = env.step_wait()
+
+        for i, info in enumerate(infos):
+            assert {"asset_price", "pool_price", "time", "action", "reward"} <= set(info)
+            assert np.isscalar(info["asset_price"])
+            assert np.isscalar(info["pool_price"])
+            assert np.isscalar(info["time"])
+            assert info["action"].shape == (3,)
+            np.testing.assert_allclose(info["action"], actions[i])
+            np.testing.assert_allclose(info["reward"], rewards[i])
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +291,13 @@ class TestTerminalObs:
         _, final_infos = self._run_episode(env)
         assert final_infos is not None
         assert "terminal_observation" not in final_infos[0]
+
+    def test_step_info_present_on_done(self):
+        env = create_sb3_env(num_trajectories=1, n_steps=5)
+        _, final_infos = self._run_episode(env)
+        assert final_infos is not None
+        assert {"asset_price", "pool_price", "time", "action", "reward"} <= set(final_infos[0])
+        assert "terminal_observation" in final_infos[0]
 
 
 # ---------------------------------------------------------------------------
