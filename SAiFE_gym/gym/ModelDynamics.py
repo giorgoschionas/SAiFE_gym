@@ -200,12 +200,14 @@ class UniswapV3ModelDynamics(ModelDynamics):
             return
 
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx = current_tick - self.tick_lower_global
+        idx_all = current_tick - self.tick_lower_global
+        traj = np.flatnonzero(active)
+        idx = idx_all[traj]
 
 
         assert idx.min() >= 1 and idx.max() <= self.num_ticks, (
             f"_process_sell: tick out of array window. "
-            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
+            f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
             f"valid [{self.tick_lower_global + 1}, {self.tick_lower_global + self.num_ticks}]. "
             f"Increase num_ticks."
         )
@@ -213,16 +215,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sqrt_p_i = self.sqrt_grid[idx]
         sqrt_p_prev = self.sqrt_grid[idx - 1]
 
-        traj = np.arange(self.num_trajectories)
         L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx - 1]
 
         # After-fee token0 amount needed to traverse the full tick [i-1, i] from AMM[i] down to AMM[i-1].
         dx = L_prev * (1.0 / sqrt_p_prev - 1.0 / sqrt_p_i)
         fee = self.fee_multiplier * dx
 
-        self.state[FEES0_KEY][traj, idx - 1] += np.where(active, fee, 0.0)
+        self.state[FEES0_KEY][traj, idx - 1] += fee
 
-        new_tick = np.where(active, current_tick - 1, current_tick)
+        new_tick = current_tick.copy()
+        new_tick[traj] -= 1
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
         self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
@@ -242,12 +244,14 @@ class UniswapV3ModelDynamics(ModelDynamics):
             return
 
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx = current_tick - self.tick_lower_global
+        idx_all = current_tick - self.tick_lower_global
+        traj = np.flatnonzero(active)
+        idx = idx_all[traj]
 
 
         assert idx.min() >= 0 and idx.max() <= self.num_ticks - 1, (
             f"_process_buy: tick out of array window. "
-            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
+            f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
             f"valid [{self.tick_lower_global}, {self.tick_lower_global + self.num_ticks - 1}]. "
             f"Increase num_ticks."
         )
@@ -255,16 +259,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sqrt_p_i = self.sqrt_grid[idx]
         sqrt_p_next = self.sqrt_grid[idx + 1]
 
-        traj = np.arange(self.num_trajectories)
         L_i = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx]
 
         # After-fee token1 amount needed to traverse the full tick [i, i+1] from AMM[i] up to AMM[i+1].
         dy = L_i * (sqrt_p_next - sqrt_p_i)
         fee = self.fee_multiplier * dy
 
-        self.state[FEES1_KEY][traj, idx] += np.where(active, fee, 0.0)
+        self.state[FEES1_KEY][traj, idx] += fee
 
-        new_tick = np.where(active, current_tick + 1, current_tick)
+        new_tick = current_tick.copy()
+        new_tick[traj] += 1
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
         self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
@@ -561,4 +565,3 @@ class UniswapV3ModelDynamics(ModelDynamics):
             arrivals = self.arrival_model.get_arrivals()
         self.last_arrivals = arrivals
         return arrivals
-

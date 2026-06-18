@@ -1022,5 +1022,59 @@ class TestHoldAction:
         assert model.state[LP_EVER_DEPLOYED_KEY][0]
 
 
+class TestMaskedSwapVectorization:
+    """Swaps should validate and update only trajectories with active arrivals."""
+
+    def test_inactive_left_boundary_does_not_block_active_sell(self):
+        """Inactive row at left boundary should not block another row's sell."""
+        model = create_test_model(num_trajectories=2, num_ticks=10)
+        initialize_state(model, liquidity_value=1e6)
+
+        left_tick = model.tick_lower_global
+        active_tick = model.tick_lower_global + 5
+        model.state[POOL_CURRENT_TICK_KEY] = np.array([left_tick, active_tick], dtype=np.float64)
+        model.state[POOL_SQRT_PRICE_KEY] = model.sqrt_grid[
+            model.state[POOL_CURRENT_TICK_KEY].astype(np.int64) - model.tick_lower_global
+        ]
+
+        inactive_tick_before = model.state[POOL_CURRENT_TICK_KEY][0]
+        inactive_sqrt_before = model.state[POOL_SQRT_PRICE_KEY][0]
+        inactive_fees_before = model.state[FEES0_KEY][0].copy()
+
+        arrivals = np.array([[0, 0], [1, 0]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == inactive_tick_before
+        assert model.state[POOL_SQRT_PRICE_KEY][0] == inactive_sqrt_before
+        np.testing.assert_array_equal(model.state[FEES0_KEY][0], inactive_fees_before)
+        assert model.state[POOL_CURRENT_TICK_KEY][1] == active_tick - 1
+        assert model.state[FEES0_KEY][1].sum() > 0
+
+    def test_inactive_right_boundary_does_not_block_active_buy(self):
+        """Inactive row at right boundary should not block another row's buy."""
+        model = create_test_model(num_trajectories=2, num_ticks=10)
+        initialize_state(model, liquidity_value=1e6)
+
+        right_tick = model.tick_lower_global + model.num_ticks
+        active_tick = model.tick_lower_global + 5
+        model.state[POOL_CURRENT_TICK_KEY] = np.array([right_tick, active_tick], dtype=np.float64)
+        model.state[POOL_SQRT_PRICE_KEY] = model.sqrt_grid[
+            model.state[POOL_CURRENT_TICK_KEY].astype(np.int64) - model.tick_lower_global
+        ]
+
+        inactive_tick_before = model.state[POOL_CURRENT_TICK_KEY][0]
+        inactive_sqrt_before = model.state[POOL_SQRT_PRICE_KEY][0]
+        inactive_fees_before = model.state[FEES1_KEY][0].copy()
+
+        arrivals = np.array([[0, 0], [0, 1]], dtype=np.int64)
+        model.update_state(arrivals, None)
+
+        assert model.state[POOL_CURRENT_TICK_KEY][0] == inactive_tick_before
+        assert model.state[POOL_SQRT_PRICE_KEY][0] == inactive_sqrt_before
+        np.testing.assert_array_equal(model.state[FEES1_KEY][0], inactive_fees_before)
+        assert model.state[POOL_CURRENT_TICK_KEY][1] == active_tick + 1
+        assert model.state[FEES1_KEY][1].sum() > 0
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])
