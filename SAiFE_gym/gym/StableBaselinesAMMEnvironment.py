@@ -162,14 +162,34 @@ class StableBaselinesAMMEnvironment(VecEnv):
     # VecEnv stubs
     # ------------------------------------------------------------------
 
+    def _selected_indices(self, indices: VecEnvIndices = None) -> List[int]:
+        selected = list(self._get_indices(indices))
+        n = self.env.num_trajectories
+        for index in selected:
+            if index < 0 or index >= n:
+                raise IndexError(f"env index {index} out of range for {n} envs")
+        return selected
+
+    def _require_full_selection(self, indices: VecEnvIndices, method_name: str) -> List[int]:
+        selected = self._selected_indices(indices)
+        all_indices = list(range(self.env.num_trajectories))
+        if sorted(selected) != all_indices:
+            raise NotImplementedError(
+                f"Partial {method_name} is not supported because "
+                "StableBaselinesAMMEnvironment wraps one shared vectorized AMMEnvironment"
+            )
+        return selected
+
     def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> List[Any]:
+        selected = self._selected_indices(indices)
         if attr_name == "render_mode":
-            return [None] * self.env.num_trajectories
-        return [getattr(self.env, attr_name)] * self.env.num_trajectories
+            return [None] * len(selected)
+        return [getattr(self.env, attr_name)] * len(selected)
 
     def set_attr(
         self, attr_name: str, value: Any, indices: VecEnvIndices = None
     ) -> None:
+        self._require_full_selection(indices, "set_attr")
         setattr(self.env, attr_name, value)
 
     def env_method(
@@ -179,13 +199,15 @@ class StableBaselinesAMMEnvironment(VecEnv):
         indices: VecEnvIndices = None,
         **method_kwargs,
     ) -> List[Any]:
+        selected = self._require_full_selection(indices, "env_method")
         result = getattr(self.env, method_name)(*method_args, **method_kwargs)
-        return [result] * self.env.num_trajectories
+        return [result] * len(selected)
 
     def env_is_wrapped(
         self, wrapper_class: Type, indices: VecEnvIndices = None
     ) -> List[bool]:
-        return [False] * self.env.num_trajectories
+        selected = self._selected_indices(indices)
+        return [False] * len(selected)
 
     def seed(self, seed: Optional[int] = None) -> List[Optional[int]]:
         self.env.seed(seed)

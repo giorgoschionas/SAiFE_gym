@@ -372,6 +372,49 @@ class TestVecEnvInterface:
         result = env.env_is_wrapped(gym_mod.Wrapper)
         assert result == [False, False]
 
+    def test_get_attr_respects_indices(self):
+        env = create_sb3_env(num_trajectories=3, n_steps=5)
+
+        assert env.get_attr("n_steps", indices=1) == [5]
+        assert env.get_attr("n_steps", indices=[2, 0]) == [5, 5]
+        assert env.get_attr("render_mode", indices=[1]) == [None]
+
+    def test_env_is_wrapped_respects_indices(self):
+        env = create_sb3_env(num_trajectories=3)
+        import gymnasium as gym_mod
+
+        assert env.env_is_wrapped(gym_mod.Wrapper, indices=2) == [False]
+        assert env.env_is_wrapped(gym_mod.Wrapper, indices=[2, 0]) == [False, False]
+
+    def test_set_attr_allows_full_selection(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        env.set_attr("_test_shared_attr", "value")
+        assert env.env._test_shared_attr == "value"
+
+        env.set_attr("_test_shared_attr", "updated", indices=[0, 1])
+        assert env.env._test_shared_attr == "updated"
+
+    def test_set_attr_rejects_partial_indices(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        with pytest.raises(NotImplementedError, match="Partial set_attr"):
+            env.set_attr("_test_shared_attr", "value", indices=0)
+        assert not hasattr(env.env, "_test_shared_attr")
+
+    def test_env_method_allows_full_selection(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        result = env.env_method("seed", 123)
+
+        assert result == [None, None]
+
+    def test_env_method_rejects_partial_indices(self):
+        env = create_sb3_env(num_trajectories=2)
+
+        with pytest.raises(NotImplementedError, match="Partial env_method"):
+            env.env_method("seed", 123, indices=0)
+
     def test_obs_space_is_gymnasium_box(self):
         env = create_sb3_env(num_trajectories=1)
         assert isinstance(env.observation_space, gymnasium.spaces.Box)
