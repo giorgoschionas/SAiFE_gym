@@ -272,7 +272,32 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
         self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
-    def _compute_gross_lp_fees(self):
+    def _state_or_current(self, state: dict = None) -> dict:
+        return self.state if state is None else state
+
+    def get_pool_sqrt_price(self, state: dict = None) -> np.ndarray:
+        """Return the pool sqrt price implied by the current tick lattice."""
+        state = self._state_or_current(state)
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+
+        if self.sqrt_grid is not None and self.tick_lower_global is not None:
+            idx = current_tick - self.tick_lower_global
+            if idx.min() >= 0 and idx.max() < len(self.sqrt_grid):
+                return self.sqrt_grid[idx]
+
+        return state[POOL_SQRT_PRICE_KEY]
+
+    def _position_sqrt_bounds(self, state: dict = None):
+        state = self._state_or_current(state)
+        sqrt_p_lower = np.sqrt(
+            self.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64)
+        )
+        sqrt_p_upper = np.sqrt(
+            self.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64)
+        )
+        return sqrt_p_lower, sqrt_p_upper
+
+    def _compute_gross_lp_fees(self, state: dict = None):
         """
         Compute LP's gross share of pool fees (read-only, does not modify state).
 
@@ -282,10 +307,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
                 gross_fee1: shape (num_trajectories,)
                 lp_share_in_range: shape (num_trajectories, num_ticks) — for pool subtraction
         """
-        lp_liq = self.state[LP_LIQUIDITY_KEY]
-        lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
-        lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
-        pool_liq = self.state[POOL_LIQUIDITY_ARRAY_KEY]
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        lp_lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
+        lp_upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
+        pool_liq = state[POOL_LIQUIDITY_ARRAY_KEY]
 
         tick_indices = np.arange(self.num_ticks)
         absolute_ticks = self.tick_lower_global + tick_indices
@@ -297,10 +323,67 @@ class UniswapV3ModelDynamics(ModelDynamics):
         lp_share = np.where(pool_liq > 0, lp_liq[:, None] / total_liq_safe, 0.0)
         lp_share_in_range = lp_share * in_range
 
-        gross_fee0 = np.sum(self.state[FEES0_KEY] * lp_share_in_range, axis=1)
-        gross_fee1 = np.sum(self.state[FEES1_KEY] * lp_share_in_range, axis=1)
+        gross_fee0 = np.sum(state[FEES0_KEY] * lp_share_in_range, axis=1)
+        gross_fee1 = np.sum(state[FEES1_KEY] * lp_share_in_range, axis=1)
 
         return gross_fee0, gross_fee1, lp_share_in_range
+
+    def compute_unclaimed_fees(self, state: dict = None):
+        """Return LP claimable fees since entry snapshots without mutating state."""
+        state = self._state_or_current(state)
+        gross0, gross1, _ = self._compute_gross_lp_fees(state)
+        unclaimed0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY], 0.0)
+        unclaimed1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY], 0.0)
+        return unclaimed0, unclaimed1
+
+    def compute_lp_alpha(self, state: dict = None) -> np.ndarray:
+        """Return the LP's token0 value fraction for observation/reward features."""
+        state = self._state_or_current(state)
+        has_position = state[LP_LIQUIDITY_KEY] > 0
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+        alpha = self._compute_token0_fraction_vec(
+            self.get_pool_sqrt_price(state),
+            state[ASSET_PRICE_KEY],
+            sqrt_p_lower,
+            sqrt_p_upper,
+        )
+        return np.where(has_position, alpha, 0.0)
+
+    def compute_lp_token0_amount(self, state: dict = None) -> np.ndarray:
+        """Return absolute token0 holdings represented by the active LP position."""
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        has_position = lp_liq > 0
+        sqrt_p = self.get_pool_sqrt_price(state)
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+
+        x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+        x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+        above = sqrt_p >= sqrt_p_upper
+        below = sqrt_p <= sqrt_p_lower
+        token0_amount = np.where(above, 0.0, np.where(below, x_below, x_in))
+        return np.where(has_position, token0_amount, 0.0)
+
+    def compute_portfolio_value(self, state: dict = None) -> np.ndarray:
+        """Return LP mark-to-market wealth including currently unclaimed fees."""
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        has_position = lp_liq > 0
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+
+        pos_value = get_position_value_vec(
+            lp_liq,
+            state[ASSET_PRICE_KEY],
+            self.get_pool_sqrt_price(state),
+            sqrt_p_lower,
+            sqrt_p_upper,
+        )
+        unclaimed0, unclaimed1 = self.compute_unclaimed_fees(state)
+        unclaimed_value = unclaimed0 * state[ASSET_PRICE_KEY] + unclaimed1
+        no_pos_value = np.where(
+            state[LP_EVER_DEPLOYED_KEY], 0.0, state[INITIAL_WEALTH_KEY]
+        )
+        return np.where(has_position, pos_value + unclaimed_value, no_pos_value)
 
     def _collect_lp_fees(self):
         """
