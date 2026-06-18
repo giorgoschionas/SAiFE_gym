@@ -16,6 +16,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
 )
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
+    BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_TICK_LOWER_KEY,
@@ -24,7 +25,12 @@ from SAiFE_gym.gym.index_names import (
     MISPRICING_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
+    POSITION_WIDTH_KEY,
     TIME_KEY,
+)
+from SAiFE_gym.gym.observation_features import (
+    SB3_DERIVED_OBS_KEYS,
+    compute_sb3_observation_features,
 )
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
@@ -314,6 +320,32 @@ class TestCustomObsKeys:
     def test_array_key_raises(self):
         with pytest.raises(ValueError, match="array key"):
             create_sb3_env(num_trajectories=1, obs_keys=[FEES0_KEY])
+
+
+# ---------------------------------------------------------------------------
+# TestObservationFeatures
+# ---------------------------------------------------------------------------
+
+class TestObservationFeatures:
+    def test_compute_sb3_observation_features(self):
+        env = create_test_amm_env(num_trajectories=2)
+        state, _ = env.reset()
+
+        features = compute_sb3_observation_features(state)
+        lower_offset = state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]
+        upper_offset = state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+
+        assert set(features) == SB3_DERIVED_OBS_KEYS
+        np.testing.assert_allclose(features[MISPRICING_KEY], state[ASSET_PRICE_KEY] - pool_price)
+        np.testing.assert_allclose(features[POOL_SQRT_PRICE_KEY], pool_price)
+        np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
+        np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
+        np.testing.assert_allclose(
+            features[BOUNDARY_PROXIMITY_KEY],
+            np.minimum(lower_offset, upper_offset),
+        )
+        np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
 
 
 # ---------------------------------------------------------------------------

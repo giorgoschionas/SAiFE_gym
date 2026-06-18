@@ -7,26 +7,20 @@ from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvO
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.index_names import (
-    ASSET_PRICE_KEY,
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
     GAS_COST_KEY,
-    LP_ALPHA_KEY,
-    PORTFOLIO_VALUE_KEY,
-    LP_COLLECTED_FEES0_KEY,
-    LP_COLLECTED_FEES1_KEY,
-    LP_LIQUIDITY_KEY,
     LP_LOWER_OFFSET_KEY,
-    LP_TICK_LOWER_KEY,
-    LP_TICK_UPPER_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
-    POOL_CURRENT_TICK_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
-    POOL_SQRT_PRICE_KEY,
     POSITION_WIDTH_KEY,
     TIME_KEY,
+)
+from SAiFE_gym.gym.observation_features import (
+    SB3_DERIVED_OBS_KEYS,
+    compute_sb3_observation_features,
 )
 
 DEFAULT_OBS_KEYS = [
@@ -44,9 +38,6 @@ DEFAULT_OBS_KEYS = [
 ]  # obs_dim = 5
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
-_DERIVED_KEYS = {MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY,
-                 BOUNDARY_PROXIMITY_KEY, POSITION_WIDTH_KEY,
-                 POOL_SQRT_PRICE_KEY}  # exposed as squared pool price in obs
 
 
 class StableBaselinesAMMEnvironment(VecEnv):
@@ -93,28 +84,12 @@ class StableBaselinesAMMEnvironment(VecEnv):
     # Core VecEnv methods
     # ------------------------------------------------------------------
 
-    def _compute_derived(self, state_dict: dict) -> dict:
-        """Compute derived observation features from raw state."""
-        lower_offset = (state_dict[POOL_CURRENT_TICK_KEY]
-                        - state_dict[LP_TICK_LOWER_KEY])
-        upper_offset = (state_dict[LP_TICK_UPPER_KEY]
-                        - state_dict[POOL_CURRENT_TICK_KEY])
-        return {
-            MISPRICING_KEY:          state_dict[ASSET_PRICE_KEY]
-                                     - state_dict[POOL_SQRT_PRICE_KEY] ** 2,
-            POOL_SQRT_PRICE_KEY:     state_dict[POOL_SQRT_PRICE_KEY] ** 2,
-            LP_LOWER_OFFSET_KEY:     lower_offset,
-            LP_UPPER_OFFSET_KEY:     upper_offset,
-            BOUNDARY_PROXIMITY_KEY:  np.minimum(lower_offset, upper_offset),
-            POSITION_WIDTH_KEY:      lower_offset + upper_offset,
-        }
-
     def _flatten_obs(self, state_dict: dict) -> np.ndarray:
         """Return shape (num_trajectories, obs_dim) float32 array."""
         n = self.env.num_trajectories
-        derived = self._compute_derived(state_dict)
+        derived = compute_sb3_observation_features(state_dict)
         cols = [
-            derived[k].reshape(n, 1) if k in _DERIVED_KEYS
+            derived[k].reshape(n, 1) if k in SB3_DERIVED_OBS_KEYS
             else state_dict[k].reshape(n, 1)
             for k in self.obs_keys
         ]
