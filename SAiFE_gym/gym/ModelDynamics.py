@@ -273,13 +273,18 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return gross_fee0, gross_fee1, lp_share_in_range
 
+    def _claimable_lp_fees(self, state: dict = None, include_gross: bool = False):
+        state = self._state_or_current(state)
+        gross0, gross1, lp_share_in_range = self._compute_gross_lp_fees(state)
+        claimable0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY], 0.0)
+        claimable1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY], 0.0)
+        if include_gross:
+            return claimable0, claimable1, gross0, gross1, lp_share_in_range
+        return claimable0, claimable1
+
     def compute_unclaimed_fees(self, state: dict = None):
         """Return LP claimable fees since entry snapshots without mutating state."""
-        state = self._state_or_current(state)
-        gross0, gross1, _ = self._compute_gross_lp_fees(state)
-        unclaimed0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY], 0.0)
-        unclaimed1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY], 0.0)
-        return unclaimed0, unclaimed1
+        return self._claimable_lp_fees(state)
 
     def compute_lp_alpha(self, state: dict = None) -> np.ndarray:
         """Return the LP's token0 value fraction for observation/reward features."""
@@ -339,13 +344,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Returns:
             (net_fee0, net_fee1): Arrays of shape (num_trajectories,)
         """
-        gross_fee0, gross_fee1, lp_share_in_range = self._compute_gross_lp_fees()
-
-        snapshot0 = self.state[LP_FEE_SNAPSHOT0_KEY]
-        snapshot1 = self.state[LP_FEE_SNAPSHOT1_KEY]
-
-        net_fee0 = np.maximum(gross_fee0 - snapshot0, 0.0)
-        net_fee1 = np.maximum(gross_fee1 - snapshot1, 0.0)
+        net_fee0, net_fee1, gross_fee0, gross_fee1, lp_share_in_range = (
+            self._claimable_lp_fees(include_gross=True)
+        )
 
         # Compute ratio of net to gross (guarded for zero gross)
         safe_gross0 = np.where(gross_fee0 > 0, gross_fee0, 1.0)
@@ -374,11 +375,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Delta is clamped at zero so that a rebalance (which drops unclaimed back to 0)
         does not subtract from the cumulative lifetime counter.
         """
-        gross0, gross1, _ = self._compute_gross_lp_fees()
-        snap0 = self.state[LP_FEE_SNAPSHOT0_KEY]
-        snap1 = self.state[LP_FEE_SNAPSHOT1_KEY]
-        new_unclaimed0 = np.maximum(gross0 - snap0, 0.0)
-        new_unclaimed1 = np.maximum(gross1 - snap1, 0.0)
+        new_unclaimed0, new_unclaimed1 = self._claimable_lp_fees()
         delta0 = new_unclaimed0 - self.state[LP_UNCLAIMED_FEES0_KEY]
         delta1 = new_unclaimed1 - self.state[LP_UNCLAIMED_FEES1_KEY]
         self.state[LP_COLLECTED_FEES0_KEY] += np.maximum(delta0, 0.0)

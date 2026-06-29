@@ -393,7 +393,14 @@ class AMMEnvironment(gymnasium.Env):
         md.midprice_model.update(arrivals, None, action, md.state)
         md.state[ASSET_PRICE_KEY] = md.midprice_model.current_state[:, 0].copy()
 
-        _, active_liq = md._get_current_tick_liquidity()
+        tick_idx = np.clip(
+            (md.state[POOL_CURRENT_TICK_KEY] - md.tick_lower_global).astype(np.int64),
+            0,
+            md.num_ticks - 1,
+        )
+        active_liq = md.state[POOL_LIQUIDITY_ARRAY_KEY][
+            np.arange(md.num_trajectories), tick_idx
+        ]
         context = {
             'active_liquidity': active_liq,
             'amm_price': md.state[POOL_SQRT_PRICE_KEY] ** 2,
