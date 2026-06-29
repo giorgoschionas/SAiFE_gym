@@ -166,91 +166,54 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return action
 
-    def _process_sell(self, active: np.ndarray) -> None:
-        """Process a sell arrival per trajectory (lattice model).
+    def _process_swap(self, active: np.ndarray, direction: int) -> None:
+        """Process one-tick lattice swaps for active trajectories.
 
-        At tick `i` with price `AMM[i]`, a sell uses liquidity `L[i-1]` (tick range
-        `[i-1, i]`) and moves the price to `AMM[i-1]`:
-
-            dx = L[i-1] * (1/AMM[i-1] - 1/AMM[i])     # uniswap-mechanics
-            fee = fee_multiplier * dx                  # added to FEES0[i-1]
-
-        Args:
-            active: Boolean mask, shape (num_trajectories,) -- trajectories with a sell.
+        direction = -1: sell token0, price moves down, fees accrue to FEES0[i-1].
+        direction = 1: buy token0, price moves up, fees accrue to FEES1[i].
         """
         if not np.any(active):
             return
+        if direction not in (-1, 1):
+            raise ValueError("direction must be -1 for sell or 1 for buy")
 
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         idx_all = current_tick - self.tick_lower_global
         traj = np.flatnonzero(active)
         idx = idx_all[traj]
 
+        if direction == -1:
+            label = "sell"
+            valid_min, valid_max = 1, self.num_ticks
+            valid_tick_min = self.tick_lower_global + 1
+            valid_tick_max = self.tick_lower_global + self.num_ticks
+            fee_key = FEES0_KEY
+            fee_idx = idx - 1
+        else:
+            label = "buy"
+            valid_min, valid_max = 0, self.num_ticks - 1
+            valid_tick_min = self.tick_lower_global
+            valid_tick_max = self.tick_lower_global + self.num_ticks - 1
+            fee_key = FEES1_KEY
+            fee_idx = idx
 
-        assert idx.min() >= 1 and idx.max() <= self.num_ticks, (
-            f"_process_sell: tick out of array window. "
+        assert idx.min() >= valid_min and idx.max() <= valid_max, (
+            f"_process_swap({label}): tick out of array window. "
             f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
-            f"valid [{self.tick_lower_global + 1}, {self.tick_lower_global + self.num_ticks}]. "
+            f"valid [{valid_tick_min}, {valid_tick_max}]. "
             f"Increase num_ticks."
         )
 
-        sqrt_p_i = self.sqrt_grid[idx]
-        sqrt_p_prev = self.sqrt_grid[idx - 1]
+        liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, fee_idx]
+        if direction == -1:
+            amount = liquidity * (1.0 / self.sqrt_grid[idx - 1] - 1.0 / self.sqrt_grid[idx])
+        else:
+            amount = liquidity * (self.sqrt_grid[idx + 1] - self.sqrt_grid[idx])
 
-        L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx - 1]
-
-        # After-fee token0 amount needed to traverse the full tick [i-1, i] from AMM[i] down to AMM[i-1].
-        dx = L_prev * (1.0 / sqrt_p_prev - 1.0 / sqrt_p_i)
-        fee = self.fee_multiplier * dx
-
-        self.state[FEES0_KEY][traj, idx - 1] += fee
+        self.state[fee_key][traj, fee_idx] += self.fee_multiplier * amount
 
         new_tick = current_tick.copy()
-        new_tick[traj] -= 1
-        self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
-
-    def _process_buy(self, active: np.ndarray) -> None:
-        """Process a buy arrival per trajectory (lattice model).
-
-        At tick `i` with price `AMM[i]`, a buy uses liquidity `L[i]` (tick range
-        `[i, i+1]`) and moves the price one lattice step up to `AMM[i+1]`:
-
-            dy = L[i] * (AMM[i+1] - AMM[i])            # uniswap-mechanics
-            fee = fee_multiplier * dy                  # added to FEES1[i]
-
-        Args:
-            active: Boolean mask, shape (num_trajectories,) -- trajectories with a buy.
-        """
-        if not np.any(active):
-            return
-
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx_all = current_tick - self.tick_lower_global
-        traj = np.flatnonzero(active)
-        idx = idx_all[traj]
-
-
-        assert idx.min() >= 0 and idx.max() <= self.num_ticks - 1, (
-            f"_process_buy: tick out of array window. "
-            f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
-            f"valid [{self.tick_lower_global}, {self.tick_lower_global + self.num_ticks - 1}]. "
-            f"Increase num_ticks."
-        )
-
-        sqrt_p_i = self.sqrt_grid[idx]
-        sqrt_p_next = self.sqrt_grid[idx + 1]
-
-        L_i = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx]
-
-        # After-fee token1 amount needed to traverse the full tick [i, i+1] from AMM[i] up to AMM[i+1].
-        dy = L_i * (sqrt_p_next - sqrt_p_i)
-        fee = self.fee_multiplier * dy
-
-        self.state[FEES1_KEY][traj, idx] += fee
-
-        new_tick = current_tick.copy()
-        new_tick[traj] += 1
+        new_tick[traj] += direction
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
         self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
@@ -602,15 +565,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sell_first = bool(self.rng.integers(0, 2)) if np.any(both) else True
 
         if sell_first:
-            if np.any(sell_active):
-                self._process_sell(sell_active)
-            if np.any(buy_active):
-                self._process_buy(buy_active)
+            self._process_swap(sell_active, -1)
+            self._process_swap(buy_active, 1)
         else:
-            if np.any(buy_active):
-                self._process_buy(buy_active)
-            if np.any(sell_active):
-                self._process_sell(sell_active)
+            self._process_swap(buy_active, 1)
+            self._process_swap(sell_active, -1)
 
         self._accrue_lp_fees()
 
