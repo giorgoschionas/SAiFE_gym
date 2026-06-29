@@ -325,7 +325,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
         alpha = self._compute_token0_fraction_vec(
             self.get_pool_sqrt_price(state),
-            state[ASSET_PRICE_KEY],
             sqrt_p_lower,
             sqrt_p_upper,
         )
@@ -424,7 +423,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_UNCLAIMED_FEES0_KEY] = new_unclaimed0
         self.state[LP_UNCLAIMED_FEES1_KEY] = new_unclaimed1
 
-    def _compute_token0_fraction_vec(self, sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper):
+    def _compute_token0_fraction_vec(self, sqrt_p, sqrt_p_lower, sqrt_p_upper):
         """
         Compute fraction of position value held in token0 (vectorized).
 
@@ -510,7 +509,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             wealth_with_pos = pos_value + fee_value
 
-            alpha_pos = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper)
+            alpha_pos = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_lower, sqrt_p_upper)
             token0_value = alpha_pos * pos_value + fee0 * external_price
             alpha_current = np.where(wealth_with_pos > 0, token0_value / wealth_with_pos, 0.0)
 
@@ -534,7 +533,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # Apply decomposed rebalancing cost (only for existing positions)
         if np.any(has_position):
-            alpha_new = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_new_lower, sqrt_p_new_upper)
+            alpha_new = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper)
             swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
             total_cost = np.where(has_position, self.gas_cost + swap_cost, 0.0)
             wealth = np.maximum(wealth - total_cost, 0.0)
