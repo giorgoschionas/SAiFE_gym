@@ -15,7 +15,7 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
     PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
-from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick, get_position_value_vec
+from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 
 
 def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
@@ -25,34 +25,13 @@ def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
     AMMEnvironment.step (e.g. driving model_dynamics directly) can keep the
     derived observation keys consistent with the rest of the state.
     """
-    lp_liq = state[LP_LIQUIDITY_KEY]
-    has_position = lp_liq > 0
-    ever_deployed = state[LP_EVER_DEPLOYED_KEY]
-
-    sqrt_p = state[POOL_SQRT_PRICE_KEY]
-    sqrt_p_lower = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64))
-    sqrt_p_upper = np.sqrt(model_dynamics.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64))
-
-    pos_value = get_position_value_vec(lp_liq, state[ASSET_PRICE_KEY], sqrt_p, sqrt_p_lower, sqrt_p_upper)
-    unclaimed_value = (
-        state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
-        + state[LP_UNCLAIMED_FEES1_KEY]
-    )
-    no_pos_value = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY])
-    state[PORTFOLIO_VALUE_KEY] = np.where(has_position, pos_value + unclaimed_value, no_pos_value)
-
-    alpha = model_dynamics._compute_token0_fraction_vec(
-        sqrt_p, state[ASSET_PRICE_KEY], sqrt_p_lower, sqrt_p_upper
-    )
-    state[LP_ALPHA_KEY] = np.where(has_position, alpha, 0.0)
-
-    # Absolute token0 holdings (LP risky-asset inventory) — three-region V3 formula.
-    x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
-    x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
-    above = sqrt_p >= sqrt_p_upper
-    below = sqrt_p <= sqrt_p_lower
-    x = np.where(above, 0.0, np.where(below, x_below, x_in))
-    state[LP_TOKEN0_AMOUNT_KEY] = np.where(has_position, x, 0.0)
+    state[POOL_SQRT_PRICE_KEY] = model_dynamics.get_pool_sqrt_price(state)
+    unclaimed0, unclaimed1 = model_dynamics.compute_unclaimed_fees(state)
+    state[LP_UNCLAIMED_FEES0_KEY] = unclaimed0
+    state[LP_UNCLAIMED_FEES1_KEY] = unclaimed1
+    state[PORTFOLIO_VALUE_KEY] = model_dynamics.compute_portfolio_value(state)
+    state[LP_ALPHA_KEY] = model_dynamics.compute_lp_alpha(state)
+    state[LP_TOKEN0_AMOUNT_KEY] = model_dynamics.compute_lp_token0_amount(state)
 
 
 class AMMEnvironment(gymnasium.Env):
@@ -414,7 +393,14 @@ class AMMEnvironment(gymnasium.Env):
         md.midprice_model.update(arrivals, None, action, md.state)
         md.state[ASSET_PRICE_KEY] = md.midprice_model.current_state[:, 0].copy()
 
-        _, active_liq = md._get_current_tick_liquidity()
+        tick_idx = np.clip(
+            (md.state[POOL_CURRENT_TICK_KEY] - md.tick_lower_global).astype(np.int64),
+            0,
+            md.num_ticks - 1,
+        )
+        active_liq = md.state[POOL_LIQUIDITY_ARRAY_KEY][
+            np.arange(md.num_trajectories), tick_idx
+        ]
         context = {
             'active_liquidity': active_liq,
             'amm_price': md.state[POOL_SQRT_PRICE_KEY] ** 2,

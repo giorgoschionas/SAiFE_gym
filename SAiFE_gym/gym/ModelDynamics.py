@@ -166,109 +166,83 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return action
 
-    def _get_current_tick_liquidity(self):
-        """
+    def _process_swap(self, active: np.ndarray, direction: int) -> None:
+        """Process one-tick lattice swaps for active trajectories.
 
-        Returns:
-            (tick_array_idx, L_current):
-                tick_array_idx: Clipped array index, shape (num_trajectories,)
-                L_current: Liquidity at current tick, shape (num_trajectories,)
-        """
-        current_tick = self.state[POOL_CURRENT_TICK_KEY]
-        tick_array_idx = np.clip(
-            (current_tick - self.tick_lower_global).astype(np.int64),
-            0, self.num_ticks - 1,
-        )
-        L_current = self.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(self.num_trajectories), tick_array_idx
-        ]
-        return tick_array_idx, L_current
-
-    def _process_sell(self, active: np.ndarray) -> None:
-        """Process a sell arrival per trajectory (lattice model).
-
-        At tick `i` with price `AMM[i]`, a sell uses liquidity `L[i-1]` (tick range
-        `[i-1, i]`) and moves the price to `AMM[i-1]`:
-
-            dx = L[i-1] * (1/AMM[i-1] - 1/AMM[i])     # uniswap-mechanics
-            fee = fee_multiplier * dx                  # added to FEES0[i-1]
-
-        Args:
-            active: Boolean mask, shape (num_trajectories,) -- trajectories with a sell.
+        direction = -1: sell token0, price moves down, fees accrue to FEES0[i-1].
+        direction = 1: buy token0, price moves up, fees accrue to FEES1[i].
         """
         if not np.any(active):
             return
+        if direction not in (-1, 1):
+            raise ValueError("direction must be -1 for sell or 1 for buy")
 
         current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx = current_tick - self.tick_lower_global
+        idx_all = current_tick - self.tick_lower_global
+        traj = np.flatnonzero(active)
+        idx = idx_all[traj]
 
+        if direction == -1:
+            label = "sell"
+            valid_min, valid_max = 1, self.num_ticks
+            valid_tick_min = self.tick_lower_global + 1
+            valid_tick_max = self.tick_lower_global + self.num_ticks
+            fee_key = FEES0_KEY
+            fee_idx = idx - 1
+        else:
+            label = "buy"
+            valid_min, valid_max = 0, self.num_ticks - 1
+            valid_tick_min = self.tick_lower_global
+            valid_tick_max = self.tick_lower_global + self.num_ticks - 1
+            fee_key = FEES1_KEY
+            fee_idx = idx
 
-        assert idx.min() >= 1 and idx.max() <= self.num_ticks, (
-            f"_process_sell: tick out of array window. "
-            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
-            f"valid [{self.tick_lower_global + 1}, {self.tick_lower_global + self.num_ticks}]. "
+        assert idx.min() >= valid_min and idx.max() <= valid_max, (
+            f"_process_swap({label}): tick out of array window. "
+            f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
+            f"valid [{valid_tick_min}, {valid_tick_max}]. "
             f"Increase num_ticks."
         )
 
-        sqrt_p_i = self.sqrt_grid[idx]
-        sqrt_p_prev = self.sqrt_grid[idx - 1]
+        liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, fee_idx]
+        if direction == -1:
+            amount = liquidity * (1.0 / self.sqrt_grid[idx - 1] - 1.0 / self.sqrt_grid[idx])
+        else:
+            amount = liquidity * (self.sqrt_grid[idx + 1] - self.sqrt_grid[idx])
 
-        traj = np.arange(self.num_trajectories)
-        L_prev = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx - 1]
+        self.state[fee_key][traj, fee_idx] += self.fee_multiplier * amount
 
-        # After-fee token0 amount needed to traverse the full tick [i-1, i] from AMM[i] down to AMM[i-1].
-        dx = L_prev * (1.0 / sqrt_p_prev - 1.0 / sqrt_p_i)
-        fee = self.fee_multiplier * dx
-
-        self.state[FEES0_KEY][traj, idx - 1] += np.where(active, fee, 0.0)
-
-        new_tick = np.where(active, current_tick - 1, current_tick)
+        new_tick = current_tick.copy()
+        new_tick[traj] += direction
         self.state[POOL_CURRENT_TICK_KEY] = new_tick
         self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
-    def _process_buy(self, active: np.ndarray) -> None:
-        """Process a buy arrival per trajectory (lattice model).
+    def _state_or_current(self, state: dict = None) -> dict:
+        return self.state if state is None else state
 
-        At tick `i` with price `AMM[i]`, a buy uses liquidity `L[i]` (tick range
-        `[i, i+1]`) and moves the price one lattice step up to `AMM[i+1]`:
+    def get_pool_sqrt_price(self, state: dict = None) -> np.ndarray:
+        """Return the pool sqrt price implied by the current tick lattice."""
+        state = self._state_or_current(state)
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
 
-            dy = L[i] * (AMM[i+1] - AMM[i])            # uniswap-mechanics
-            fee = fee_multiplier * dy                  # added to FEES1[i]
+        if self.sqrt_grid is not None and self.tick_lower_global is not None:
+            idx = current_tick - self.tick_lower_global
+            if idx.min() >= 0 and idx.max() < len(self.sqrt_grid):
+                return self.sqrt_grid[idx]
 
-        Args:
-            active: Boolean mask, shape (num_trajectories,) -- trajectories with a buy.
-        """
-        if not np.any(active):
-            return
+        return state[POOL_SQRT_PRICE_KEY]
 
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx = current_tick - self.tick_lower_global
-
-
-        assert idx.min() >= 0 and idx.max() <= self.num_ticks - 1, (
-            f"_process_buy: tick out of array window. "
-            f"current_tick range [{current_tick.min()}, {current_tick.max()}], "
-            f"valid [{self.tick_lower_global}, {self.tick_lower_global + self.num_ticks - 1}]. "
-            f"Increase num_ticks."
+    def _position_sqrt_bounds(self, state: dict = None):
+        state = self._state_or_current(state)
+        sqrt_p_lower = np.sqrt(
+            self.exponential_value ** state[LP_TICK_LOWER_KEY].astype(np.float64)
         )
+        sqrt_p_upper = np.sqrt(
+            self.exponential_value ** state[LP_TICK_UPPER_KEY].astype(np.float64)
+        )
+        return sqrt_p_lower, sqrt_p_upper
 
-        sqrt_p_i = self.sqrt_grid[idx]
-        sqrt_p_next = self.sqrt_grid[idx + 1]
-
-        traj = np.arange(self.num_trajectories)
-        L_i = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, idx]
-
-        # After-fee token1 amount needed to traverse the full tick [i, i+1] from AMM[i] up to AMM[i+1].
-        dy = L_i * (sqrt_p_next - sqrt_p_i)
-        fee = self.fee_multiplier * dy
-
-        self.state[FEES1_KEY][traj, idx] += np.where(active, fee, 0.0)
-
-        new_tick = np.where(active, current_tick + 1, current_tick)
-        self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
-
-    def _compute_gross_lp_fees(self):
+    def _compute_gross_lp_fees(self, state: dict = None):
         """
         Compute LP's gross share of pool fees (read-only, does not modify state).
 
@@ -278,10 +252,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
                 gross_fee1: shape (num_trajectories,)
                 lp_share_in_range: shape (num_trajectories, num_ticks) — for pool subtraction
         """
-        lp_liq = self.state[LP_LIQUIDITY_KEY]
-        lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
-        lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
-        pool_liq = self.state[POOL_LIQUIDITY_ARRAY_KEY]
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        lp_lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
+        lp_upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
+        pool_liq = state[POOL_LIQUIDITY_ARRAY_KEY]
 
         tick_indices = np.arange(self.num_ticks)
         absolute_ticks = self.tick_lower_global + tick_indices
@@ -293,10 +268,71 @@ class UniswapV3ModelDynamics(ModelDynamics):
         lp_share = np.where(pool_liq > 0, lp_liq[:, None] / total_liq_safe, 0.0)
         lp_share_in_range = lp_share * in_range
 
-        gross_fee0 = np.sum(self.state[FEES0_KEY] * lp_share_in_range, axis=1)
-        gross_fee1 = np.sum(self.state[FEES1_KEY] * lp_share_in_range, axis=1)
+        gross_fee0 = np.sum(state[FEES0_KEY] * lp_share_in_range, axis=1)
+        gross_fee1 = np.sum(state[FEES1_KEY] * lp_share_in_range, axis=1)
 
         return gross_fee0, gross_fee1, lp_share_in_range
+
+    def _claimable_lp_fees(self, state: dict = None, include_gross: bool = False):
+        state = self._state_or_current(state)
+        gross0, gross1, lp_share_in_range = self._compute_gross_lp_fees(state)
+        claimable0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY], 0.0)
+        claimable1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY], 0.0)
+        if include_gross:
+            return claimable0, claimable1, gross0, gross1, lp_share_in_range
+        return claimable0, claimable1
+
+    def compute_unclaimed_fees(self, state: dict = None):
+        """Return LP claimable fees since entry snapshots without mutating state."""
+        return self._claimable_lp_fees(state)
+
+    def compute_lp_alpha(self, state: dict = None) -> np.ndarray:
+        """Return the LP's token0 value fraction for observation/reward features."""
+        state = self._state_or_current(state)
+        has_position = state[LP_LIQUIDITY_KEY] > 0
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+        alpha = self._compute_token0_fraction_vec(
+            self.get_pool_sqrt_price(state),
+            sqrt_p_lower,
+            sqrt_p_upper,
+        )
+        return np.where(has_position, alpha, 0.0)
+
+    def compute_lp_token0_amount(self, state: dict = None) -> np.ndarray:
+        """Return absolute token0 holdings represented by the active LP position."""
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        has_position = lp_liq > 0
+        sqrt_p = self.get_pool_sqrt_price(state)
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+
+        x_in = lp_liq * (1.0 / sqrt_p - 1.0 / sqrt_p_upper)
+        x_below = lp_liq * (1.0 / sqrt_p_lower - 1.0 / sqrt_p_upper)
+        above = sqrt_p >= sqrt_p_upper
+        below = sqrt_p <= sqrt_p_lower
+        token0_amount = np.where(above, 0.0, np.where(below, x_below, x_in))
+        return np.where(has_position, token0_amount, 0.0)
+
+    def compute_portfolio_value(self, state: dict = None) -> np.ndarray:
+        """Return LP mark-to-market wealth including currently unclaimed fees."""
+        state = self._state_or_current(state)
+        lp_liq = state[LP_LIQUIDITY_KEY]
+        has_position = lp_liq > 0
+        sqrt_p_lower, sqrt_p_upper = self._position_sqrt_bounds(state)
+
+        pos_value = get_position_value_vec(
+            lp_liq,
+            state[ASSET_PRICE_KEY],
+            self.get_pool_sqrt_price(state),
+            sqrt_p_lower,
+            sqrt_p_upper,
+        )
+        unclaimed0, unclaimed1 = self.compute_unclaimed_fees(state)
+        unclaimed_value = unclaimed0 * state[ASSET_PRICE_KEY] + unclaimed1
+        no_pos_value = np.where(
+            state[LP_EVER_DEPLOYED_KEY], 0.0, state[INITIAL_WEALTH_KEY]
+        )
+        return np.where(has_position, pos_value + unclaimed_value, no_pos_value)
 
     def _collect_lp_fees(self):
         """
@@ -308,13 +344,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Returns:
             (net_fee0, net_fee1): Arrays of shape (num_trajectories,)
         """
-        gross_fee0, gross_fee1, lp_share_in_range = self._compute_gross_lp_fees()
-
-        snapshot0 = self.state[LP_FEE_SNAPSHOT0_KEY]
-        snapshot1 = self.state[LP_FEE_SNAPSHOT1_KEY]
-
-        net_fee0 = np.maximum(gross_fee0 - snapshot0, 0.0)
-        net_fee1 = np.maximum(gross_fee1 - snapshot1, 0.0)
+        net_fee0, net_fee1, gross_fee0, gross_fee1, lp_share_in_range = (
+            self._claimable_lp_fees(include_gross=True)
+        )
 
         # Compute ratio of net to gross (guarded for zero gross)
         safe_gross0 = np.where(gross_fee0 > 0, gross_fee0, 1.0)
@@ -343,11 +375,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Delta is clamped at zero so that a rebalance (which drops unclaimed back to 0)
         does not subtract from the cumulative lifetime counter.
         """
-        gross0, gross1, _ = self._compute_gross_lp_fees()
-        snap0 = self.state[LP_FEE_SNAPSHOT0_KEY]
-        snap1 = self.state[LP_FEE_SNAPSHOT1_KEY]
-        new_unclaimed0 = np.maximum(gross0 - snap0, 0.0)
-        new_unclaimed1 = np.maximum(gross1 - snap1, 0.0)
+        new_unclaimed0, new_unclaimed1 = self._claimable_lp_fees()
         delta0 = new_unclaimed0 - self.state[LP_UNCLAIMED_FEES0_KEY]
         delta1 = new_unclaimed1 - self.state[LP_UNCLAIMED_FEES1_KEY]
         self.state[LP_COLLECTED_FEES0_KEY] += np.maximum(delta0, 0.0)
@@ -355,7 +383,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_UNCLAIMED_FEES0_KEY] = new_unclaimed0
         self.state[LP_UNCLAIMED_FEES1_KEY] = new_unclaimed1
 
-    def _compute_token0_fraction_vec(self, sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper):
+    def _compute_token0_fraction_vec(self, sqrt_p, sqrt_p_lower, sqrt_p_upper):
         """
         Compute fraction of position value held in token0 (vectorized).
 
@@ -441,7 +469,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             wealth_with_pos = pos_value + fee_value
 
-            alpha_pos = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_lower, sqrt_p_upper)
+            alpha_pos = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_lower, sqrt_p_upper)
             token0_value = alpha_pos * pos_value + fee0 * external_price
             alpha_current = np.where(wealth_with_pos > 0, token0_value / wealth_with_pos, 0.0)
 
@@ -465,7 +493,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # Apply decomposed rebalancing cost (only for existing positions)
         if np.any(has_position):
-            alpha_new = self._compute_token0_fraction_vec(sqrt_p, external_price, sqrt_p_new_lower, sqrt_p_new_upper)
+            alpha_new = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper)
             swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
             total_cost = np.where(has_position, self.gas_cost + swap_cost, 0.0)
             wealth = np.maximum(wealth - total_cost, 0.0)
@@ -534,15 +562,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
         sell_first = bool(self.rng.integers(0, 2)) if np.any(both) else True
 
         if sell_first:
-            if np.any(sell_active):
-                self._process_sell(sell_active)
-            if np.any(buy_active):
-                self._process_buy(buy_active)
+            self._process_swap(sell_active, -1)
+            self._process_swap(buy_active, 1)
         else:
-            if np.any(buy_active):
-                self._process_buy(buy_active)
-            if np.any(sell_active):
-                self._process_sell(sell_active)
+            self._process_swap(buy_active, 1)
+            self._process_swap(sell_active, -1)
 
         self._accrue_lp_fees()
 
@@ -561,4 +585,3 @@ class UniswapV3ModelDynamics(ModelDynamics):
             arrivals = self.arrival_model.get_arrivals()
         self.last_arrivals = arrivals
         return arrivals
-
