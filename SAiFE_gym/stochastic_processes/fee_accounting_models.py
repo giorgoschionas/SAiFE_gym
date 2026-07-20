@@ -20,7 +20,8 @@ class UniswapV3FeeAccounting(FeeAccountingModel):
         if swap_result is None:
             return
 
-        state[swap_result.fee_key][
-            swap_result.trajectories,
-            swap_result.fee_indices,
-        ] += fee_multiplier * swap_result.amounts
+        np.add.at(
+            state[swap_result.fee_key],
+            (swap_result.trajectories, swap_result.fee_indices),
+            fee_multiplier * swap_result.amounts,
+        )
