@@ -1,4 +1,6 @@
 import abc
+from dataclasses import dataclass
+from typing import Optional
 
 import numpy as np
 
@@ -10,6 +12,17 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY,
 )
 from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProcessModel
+
+
+@dataclass
+class SwapResult:
+    """Vectorized metadata for one swap side."""
+
+    trajectories: np.ndarray
+    fee_key: str
+    fee_indices: np.ndarray
+    amounts: np.ndarray
+    direction: int
 
 
 class PriceImpactModel(StochasticProcessModel):
@@ -43,9 +56,8 @@ class PriceImpactModel(StochasticProcessModel):
         *,
         tick_lower_global: int,
         sqrt_grid: np.ndarray,
-        fee_multiplier: float,
         num_ticks: int,
-    ) -> None:
+    ) -> Optional[SwapResult]:
         pass
 
 
@@ -54,7 +66,8 @@ class OneTickUniswapV3PriceImpact(PriceImpactModel):
 
     Each active sell token0 arrival moves the pool down one tick. Each active
     buy token0 arrival moves the pool up one tick. Trade size and fees are
-    computed from active liquidity at the crossed interval.
+    computed from active liquidity at the crossed interval and returned for
+    separate fee accounting.
     """
 
     def process_swap(
@@ -65,11 +78,10 @@ class OneTickUniswapV3PriceImpact(PriceImpactModel):
         *,
         tick_lower_global: int,
         sqrt_grid: np.ndarray,
-        fee_multiplier: float,
         num_ticks: int,
-    ) -> None:
+    ) -> Optional[SwapResult]:
         if not np.any(active):
-            return
+            return None
         if direction not in (-1, 1):
             raise ValueError("direction must be -1 for sell or 1 for buy")
 
@@ -106,9 +118,15 @@ class OneTickUniswapV3PriceImpact(PriceImpactModel):
         else:
             amount = liquidity * (sqrt_grid[idx + 1] - sqrt_grid[idx])
 
-        state[fee_key][traj, fee_idx] += fee_multiplier * amount
-
         new_tick = current_tick.copy()
         new_tick[traj] += direction
         state[POOL_CURRENT_TICK_KEY] = new_tick
         state[POOL_SQRT_PRICE_KEY] = sqrt_grid[new_tick - tick_lower_global]
+
+        return SwapResult(
+            trajectories=traj,
+            fee_key=fee_key,
+            fee_indices=fee_idx,
+            amounts=amount,
+            direction=direction,
+        )
