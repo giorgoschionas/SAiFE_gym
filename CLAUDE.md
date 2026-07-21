@@ -172,9 +172,12 @@ Swap handling is intentionally split into two independent responsibilities:
 1. **Price impact** (`stochastic_processes/price_impact_models.py`)
    - `PriceImpactModel` defines the interface for AMM price-impact rules.
    - `OneTickUniswapV3PriceImpact` is the default model for `UniswapV3ModelDynamics`.
-   - It mutates only pool price state: `POOL_CURRENT_TICK_KEY` and `POOL_SQRT_PRICE_KEY`.
-   - It returns a vectorized `SwapResult` containing affected trajectories, fee array key, fee indices, swap amounts, and direction.
-   - It does not write to `FEES0_KEY` or `FEES1_KEY`.
+   - `OneTickUniswapV3PriceImpact` moves each active swap exactly one tick in the swap direction. LP liquidity affects the implied swap amount and fees, but not the number of ticks crossed.
+   - `LiquidityDepthUniswapV3PriceImpact` samples trade sizes and maps them to tick movement using local directional liquidity depth. Deeper liquidity reduces impact for the same sampled trade size; thinner liquidity increases it.
+   - `LiquidityDepthUniswapV3PriceImpact` supports `trade_size_unit="input_token"` and `trade_size_unit="token1_notional"`. In token1-notional mode, sell-side notionals are converted to token0 using the external midprice (`ASSET_PRICE_KEY`).
+   - Price-impact models mutate only pool price state: `POOL_CURRENT_TICK_KEY` and `POOL_SQRT_PRICE_KEY`.
+   - Price-impact models return a vectorized `SwapResult` containing affected trajectories, fee array key, fee indices, swap amounts, and direction.
+   - Price-impact models do not write to `FEES0_KEY` or `FEES1_KEY`.
 
 2. **Fee accounting** (`stochastic_processes/fee_accounting_models.py`)
    - `FeeAccountingModel` defines the interface for applying fees.
@@ -194,15 +197,16 @@ swap_result = self.price_impact_model.process_swap(...)
 self.fee_accounting_model.apply_fees(self.state, swap_result, self.fee_multiplier)
 ```
 
-This preserves the previous one-tick Uniswap V3 behavior while making both
-components injectable and testable independently.
+This preserves the previous one-tick Uniswap V3 behavior by default while
+making both components injectable and testable independently.
 
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
+The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). The injected `PriceImpactModel` determines how far an active trade moves the pool.
 
-**Core Principle**: Each trade = one tick of price movement.
+**Default One-Tick Principle**: With `OneTickUniswapV3PriceImpact`, each trade = one tick of price movement.
 - Trade size is computed from the **crossed tick interval's liquidity only** in `OneTickUniswapV3PriceImpact`
+- LP liquidity affects fees and implied swap amount, but not the one-tick price move
 - Sell token0 arrival (`direction=-1`): fees are accounted in `FEES0_KEY` at `idx - 1`
 - Buy token0 arrival (`direction=1`): fees are accounted in `FEES1_KEY` at `idx`
 - Sell amount: `L * (1 / sqrt_grid[idx - 1] - 1 / sqrt_grid[idx])`
@@ -211,11 +215,18 @@ The `update_state()` method in `UniswapV3ModelDynamics` advances the state by on
 - When both sell and buy arrive simultaneously, execution order is randomized via coin flip
 - On crossing, `sqrt_price` is set from the tick lattice: `sqrt_grid[new_tick - tick_lower_global]`
 
+**Liquidity-Depth Principle**: With `LiquidityDepthUniswapV3PriceImpact`, each trade can cross zero, one, or many ticks.
+- Sampled trade size is divided by average local directional one-tick capacity over `depth_window`
+- Fractional expected tick movement is stochastically rounded to an integer move
+- Tick movement is capped by the available tick window
+- Fees are returned for every crossed interval, preserving per-tick fee attribution
+- This model remains vectorized across trajectories; it uses array masks and scatter-style fee accounting
+
 **Crossing Behavior**:
 - The default price-impact model always advances exactly one lattice tick for each active swap side
 - Sell swaps require current tick index `idx >= 1` so the crossed lower interval exists
 - Buy swaps require current tick index `idx <= num_ticks - 1` so the crossed upper boundary exists
-- Zero-liquidity ticks still move one tick; their returned swap amount is zero
+- Under the one-tick model, zero-liquidity ticks still move one tick; their returned swap amount is zero
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
@@ -272,6 +283,5 @@ When creating `UniswapV3ModelDynamics`:
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
-
 
 
