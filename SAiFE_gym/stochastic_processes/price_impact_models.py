@@ -5,6 +5,7 @@ from typing import Callable, Optional
 import numpy as np
 
 from SAiFE_gym.gym.index_names import (
+    ASSET_PRICE_KEY,
     FEES0_KEY,
     FEES1_KEY,
     POOL_CURRENT_TICK_KEY,
@@ -135,10 +136,16 @@ class OneTickUniswapV3PriceImpact(PriceImpactModel):
 class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
     """Reduced-form liquidity-depth Uniswap V3 impact model.
 
-    The model samples an active trade size, converts it to an expected tick
-    impact using average directional one-tick capacity, then stochastically
-    rounds the result to an integer tick move. Fees are returned for every
-    realized crossed tick interval so LP fee attribution remains per-tick.
+    The model samples an active trade size, converts it to the swap input
+    token's units, maps that amount to an expected tick impact using average
+    directional one-tick capacity, then stochastically rounds the result to an
+    integer tick move. Fees are returned for every realized crossed tick
+    interval so LP fee attribution remains per-tick.
+
+    ``trade_size_unit="input_token"`` keeps the sampled size in token0 units
+    for sells and token1 units for buys. ``trade_size_unit="token1_notional"``
+    treats the sampled size as token1 value on both sides, converting sell sizes
+    to token0 by dividing by the external midprice.
     """
 
     def __init__(
@@ -146,15 +153,21 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         trade_size_sampler: Callable[[np.random.Generator, int], np.ndarray],
         depth_window: int = 10,
         min_depth: float = 1e-12,
+        trade_size_unit: str = "input_token",
         num_trajectories: int = 1,
         seed: int = None,
     ):
         assert callable(trade_size_sampler), "trade_size_sampler must be callable"
         assert depth_window >= 1, f"depth_window must be >= 1, got {depth_window}"
         assert min_depth > 0, f"min_depth must be positive, got {min_depth}"
+        assert trade_size_unit in {"input_token", "token1_notional"}, (
+            "trade_size_unit must be either 'input_token' or 'token1_notional', "
+            f"got {trade_size_unit!r}"
+        )
         self.trade_size_sampler = trade_size_sampler
         self.depth_window = depth_window
         self.min_depth = min_depth
+        self.trade_size_unit = trade_size_unit
         super().__init__(num_trajectories=num_trajectories, seed=seed)
 
     def process_swap(
@@ -204,15 +217,24 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         average_depth = capacities.sum(axis=1) / safe_counts
         average_depth = np.maximum(average_depth, self.min_depth)
 
-        trade_size = np.asarray(
+        sampled_trade_size = np.asarray(
             self.trade_size_sampler(self.rng, len(traj)),
             dtype=np.float64,
         ).reshape(-1)
-        assert trade_size.shape == (len(traj),), (
+        assert sampled_trade_size.shape == (len(traj),), (
             "trade_size_sampler must return one non-negative trade size per "
-            f"active trajectory, got shape {trade_size.shape}"
+            f"active trajectory, got shape {sampled_trade_size.shape}"
         )
-        assert np.all(trade_size >= 0.0), "trade_size_sampler must return non-negative trade sizes"
+        assert np.all(sampled_trade_size >= 0.0), (
+            "trade_size_sampler must return non-negative trade sizes"
+        )
+
+        trade_size = self._to_input_token_amount(
+            sampled_trade_size,
+            state,
+            traj,
+            direction,
+        )
 
         eta = trade_size / average_depth
         whole_ticks = np.floor(eta).astype(np.int64)
@@ -280,3 +302,21 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
             sqrt_grid[interval_indices + 1]
             - sqrt_grid[interval_indices]
         )
+
+    def _to_input_token_amount(
+        self,
+        sampled_trade_size: np.ndarray,
+        state: dict,
+        trajectories: np.ndarray,
+        direction: int,
+    ) -> np.ndarray:
+        """Convert sampled trade sizes to the swap input token's native units."""
+        if self.trade_size_unit == "input_token":
+            return sampled_trade_size
+
+        if direction == 1:
+            return sampled_trade_size
+
+        external_midprice = state[ASSET_PRICE_KEY][trajectories]
+        assert np.all(external_midprice > 0.0), "external midprice must be positive"
+        return sampled_trade_size / external_midprice

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from SAiFE_gym.gym.index_names import (
+    ASSET_PRICE_KEY,
     FEES0_KEY,
     FEES1_KEY,
     POOL_CURRENT_TICK_KEY,
@@ -20,7 +21,13 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (
 EXPONENTIAL_VALUE = 1.0001
 
 
-def _make_state(num_trajectories=1, num_ticks=10, tick_lower_global=100, current_tick=105):
+def _make_state(
+    num_trajectories=1,
+    num_ticks=10,
+    tick_lower_global=100,
+    current_tick=105,
+    asset_price=100.0,
+):
     sqrt_grid = np.sqrt(
         EXPONENTIAL_VALUE ** (tick_lower_global + np.arange(num_ticks + 1, dtype=np.float64))
     )
@@ -31,6 +38,7 @@ def _make_state(num_trajectories=1, num_ticks=10, tick_lower_global=100, current
         POOL_LIQUIDITY_ARRAY_KEY: np.full((num_trajectories, num_ticks), 1e6, dtype=np.float64),
         FEES0_KEY: np.zeros((num_trajectories, num_ticks), dtype=np.float64),
         FEES1_KEY: np.zeros((num_trajectories, num_ticks), dtype=np.float64),
+        ASSET_PRICE_KEY: np.full(num_trajectories, asset_price, dtype=np.float64),
     }, sqrt_grid
 
 
@@ -387,6 +395,88 @@ class TestLiquidityDepthUniswapV3PriceImpact:
                 sqrt_grid=sqrt_grid,
                 num_ticks=10,
             )
+
+    def test_invalid_trade_size_unit_raises(self):
+        with pytest.raises(AssertionError, match="trade_size_unit"):
+            LiquidityDepthUniswapV3PriceImpact(
+                trade_size_sampler=_fixed_sampler(1.0),
+                trade_size_unit="usd",
+            )
+
+    def test_token1_notional_sell_size_is_converted_to_token0_using_external_midprice(self):
+        external_midprice = 150.0
+        state, sqrt_grid = _make_state(
+            tick_lower_global=100,
+            current_tick=105,
+            asset_price=external_midprice,
+        )
+        idx = 105 - 100
+        average_token0_depth = np.mean([
+            _sell_capacity(state, sqrt_grid, 0, idx - 1),
+            _sell_capacity(state, sqrt_grid, 0, idx - 2),
+        ])
+        pool_price = state[POOL_SQRT_PRICE_KEY][0] ** 2
+        assert not np.isclose(pool_price, external_midprice)
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(2.0 * average_token0_depth * external_midprice),
+            depth_window=2,
+            trade_size_unit="token1_notional",
+        )
+
+        result = model.process_swap(
+            state,
+            np.array([True]),
+            -1,
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 103
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
+
+    def test_token1_notional_sell_requires_positive_external_midprice(self):
+        state, sqrt_grid = _make_state(asset_price=0.0)
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(1.0),
+            depth_window=1,
+            trade_size_unit="token1_notional",
+        )
+
+        with pytest.raises(AssertionError, match="external midprice must be positive"):
+            model.process_swap(
+                state,
+                np.array([True]),
+                -1,
+                tick_lower_global=100,
+                sqrt_grid=sqrt_grid,
+                num_ticks=10,
+            )
+
+    def test_token1_notional_buy_size_uses_token1_directly(self):
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        average_token1_depth = np.mean([
+            _buy_capacity(state, sqrt_grid, 0, idx),
+            _buy_capacity(state, sqrt_grid, 0, idx + 1),
+        ])
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(2.0 * average_token1_depth),
+            depth_window=2,
+            trade_size_unit="token1_notional",
+        )
+
+        result = model.process_swap(
+            state,
+            np.array([True]),
+            1,
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 107
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
 
 
 class TestUniswapV3FeeAccounting:
