@@ -52,8 +52,8 @@ from SAiFE_gym.gym.index_names import (
 SEED = 6#2#123
 TERMINAL_TIME = 1.0
 N_STEPS = 1000
-NUM_TRAJECTORIES_TRAIN = 200
-NUM_TRAJECTORIES_EVAL = 100
+NUM_TRAJECTORIES_TRAIN = 100
+NUM_TRAJECTORIES_EVAL = 20
 INITIAL_WEALTH = 1000
 TAU = 20
 LIQUIDITY_SCALE = 1e5
@@ -83,14 +83,14 @@ ARRIVAL_REBALANCE_UPPER = 0
 DEPLOYONCE_LOWER = -10#-5#200#140
 DEPLOYONCE_UPPER = 10#200#155#TAU
 
-REINFORCE_EPOCHS = 600#600
+REINFORCE_EPOCHS = 100#600
 REINFORCE_LR = 2e-4
 ACTION_STD_INIT = 1.7
 
 
 
 DQN_TICK_STRIDE = 10  # Discretization stride for tick offsets
-NUM_SINGLE_SIMS = 10   # Number of single-trajectory simulations to plot
+NUM_SINGLE_SIMS = 2   # Number of single-trajectory simulations to plot
 MAX_TRADES_DEBUG = None  # int → cut each single-trajectory rollout off after this many arrivals; None = run full episode
 
 # PPO action wrapper:
@@ -137,7 +137,7 @@ ENABLE_AGENTS = {
     'ArrivalRebalance': True,
     'CarteaDrissiMonga': False,
     'REINFORCE':  False,
-    'PPO':        True,
+    'PPO':        False,
     'SAC':        False,
     'DQN':        False,
 }
@@ -188,20 +188,27 @@ def create_environment(num_trajectories: int, seed: int = None):
     
     arrival_model = LiquidityKernelArrivalModel(
         alpha=alpha, beta=0.1, K=20, liquidity_scale=LIQUIDITY_SCALE,
-        step_size=step_size, num_trajectories=num_trajectories,
+        step_size=step_size, 
+        num_trajectories=num_trajectories,
         seed=seed + 1 if seed else None,
     )
     model_dynamics = UniswapV3ModelDynamics(
-        midprice_model=midprice_model, arrival_model=arrival_model,
-        num_trajectories=num_trajectories, fee_tier=FEE_TIER, tau=TAU,
-        num_ticks=5000, exponential_value=EXP_VALUE,
+        midprice_model=midprice_model, 
+        arrival_model=arrival_model,
+        num_trajectories=num_trajectories, 
+        fee_tier=FEE_TIER, 
+        tau=TAU,
+        num_ticks=5000, 
+        exponential_value=EXP_VALUE,
         seed=seed + 2 if seed else None,
     )
     reward_function = PnL()
     return AMMEnvironment(
-        terminal_time=TERMINAL_TIME, n_steps=N_STEPS,
+        terminal_time=TERMINAL_TIME, 
+        n_steps=N_STEPS,
         initial_wealth=INITIAL_WEALTH,
-        reward_function=reward_function, model_dynamics=model_dynamics,
+        reward_function=reward_function, 
+        model_dynamics=model_dynamics,
         num_trajectories=num_trajectories,
         initial_pool_price=INITIAL_POOL_PRICE,
         seed=seed,

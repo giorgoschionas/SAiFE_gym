@@ -77,12 +77,16 @@ The environment follows a standard RL cycle with AMM-specific components:
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
    - Processes order flow and updates LP state via `update_state()` method
+   - Delegates swap price impact to a `PriceImpactModel`
+   - Delegates swap fee writes to a `FeeAccountingModel`
 
-3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation
+3. **StochasticProcesses** (`stochastic_processes/`) - Market simulation and swap components
    - `MidpriceModel`: Price dynamics (Brownian Motion, Geometric Brownian Motion)
    - `ArrivalModel`: Order flow (Bernoulli arrivals)
-   - Each process has `update()` method called per timestep
-   - All processes support multiple trajectories for batch simulation
+   - `PriceImpactModel`: AMM pool-state transition for swaps
+   - `FeeAccountingModel`: swap fee accounting based on price-impact output
+   - Stochastic process models have an `update()` method called per timestep
+   - Core simulation components support multiple trajectories for batch simulation
 
 4. **Agents** (`agents/`) - Trading strategies
    - All inherit from `Agent` base class with `get_action(state) -> action` interface
@@ -161,27 +165,74 @@ agent should see one unique hold action plus finite rebalance ranges.
 - Enforces `lower_offset < upper_offset`: if violated, sets `upper = lower + 1` then re-clips
 
 
+### Swap Price Impact and Fee Accounting
+
+Swap handling is intentionally split into two independent responsibilities:
+
+1. **Price impact** (`stochastic_processes/price_impact_models.py`)
+   - `PriceImpactModel` defines the interface for AMM price-impact rules.
+   - `OneTickUniswapV3PriceImpact` is the default model for `UniswapV3ModelDynamics`.
+   - `OneTickUniswapV3PriceImpact` moves each active swap exactly one tick in the swap direction. LP liquidity affects the implied swap amount and fees, but not the number of ticks crossed.
+   - `LiquidityDepthUniswapV3PriceImpact` samples trade sizes and maps them to tick movement using local directional liquidity depth. Deeper liquidity reduces impact for the same sampled trade size; thinner liquidity increases it.
+   - `LiquidityDepthUniswapV3PriceImpact` supports `trade_size_unit="input_token"` and `trade_size_unit="token1_notional"`. In token1-notional mode, sell-side notionals are converted to token0 using the external midprice (`ASSET_PRICE_KEY`).
+   - Price-impact models mutate only pool price state: `POOL_CURRENT_TICK_KEY` and `POOL_SQRT_PRICE_KEY`.
+   - Price-impact models return a vectorized `SwapResult` containing affected trajectories, fee array key, fee indices, swap amounts, and direction.
+   - Price-impact models do not write to `FEES0_KEY` or `FEES1_KEY`.
+
+2. **Fee accounting** (`stochastic_processes/fee_accounting_models.py`)
+   - `FeeAccountingModel` defines the interface for applying fees.
+   - `UniswapV3FeeAccounting` is the default model.
+   - It consumes `SwapResult` and applies:
+     ```python
+     state[swap_result.fee_key][swap_result.trajectories, swap_result.fee_indices] += (
+         fee_multiplier * swap_result.amounts
+     )
+     ```
+   - `swap_result is None` is a no-op, which covers steps with no active swap on that side.
+
+`UniswapV3ModelDynamics._process_swap()` orchestrates these two operations:
+
+```python
+swap_result = self.price_impact_model.process_swap(...)
+self.fee_accounting_model.apply_fees(self.state, swap_result, self.fee_multiplier)
+```
+
+This preserves the previous one-tick Uniswap V3 behavior by default while
+making both components injectable and testable independently.
+
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). Each trade moves the price by exactly one tick.
+The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). The injected `PriceImpactModel` determines how far an active trade moves the pool.
 
-**Core Principle**: Each trade = one tick of price movement.
-- Trade size (xi) is computed from the **current tick's liquidity only** (`_compute_local_xi()`)
-- `xi_sell = L * tick_factor / sqrt_p_low`, `xi_buy = L * tick_factor * sqrt_p_high`
+**Default One-Tick Principle**: With `OneTickUniswapV3PriceImpact`, each trade = one tick of price movement.
+- Trade size is computed from the **crossed tick interval's liquidity only** in `OneTickUniswapV3PriceImpact`
+- LP liquidity affects fees and implied swap amount, but not the one-tick price move
+- Sell token0 arrival (`direction=-1`): fees are accounted in `FEES0_KEY` at `idx - 1`
+- Buy token0 arrival (`direction=1`): fees are accounted in `FEES1_KEY` at `idx`
+- Sell amount: `L * (1 / sqrt_grid[idx - 1] - 1 / sqrt_grid[idx])`
+- Buy amount: `L * (sqrt_grid[idx + 1] - sqrt_grid[idx])`
 - Arrivals are Bernoulli trials (boolean arrays): `P(arrival) = intensity * step_size`
 - When both sell and buy arrive simultaneously, execution order is randomized via coin flip
-- On crossing, sqrt_price snaps to the **geometric midpoint** of the new tick to prevent drift
+- On crossing, `sqrt_price` is set from the tick lattice: `sqrt_grid[new_tick - tick_lower_global]`
+
+**Liquidity-Depth Principle**: With `LiquidityDepthUniswapV3PriceImpact`, each trade can cross zero, one, or many ticks.
+- Sampled trade size is divided by average local directional one-tick capacity over `depth_window`
+- Fractional expected tick movement is stochastically rounded to an integer move
+- Tick movement is capped by the available tick window
+- Fees are returned for every crossed interval, preserving per-tick fee attribution
+- This model remains vectorized across trajectories; it uses array masks and scatter-style fee accounting
 
 **Crossing Behavior**:
-- With mid-tick price and local xi (full tick capacity), xi > x_to_boundary → crossing occurs
-- Zero-liquidity ticks are always crossed (no resistance)
-- On crossing, `sqrt_price = sqrt_p_boundary / exp_quarter` (sell) or `sqrt_p_boundary * exp_quarter` (buy)
+- The default price-impact model always advances exactly one lattice tick for each active swap side
+- Sell swaps require current tick index `idx >= 1` so the crossed lower interval exists
+- Buy swaps require current tick index `idx <= num_ticks - 1` so the crossed upper boundary exists
+- Under the one-tick model, zero-liquidity ticks still move one tick; their returned swap amount is zero
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
+- `fee_multiplier = fee_tier / (1.0 - fee_tier)`: multiplier applied by fee accounting to swap amounts
 - `exponential_value` (default: 1.0001): Tick spacing base
-- `tick_factor`: Precomputed `sqrt(exponential_value) - 1`
-- `exp_quarter`: Precomputed `exponential_value ** 0.25` (for midpoint snap)
+- `sqrt_grid`: Precomputed tick lattice with shape `(num_ticks + 1,)`
 
 ## Important Implementation Details
 
@@ -224,14 +275,13 @@ price = np.where(active, update_price(price, amount), price)
 When creating `UniswapV3ModelDynamics`:
 - **Must provide `tau`** parameter (number of ticks on each side of current price)
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
+- **Optional**: Inject `price_impact_model`; defaults to `OneTickUniswapV3PriceImpact`
+- **Optional**: Inject `fee_accounting_model`; defaults to `UniswapV3FeeAccounting`
 - The action space is automatically set to `Box(shape=(3,))` with bounds described above
 - Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
 
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
-
-
-
 
 

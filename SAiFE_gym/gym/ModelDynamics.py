@@ -16,18 +16,24 @@ from SAiFE_gym.gym.index_names import (
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
+from SAiFE_gym.stochastic_processes.fee_accounting_models import FeeAccountingModel, UniswapV3FeeAccounting
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
+from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel, OneTickUniswapV3PriceImpact
 
 class ModelDynamics(metaclass=abc.ABCMeta):
     def __init__(
         self,
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
+        price_impact_model: PriceImpactModel = None,
+        fee_accounting_model: FeeAccountingModel = None,
         num_trajectories: int = 1,
         seed: int = None,
     ):
         self.midprice_model = midprice_model
         self.arrival_model = arrival_model
+        self.price_impact_model = price_impact_model
+        self.fee_accounting_model = fee_accounting_model
         self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
         self.seed = seed
@@ -69,6 +75,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self,
         midprice_model: MidpriceModel = None,
         arrival_model: ArrivalModel = None,
+        price_impact_model: PriceImpactModel = None,
+        fee_accounting_model: FeeAccountingModel = None,
         num_trajectories: int = 1,
         fee_tier: float = 0.003,           # 0.3% fee tier
         tau: int = 5,                      # Number of ticks around current tick
@@ -80,9 +88,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
     ):
         super().__init__(midprice_model = midprice_model,
                          arrival_model = arrival_model,
+                         price_impact_model = price_impact_model,
+                         fee_accounting_model = fee_accounting_model,
                          num_trajectories = num_trajectories,
                          seed = seed)
 
+        self.price_impact_model = self.price_impact_model or OneTickUniswapV3PriceImpact(
+            num_trajectories=num_trajectories,
+            seed=seed,
+        )
+        self.fee_accounting_model = self.fee_accounting_model or UniswapV3FeeAccounting()
         self.fee_tier = fee_tier
         self.fee_multiplier = fee_tier / (1.0 - fee_tier)
         self.tau = tau
@@ -167,55 +182,20 @@ class UniswapV3ModelDynamics(ModelDynamics):
         return action
 
     def _process_swap(self, active: np.ndarray, direction: int) -> None:
-        """Process one-tick lattice swaps for active trajectories.
-
-        direction = -1: sell token0, price moves down, fees accrue to FEES0[i-1].
-        direction = 1: buy token0, price moves up, fees accrue to FEES1[i].
-        """
-        if not np.any(active):
-            return
-        if direction not in (-1, 1):
-            raise ValueError("direction must be -1 for sell or 1 for buy")
-
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx_all = current_tick - self.tick_lower_global
-        traj = np.flatnonzero(active)
-        idx = idx_all[traj]
-
-        if direction == -1:
-            label = "sell"
-            valid_min, valid_max = 1, self.num_ticks
-            valid_tick_min = self.tick_lower_global + 1
-            valid_tick_max = self.tick_lower_global + self.num_ticks
-            fee_key = FEES0_KEY
-            fee_idx = idx - 1
-        else:
-            label = "buy"
-            valid_min, valid_max = 0, self.num_ticks - 1
-            valid_tick_min = self.tick_lower_global
-            valid_tick_max = self.tick_lower_global + self.num_ticks - 1
-            fee_key = FEES1_KEY
-            fee_idx = idx
-
-        assert idx.min() >= valid_min and idx.max() <= valid_max, (
-            f"_process_swap({label}): tick out of array window. "
-            f"current_tick range [{current_tick[traj].min()}, {current_tick[traj].max()}], "
-            f"valid [{valid_tick_min}, {valid_tick_max}]. "
-            f"Increase num_ticks."
+        """Process one swap side through price impact and fee accounting."""
+        swap_result = self.price_impact_model.process_swap(
+            self.state,
+            active,
+            direction,
+            tick_lower_global=self.tick_lower_global,
+            sqrt_grid=self.sqrt_grid,
+            num_ticks=self.num_ticks,
         )
-
-        liquidity = self.state[POOL_LIQUIDITY_ARRAY_KEY][traj, fee_idx]
-        if direction == -1:
-            amount = liquidity * (1.0 / self.sqrt_grid[idx - 1] - 1.0 / self.sqrt_grid[idx])
-        else:
-            amount = liquidity * (self.sqrt_grid[idx + 1] - self.sqrt_grid[idx])
-
-        self.state[fee_key][traj, fee_idx] += self.fee_multiplier * amount
-
-        new_tick = current_tick.copy()
-        new_tick[traj] += direction
-        self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
+        self.fee_accounting_model.apply_fees(
+            self.state,
+            swap_result,
+            self.fee_multiplier,
+        )
 
     def _state_or_current(self, state: dict = None) -> dict:
         return self.state if state is None else state
