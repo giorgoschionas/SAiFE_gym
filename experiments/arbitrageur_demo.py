@@ -18,8 +18,15 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY,
 )
 from SAiFE_gym.rewards.RewardFunctions import PnL
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
+from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+
+
+LIQUIDITY_SCALE = 1e5
+ALPHA0 = np.array([1.0, 1.0])
+ALPHA1 = np.array([15.0, 15.0])
+ALPHA2 = np.array([0.0, 0.0])
+ALPHA3 = np.array([20000.0, 20000.0])
 
 
 def build_env(
@@ -37,8 +44,12 @@ def build_env(
         num_trajectories=num_trajectories,
         seed=seed,
     )
-    arrival_model = PoissonArrivalModel(
-        intensity=np.array([25.0, 25.0]),
+    alpha = np.array([ALPHA0, ALPHA1, ALPHA2, ALPHA3])
+    arrival_model = LiquidityKernelArrivalModel(
+        alpha=alpha,
+        beta=0.1,
+        K=20,
+        liquidity_scale=LIQUIDITY_SCALE,
         step_size=step_size,
         num_trajectories=num_trajectories,
         seed=seed + 1,
