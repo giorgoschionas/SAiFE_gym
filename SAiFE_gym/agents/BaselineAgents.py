@@ -7,6 +7,7 @@ from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.index_names import (
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
+    POOL_LIQUIDITY_ARRAY_KEY,
     ASSET_PRICE_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
@@ -237,6 +238,127 @@ class ArrivalRebalanceAgent(Agent):
         return np.column_stack([lower, upper, hold_flag])
 
 
+class ArbitrageurAgent(Agent):
+    """
+    Deterministic liquidity-taker arbitrage baseline for Uniswap-v3 pools.
+
+    Action format: one signed input amount per trajectory, shape
+    ``(num_trajectories, 1)``.
+
+    - ``order_size > 0``: token1 input, buy token0 from the pool, move price up.
+    - ``order_size < 0``: token0 input, sell token0 to the pool, move price down.
+    - ``order_size == 0``: no trade.
+
+    The default policy trades toward the external midprice until the AMM price
+    is back inside the Uniswap-fee no-arbitrage band, using full tick intervals.
+    """
+
+    def __init__(
+        self,
+        env: AMMEnvironment,
+        max_ticks_per_trade: int = None,
+        max_order_size: float = np.inf,
+        min_order_size: float = 0.0,
+    ):
+        assert isinstance(env.model_dynamics, UniswapV3ModelDynamics), (
+            "ArbitrageurAgent requires UniswapV3ModelDynamics"
+        )
+        assert max_ticks_per_trade is None or max_ticks_per_trade >= 1, (
+            "max_ticks_per_trade must be None or >= 1"
+        )
+        assert max_order_size > 0.0, "max_order_size must be positive"
+        assert min_order_size >= 0.0, "min_order_size must be non-negative"
+        self.env = env
+        self.model_dynamics = env.model_dynamics
+        self.num_trajectories = env.num_trajectories
+        self.max_ticks_per_trade = max_ticks_per_trade
+        self.max_order_size = float(max_order_size)
+        self.min_order_size = float(min_order_size)
+
+    def get_action(self, state: dict) -> np.ndarray:
+        md = self.model_dynamics
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+        pool_price = md.get_pool_sqrt_price(state) ** 2
+        external_midprice = state[ASSET_PRICE_KEY].astype(np.float64)
+
+        fee_discount = 1.0 - md.fee_tier
+        buy_token0 = external_midprice > pool_price / fee_discount
+        sell_token0 = external_midprice < pool_price * fee_discount
+
+        desired_up = np.zeros(self.num_trajectories, dtype=np.int64)
+        desired_down = np.zeros(self.num_trajectories, dtype=np.int64)
+
+        valid_midprice = external_midprice > 0.0
+        safe_midprice = np.where(valid_midprice, external_midprice, 1.0)
+        if np.any(buy_token0 & valid_midprice):
+            target_price = safe_midprice * fee_discount
+            target_tick = np.ceil(
+                np.log(target_price) / np.log(md.exponential_value)
+            ).astype(np.int64)
+            desired_up = np.maximum(target_tick - current_tick, 0)
+
+        if np.any(sell_token0 & valid_midprice):
+            target_price = safe_midprice / fee_discount
+            target_tick = np.floor(
+                np.log(target_price) / np.log(md.exponential_value)
+            ).astype(np.int64)
+            desired_down = np.maximum(current_tick - target_tick, 0)
+
+        desired_up = np.where(buy_token0 & valid_midprice, desired_up, 0)
+        desired_down = np.where(sell_token0 & valid_midprice, desired_down, 0)
+
+        idx = current_tick - md.tick_lower_global
+        desired_up = np.minimum(desired_up, np.maximum(md.num_ticks - idx, 0))
+        desired_down = np.minimum(desired_down, np.maximum(idx, 0))
+        if self.max_ticks_per_trade is not None:
+            desired_up = np.minimum(desired_up, self.max_ticks_per_trade)
+            desired_down = np.minimum(desired_down, self.max_ticks_per_trade)
+
+        orders = self._input_for_tick_moves(state, desired_up, direction=1)
+        orders -= self._input_for_tick_moves(state, desired_down, direction=-1)
+
+        if np.isfinite(self.max_order_size):
+            orders = np.sign(orders) * np.minimum(np.abs(orders), self.max_order_size)
+        orders = np.where(np.abs(orders) >= self.min_order_size, orders, 0.0)
+        return orders.reshape(self.num_trajectories, 1)
+
+    def _input_for_tick_moves(
+        self,
+        state: dict,
+        tick_moves: np.ndarray,
+        direction: int,
+    ) -> np.ndarray:
+        md = self.model_dynamics
+        amounts = np.zeros(self.num_trajectories, dtype=np.float64)
+        active = tick_moves > 0
+        if not np.any(active):
+            return amounts
+
+        traj = np.flatnonzero(active)
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+        idx = current_tick[traj] - md.tick_lower_global
+        max_crossed = int(tick_moves[traj].max())
+        offsets = np.arange(max_crossed, dtype=np.int64)
+
+        if direction == 1:
+            interval_indices = idx[:, None] + offsets[None, :]
+            capacities = state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices] * (
+                md.sqrt_grid[interval_indices + 1] - md.sqrt_grid[interval_indices]
+            )
+        elif direction == -1:
+            interval_indices = idx[:, None] - 1 - offsets[None, :]
+            capacities = state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices] * (
+                1.0 / md.sqrt_grid[interval_indices]
+                - 1.0 / md.sqrt_grid[interval_indices + 1]
+            )
+        else:
+            raise ValueError("direction must be -1 for sell or 1 for buy")
+
+        crossed = offsets[None, :] < tick_moves[traj, None]
+        amounts[traj] = np.sum(capacities * crossed, axis=1)
+        return amounts
+
+
 class CarteaPLAgent(Agent):
     """
     Cartea-Drissi-Monga Optimal Liquidity Provision Agent.
@@ -417,4 +539,3 @@ class CarteaPLAgent(Agent):
         actions = self.deltas_to_tick_offsets(delta_lower, delta_upper, sqrt_price, state)
 
         return actions
-
