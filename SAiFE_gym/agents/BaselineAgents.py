@@ -276,6 +276,21 @@ class ArbitrageurAgent(Agent):
         self.min_order_size = float(min_order_size)
 
     def get_action(self, state: dict) -> np.ndarray:
+        orders = self._target_order_sizes(
+            state,
+            max_ticks=self.max_ticks_per_trade,
+            max_order_size=self.max_order_size,
+            min_order_size=self.min_order_size,
+        )
+        return orders.reshape(self.num_trajectories, 1)
+
+    def _target_order_sizes(
+        self,
+        state: dict,
+        max_ticks: int = None,
+        max_order_size: float = np.inf,
+        min_order_size: float = 0.0,
+    ) -> np.ndarray:
         md = self.model_dynamics
         current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         pool_price = md.get_pool_sqrt_price(state) ** 2
@@ -310,17 +325,17 @@ class ArbitrageurAgent(Agent):
         idx = current_tick - md.tick_lower_global
         desired_up = np.minimum(desired_up, np.maximum(md.num_ticks - idx, 0))
         desired_down = np.minimum(desired_down, np.maximum(idx, 0))
-        if self.max_ticks_per_trade is not None:
-            desired_up = np.minimum(desired_up, self.max_ticks_per_trade)
-            desired_down = np.minimum(desired_down, self.max_ticks_per_trade)
+        if max_ticks is not None:
+            desired_up = np.minimum(desired_up, max_ticks)
+            desired_down = np.minimum(desired_down, max_ticks)
 
         orders = self._input_for_tick_moves(state, desired_up, direction=1)
         orders -= self._input_for_tick_moves(state, desired_down, direction=-1)
 
-        if np.isfinite(self.max_order_size):
-            orders = np.sign(orders) * np.minimum(np.abs(orders), self.max_order_size)
-        orders = np.where(np.abs(orders) >= self.min_order_size, orders, 0.0)
-        return orders.reshape(self.num_trajectories, 1)
+        if np.isfinite(max_order_size):
+            orders = np.sign(orders) * np.minimum(np.abs(orders), max_order_size)
+        orders = np.where(np.abs(orders) >= min_order_size, orders, 0.0)
+        return orders
 
     def _input_for_tick_moves(
         self,
@@ -357,6 +372,58 @@ class ArbitrageurAgent(Agent):
         crossed = offsets[None, :] < tick_moves[traj, None]
         amounts[traj] = np.sum(capacities * crossed, axis=1)
         return amounts
+
+
+class SpeedControlArbitrageurAgent(ArbitrageurAgent):
+    """
+    Deterministic liquidity-taker arbitrage baseline with speed controls.
+
+    Action format: one signed trading speed per trajectory, shape
+    ``(num_trajectories, 1)``. Execution size over a step is
+    ``order_size = trading_speed * env.step_size``.
+
+    Positive speeds are token1-per-unit-time inputs used to buy token0 from the
+    pool. Negative speeds are token0-per-unit-time inputs sold to the pool.
+    """
+
+    def __init__(
+        self,
+        env: AMMEnvironment,
+        max_ticks_per_step: int = 1,
+        max_speed: float = np.inf,
+        min_speed: float = 0.0,
+    ):
+        assert max_ticks_per_step is None or max_ticks_per_step >= 1, (
+            "max_ticks_per_step must be None or >= 1"
+        )
+        assert max_speed > 0.0, "max_speed must be positive"
+        assert min_speed >= 0.0, "min_speed must be non-negative"
+        super().__init__(
+            env,
+            max_ticks_per_trade=max_ticks_per_step,
+            max_order_size=np.inf,
+            min_order_size=0.0,
+        )
+        self.max_ticks_per_step = max_ticks_per_step
+        self.max_speed = float(max_speed)
+        self.min_speed = float(min_speed)
+
+    def get_action(self, state: dict) -> np.ndarray:
+        order_sizes = self._target_order_sizes(
+            state,
+            max_ticks=self.max_ticks_per_step,
+            max_order_size=np.inf,
+            min_order_size=0.0,
+        )
+        step_size = float(self.env.step_size)
+        if step_size <= 0.0:
+            raise ValueError("env.step_size must be positive for speed controls")
+
+        speeds = order_sizes / step_size
+        if np.isfinite(self.max_speed):
+            speeds = np.sign(speeds) * np.minimum(np.abs(speeds), self.max_speed)
+        speeds = np.where(np.abs(speeds) >= self.min_speed, speeds, 0.0)
+        return speeds.reshape(self.num_trajectories, 1)
 
 
 class CarteaPLAgent(Agent):

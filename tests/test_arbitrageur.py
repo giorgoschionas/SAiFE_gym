@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from SAiFE_gym.agents.BaselineAgents import ArbitrageurAgent
+from SAiFE_gym.agents.BaselineAgents import ArbitrageurAgent, SpeedControlArbitrageurAgent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.index_names import (
@@ -96,6 +96,55 @@ class TestArbitrageurAgent:
         np.testing.assert_array_equal(action, np.zeros((1, 1)))
 
 
+class TestSpeedControlArbitrageurAgent:
+    def test_action_signs_follow_fee_adjusted_mispricing(self):
+        env, state = _make_env(num_trajectories=3)
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        state[ASSET_PRICE_KEY] = pool_price * np.array([1.01, 0.99, 1.0])
+
+        action = SpeedControlArbitrageurAgent(env, max_ticks_per_step=3).get_action(state)
+
+        assert action.shape == (3, 1)
+        assert action[0, 0] > 0.0
+        assert action[1, 0] < 0.0
+        assert action[2, 0] == 0.0
+
+    def test_inside_no_arbitrage_band_returns_zero(self):
+        env, state = _make_env()
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        state[ASSET_PRICE_KEY] = pool_price * 1.001
+
+        action = SpeedControlArbitrageurAgent(env).get_action(state)
+
+        np.testing.assert_array_equal(action, np.zeros((1, 1)))
+
+    def test_speed_times_step_size_matches_size_control_target(self):
+        env, state = _make_env()
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        state[ASSET_PRICE_KEY] = pool_price * 1.01
+
+        size_action = ArbitrageurAgent(env, max_ticks_per_trade=1).get_action(state)
+        speed_action = SpeedControlArbitrageurAgent(
+            env,
+            max_ticks_per_step=1,
+        ).get_action(state)
+
+        np.testing.assert_allclose(speed_action * env.step_size, size_action)
+
+    def test_speed_cap_is_applied_in_speed_units(self):
+        env, state = _make_env()
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        state[ASSET_PRICE_KEY] = pool_price * 1.01
+
+        action = SpeedControlArbitrageurAgent(
+            env,
+            max_ticks_per_step=3,
+            max_speed=25.0,
+        ).get_action(state)
+
+        assert action[0, 0] == pytest.approx(25.0)
+
+
 class TestLiquidityTakerExecution:
     def test_vectorized_positive_negative_and_zero_orders(self):
         env, state = _make_env(num_trajectories=3)
@@ -180,3 +229,76 @@ class TestLiquidityTakerExecution:
         assert diagnostics["tick_movement"][0] > 0
         assert diagnostics["unfilled_input"][0] > 0.0
         assert diagnostics["executed_input"][0] > 0.0
+
+
+class TestLiquidityTakerSpeedExecution:
+    def test_positive_speed_moves_up_and_credits_token1_fees(self):
+        env, state = _make_env()
+        md = env.model_dynamics
+        start_tick = int(state[POOL_CURRENT_TICK_KEY][0])
+        amount = _buy_capacity(env)
+        speed = amount / env.step_size
+
+        diagnostics = md.execute_liquidity_taker_speeds(np.array([[speed]]))
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == start_tick + 1
+        assert diagnostics["tick_movement"][0] == 1
+        assert diagnostics["trading_speed"][0] == pytest.approx(speed)
+        assert diagnostics["step_size"] == pytest.approx(env.step_size)
+        assert diagnostics["unfilled_input"][0] == pytest.approx(0.0)
+        assert np.sum(state[FEES0_KEY]) == 0.0
+        assert np.sum(state[FEES1_KEY]) == pytest.approx(md.fee_multiplier * amount)
+
+    def test_negative_speed_moves_down_and_credits_token0_fees(self):
+        env, state = _make_env()
+        md = env.model_dynamics
+        start_tick = int(state[POOL_CURRENT_TICK_KEY][0])
+        amount = _sell_capacity(env)
+        speed = -amount / env.step_size
+
+        diagnostics = md.execute_liquidity_taker_speeds(np.array([[speed]]))
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == start_tick - 1
+        assert diagnostics["tick_movement"][0] == -1
+        assert diagnostics["trading_speed"][0] == pytest.approx(speed)
+        assert diagnostics["unfilled_input"][0] == pytest.approx(0.0)
+        assert np.sum(state[FEES0_KEY]) == pytest.approx(md.fee_multiplier * amount)
+        assert np.sum(state[FEES1_KEY]) == 0.0
+
+    def test_zero_speed_leaves_pool_state_unchanged(self):
+        env, state = _make_env()
+        before = {
+            key: state[key].copy()
+            for key in (POOL_CURRENT_TICK_KEY, POOL_SQRT_PRICE_KEY, FEES0_KEY, FEES1_KEY)
+        }
+
+        diagnostics = env.model_dynamics.execute_liquidity_taker_speeds(np.array([[0.0]]))
+
+        for key, value in before.items():
+            np.testing.assert_array_equal(state[key], value)
+        assert diagnostics["executed_input"][0] == 0.0
+        assert diagnostics["unfilled_input"][0] == 0.0
+
+    def test_speed_execution_matches_direct_order_execution(self):
+        env_speed, state_speed = _make_env()
+        env_order, state_order = _make_env()
+        amount = _buy_capacity(env_speed)
+        speed = amount / env_speed.step_size
+
+        speed_diagnostics = env_speed.model_dynamics.execute_liquidity_taker_speeds(
+            np.array([[speed]])
+        )
+        order_diagnostics = env_order.model_dynamics.execute_liquidity_taker_orders(
+            np.array([[amount]])
+        )
+
+        np.testing.assert_allclose(
+            state_speed[POOL_CURRENT_TICK_KEY],
+            state_order[POOL_CURRENT_TICK_KEY],
+        )
+        np.testing.assert_allclose(state_speed[FEES0_KEY], state_order[FEES0_KEY])
+        np.testing.assert_allclose(state_speed[FEES1_KEY], state_order[FEES1_KEY])
+        np.testing.assert_allclose(
+            speed_diagnostics["executed_input"],
+            order_diagnostics["executed_input"],
+        )

@@ -292,6 +292,44 @@ class UniswapV3ModelDynamics(ModelDynamics):
             "pool_price_after": (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
         }
 
+    def execute_liquidity_taker_speeds(
+        self,
+        trading_speeds: np.ndarray,
+        step_size: float = None,
+    ) -> dict:
+        """
+        Execute signed liquidity-taker trading speeds over one time step.
+
+        Speeds are input-token amount per unit simulation time. Positive speeds
+        are token1 input used to buy token0; negative speeds are token0 input
+        sold to the pool. The executed order request is ``speed * step_size``.
+        """
+        if step_size is None:
+            if self.midprice_model is None or self.midprice_model.step_size is None:
+                raise ValueError(
+                    "step_size must be provided when midprice_model.step_size is unavailable"
+                )
+            step_size = self.midprice_model.step_size
+        step_size = float(step_size)
+        if step_size <= 0.0:
+            raise ValueError("step_size must be positive")
+
+        speeds = np.asarray(trading_speeds, dtype=np.float64).reshape(
+            self.num_trajectories, -1
+        )
+        if speeds.shape[1] != 1:
+            raise ValueError(
+                "trading_speeds must have shape (num_trajectories, 1) or "
+                "(num_trajectories,)"
+            )
+        speeds = speeds[:, 0]
+        diagnostics = self.execute_liquidity_taker_orders(
+            (speeds * step_size).reshape(self.num_trajectories, 1)
+        )
+        diagnostics["trading_speed"] = speeds.copy()
+        diagnostics["step_size"] = step_size
+        return diagnostics
+
     def _execute_full_tick_orders(
         self,
         abs_orders: np.ndarray,
