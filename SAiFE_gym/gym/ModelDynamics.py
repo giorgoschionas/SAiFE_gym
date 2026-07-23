@@ -21,7 +21,6 @@ from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
 from SAiFE_gym.stochastic_processes.price_impact_models import (
     PriceImpactModel,
     OneTickUniswapV3PriceImpact,
-    SwapResult,
 )
 
 class ModelDynamics(metaclass=abc.ABCMeta):
@@ -216,78 +215,31 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if self.sqrt_grid is None or self.tick_lower_global is None:
             raise ValueError("sqrt_grid is not initialized. Build/reset the environment first.")
 
-        orders = np.asarray(order_sizes, dtype=np.float64).reshape(self.num_trajectories, -1)
-        if orders.shape[1] != 1:
-            raise ValueError(
-                "order_sizes must have shape (num_trajectories, 1) or "
-                "(num_trajectories,)"
-            )
-        orders = orders[:, 0]
-
-        tick_before = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64).copy()
         price_before = (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy()
-        executed_abs = np.zeros(self.num_trajectories, dtype=np.float64)
-        tick_movement = np.zeros(self.num_trajectories, dtype=np.int64)
-        direction = np.sign(orders).astype(np.int64)
-
-        buy_mask = orders > 0.0
-        sell_mask = orders < 0.0
-
-        buy_exec, buy_move, buy_traj, buy_fee_idx, buy_amounts = self._execute_full_tick_orders(
-            np.abs(orders),
-            buy_mask,
-            direction=1,
-        )
-        sell_exec, sell_move, sell_traj, sell_fee_idx, sell_amounts = self._execute_full_tick_orders(
-            np.abs(orders),
-            sell_mask,
-            direction=-1,
+        execution = self.price_impact_model.process_order_sizes(
+            self.state,
+            order_sizes,
+            tick_lower_global=self.tick_lower_global,
+            sqrt_grid=self.sqrt_grid,
+            num_ticks=self.num_ticks,
         )
 
-        executed_abs += buy_exec + sell_exec
-        tick_movement += buy_move - sell_move
-
-        if buy_amounts.size:
+        for swap_result in execution.swap_results:
             self.fee_accounting_model.apply_fees(
                 self.state,
-                SwapResult(
-                    trajectories=buy_traj,
-                    fee_key=FEES1_KEY,
-                    fee_indices=buy_fee_idx,
-                    amounts=buy_amounts,
-                    direction=1,
-                ),
+                swap_result,
                 self.fee_multiplier,
             )
-        if sell_amounts.size:
-            self.fee_accounting_model.apply_fees(
-                self.state,
-                SwapResult(
-                    trajectories=sell_traj,
-                    fee_key=FEES0_KEY,
-                    fee_indices=sell_fee_idx,
-                    amounts=sell_amounts,
-                    direction=-1,
-                ),
-                self.fee_multiplier,
-            )
-
-        new_tick = tick_before + tick_movement
-        self.state[POOL_CURRENT_TICK_KEY] = new_tick
-        self.state[POOL_SQRT_PRICE_KEY] = self.sqrt_grid[new_tick - self.tick_lower_global]
 
         if LP_LIQUIDITY_KEY in self.state:
             self._accrue_lp_fees()
 
-        executed_input = direction * executed_abs
-        unfilled_input = orders - executed_input
-
         return {
-            "order_input": orders.copy(),
-            "executed_input": executed_input,
-            "unfilled_input": unfilled_input,
-            "tick_movement": tick_movement.copy(),
-            "direction": direction.copy(),
+            "order_input": execution.order_input.copy(),
+            "executed_input": execution.executed_input.copy(),
+            "unfilled_input": execution.unfilled_input.copy(),
+            "tick_movement": execution.tick_movement.copy(),
+            "direction": execution.direction.copy(),
             "pool_price_before": price_before,
             "pool_price_after": (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
         }
@@ -329,88 +281,6 @@ class UniswapV3ModelDynamics(ModelDynamics):
         diagnostics["trading_speed"] = speeds.copy()
         diagnostics["step_size"] = step_size
         return diagnostics
-
-    def _execute_full_tick_orders(
-        self,
-        abs_orders: np.ndarray,
-        active: np.ndarray,
-        direction: int,
-    ):
-        """Return executable full tick intervals for one order direction."""
-        executed = np.zeros(self.num_trajectories, dtype=np.float64)
-        tick_move = np.zeros(self.num_trajectories, dtype=np.int64)
-        if not np.any(active):
-            empty_int = np.array([], dtype=np.int64)
-            empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
-
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        idx_all = current_tick - self.tick_lower_global
-        traj = np.flatnonzero(active)
-        idx = idx_all[traj]
-        requested = abs_orders[traj]
-
-        if direction == 1:
-            max_tick_move = np.maximum(self.num_ticks - idx, 0)
-        elif direction == -1:
-            max_tick_move = np.maximum(idx, 0)
-        else:
-            raise ValueError("direction must be -1 for sell or 1 for buy")
-
-        max_crossed = int(max_tick_move.max()) if max_tick_move.size else 0
-        if max_crossed == 0:
-            empty_int = np.array([], dtype=np.int64)
-            empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
-
-        offsets = np.arange(max_crossed, dtype=np.int64)
-        if direction == 1:
-            interval_indices = idx[:, None] + offsets[None, :]
-        else:
-            interval_indices = idx[:, None] - 1 - offsets[None, :]
-
-        valid = offsets[None, :] < max_tick_move[:, None]
-        interval_indices_safe = np.clip(interval_indices, 0, self.num_ticks - 1)
-        liquidity = (
-            self.state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices_safe]
-            * valid
-        )
-        capacities = self._interval_input_capacity(
-            liquidity,
-            interval_indices_safe,
-            direction,
-        ) * valid
-
-        cumulative = np.cumsum(capacities, axis=1)
-        crossed = valid & (cumulative <= requested[:, None] + 1e-12)
-        tick_move[traj] = crossed.sum(axis=1)
-        executed[traj] = np.sum(capacities * crossed, axis=1)
-
-        if not np.any(crossed):
-            empty_int = np.array([], dtype=np.int64)
-            empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
-
-        fee_indices = interval_indices_safe[crossed]
-        fee_traj = np.broadcast_to(traj[:, None], interval_indices_safe.shape)[crossed]
-        amounts = capacities[crossed]
-        return executed, tick_move, fee_traj, fee_indices, amounts
-
-    def _interval_input_capacity(
-        self,
-        liquidity: np.ndarray,
-        interval_indices: np.ndarray,
-        direction: int,
-    ) -> np.ndarray:
-        if direction == -1:
-            return liquidity * (
-                1.0 / self.sqrt_grid[interval_indices]
-                - 1.0 / self.sqrt_grid[interval_indices + 1]
-            )
-        return liquidity * (
-            self.sqrt_grid[interval_indices + 1]
-            - self.sqrt_grid[interval_indices]
-        )
 
     def _state_or_current(self, state: dict = None) -> dict:
         return self.state if state is None else state

@@ -26,6 +26,18 @@ class SwapResult:
     direction: int
 
 
+@dataclass
+class OrderExecutionResult:
+    """Vectorized metadata for explicit liquidity-taker order execution."""
+
+    order_input: np.ndarray
+    executed_input: np.ndarray
+    unfilled_input: np.ndarray
+    tick_movement: np.ndarray
+    direction: np.ndarray
+    swap_results: tuple[SwapResult, ...]
+
+
 class PriceImpactModel(StochasticProcessModel):
     """Base class for AMM price-impact rules.
 
@@ -60,6 +72,187 @@ class PriceImpactModel(StochasticProcessModel):
         num_ticks: int,
     ) -> Optional[SwapResult]:
         pass
+
+    def process_order_sizes(
+        self,
+        state: dict,
+        order_sizes: np.ndarray,
+        *,
+        tick_lower_global: int,
+        sqrt_grid: np.ndarray,
+        num_ticks: int,
+    ) -> OrderExecutionResult:
+        """
+        Execute signed explicit liquidity-taker sizes using full tick intervals.
+
+        Positive orders are token1 input used to buy token0 from the pool.
+        Negative orders are token0 input sold to the pool. Any amount that
+        cannot cross a complete tick interval remains unfilled.
+        """
+        if sqrt_grid is None or tick_lower_global is None:
+            raise ValueError("sqrt_grid is not initialized. Build/reset the environment first.")
+
+        orders = np.asarray(order_sizes, dtype=np.float64).reshape(
+            self.num_trajectories, -1
+        )
+        if orders.shape[1] != 1:
+            raise ValueError(
+                "order_sizes must have shape (num_trajectories, 1) or "
+                "(num_trajectories,)"
+            )
+        orders = orders[:, 0]
+
+        tick_before = state[POOL_CURRENT_TICK_KEY].astype(np.int64).copy()
+        executed_abs = np.zeros(self.num_trajectories, dtype=np.float64)
+        tick_movement = np.zeros(self.num_trajectories, dtype=np.int64)
+        direction = np.sign(orders).astype(np.int64)
+        swap_results = []
+
+        buy_exec, buy_move, buy_traj, buy_fee_idx, buy_amounts = self._execute_full_tick_orders(
+            state,
+            np.abs(orders),
+            orders > 0.0,
+            direction=1,
+            tick_lower_global=tick_lower_global,
+            sqrt_grid=sqrt_grid,
+            num_ticks=num_ticks,
+        )
+        sell_exec, sell_move, sell_traj, sell_fee_idx, sell_amounts = self._execute_full_tick_orders(
+            state,
+            np.abs(orders),
+            orders < 0.0,
+            direction=-1,
+            tick_lower_global=tick_lower_global,
+            sqrt_grid=sqrt_grid,
+            num_ticks=num_ticks,
+        )
+
+        executed_abs += buy_exec + sell_exec
+        tick_movement += buy_move - sell_move
+
+        if buy_amounts.size:
+            swap_results.append(
+                SwapResult(
+                    trajectories=buy_traj,
+                    fee_key=FEES1_KEY,
+                    fee_indices=buy_fee_idx,
+                    amounts=buy_amounts,
+                    direction=1,
+                )
+            )
+        if sell_amounts.size:
+            swap_results.append(
+                SwapResult(
+                    trajectories=sell_traj,
+                    fee_key=FEES0_KEY,
+                    fee_indices=sell_fee_idx,
+                    amounts=sell_amounts,
+                    direction=-1,
+                )
+            )
+
+        new_tick = tick_before + tick_movement
+        state[POOL_CURRENT_TICK_KEY] = new_tick
+        state[POOL_SQRT_PRICE_KEY] = sqrt_grid[new_tick - tick_lower_global]
+
+        executed_input = direction * executed_abs
+        return OrderExecutionResult(
+            order_input=orders.copy(),
+            executed_input=executed_input,
+            unfilled_input=orders - executed_input,
+            tick_movement=tick_movement.copy(),
+            direction=direction.copy(),
+            swap_results=tuple(swap_results),
+        )
+
+    def _execute_full_tick_orders(
+        self,
+        state: dict,
+        abs_orders: np.ndarray,
+        active: np.ndarray,
+        direction: int,
+        *,
+        tick_lower_global: int,
+        sqrt_grid: np.ndarray,
+        num_ticks: int,
+    ):
+        """Return executable full tick intervals for one explicit order side."""
+        executed = np.zeros(self.num_trajectories, dtype=np.float64)
+        tick_move = np.zeros(self.num_trajectories, dtype=np.int64)
+        if not np.any(active):
+            empty_int = np.array([], dtype=np.int64)
+            empty_float = np.array([], dtype=np.float64)
+            return executed, tick_move, empty_int, empty_int, empty_float
+
+        current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
+        idx_all = current_tick - tick_lower_global
+        traj = np.flatnonzero(active)
+        idx = idx_all[traj]
+        requested = abs_orders[traj]
+
+        if direction == 1:
+            max_tick_move = np.maximum(num_ticks - idx, 0)
+        elif direction == -1:
+            max_tick_move = np.maximum(idx, 0)
+        else:
+            raise ValueError("direction must be -1 for sell or 1 for buy")
+
+        max_crossed = int(max_tick_move.max()) if max_tick_move.size else 0
+        if max_crossed == 0:
+            empty_int = np.array([], dtype=np.int64)
+            empty_float = np.array([], dtype=np.float64)
+            return executed, tick_move, empty_int, empty_int, empty_float
+
+        offsets = np.arange(max_crossed, dtype=np.int64)
+        if direction == 1:
+            interval_indices = idx[:, None] + offsets[None, :]
+        else:
+            interval_indices = idx[:, None] - 1 - offsets[None, :]
+
+        valid = offsets[None, :] < max_tick_move[:, None]
+        interval_indices_safe = np.clip(interval_indices, 0, num_ticks - 1)
+        liquidity = (
+            state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices_safe]
+            * valid
+        )
+        capacities = self._interval_input_capacity(
+            liquidity,
+            interval_indices_safe,
+            sqrt_grid,
+            direction,
+        ) * valid
+
+        cumulative = np.cumsum(capacities, axis=1)
+        crossed = valid & (cumulative <= requested[:, None] + 1e-12)
+        tick_move[traj] = crossed.sum(axis=1)
+        executed[traj] = np.sum(capacities * crossed, axis=1)
+
+        if not np.any(crossed):
+            empty_int = np.array([], dtype=np.int64)
+            empty_float = np.array([], dtype=np.float64)
+            return executed, tick_move, empty_int, empty_int, empty_float
+
+        fee_indices = interval_indices_safe[crossed]
+        fee_traj = np.broadcast_to(traj[:, None], interval_indices_safe.shape)[crossed]
+        amounts = capacities[crossed]
+        return executed, tick_move, fee_traj, fee_indices, amounts
+
+    @staticmethod
+    def _interval_input_capacity(
+        liquidity: np.ndarray,
+        interval_indices: np.ndarray,
+        sqrt_grid: np.ndarray,
+        direction: int,
+    ) -> np.ndarray:
+        if direction == -1:
+            return liquidity * (
+                1.0 / sqrt_grid[interval_indices]
+                - 1.0 / sqrt_grid[interval_indices + 1]
+            )
+        return liquidity * (
+            sqrt_grid[interval_indices + 1]
+            - sqrt_grid[interval_indices]
+        )
 
 
 class OneTickUniswapV3PriceImpact(PriceImpactModel):
