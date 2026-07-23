@@ -180,13 +180,23 @@ class TestLiquidityTakerExecution:
         env, state = _make_env()
         md = env.model_dynamics
         start_tick = int(state[POOL_CURRENT_TICK_KEY][0])
+        idx = _current_idx(env)
+        liquidity = md.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx]
         amount = _buy_capacity(env)
+        expected_token0_out = liquidity * (
+            1.0 / md.sqrt_grid[idx] - 1.0 / md.sqrt_grid[idx + 1]
+        )
 
         diagnostics = md.execute_liquidity_taker_orders(np.array([[amount]]))
 
         assert state[POOL_CURRENT_TICK_KEY][0] == start_tick + 1
         assert diagnostics["tick_movement"][0] == 1
         assert diagnostics["unfilled_input"][0] == pytest.approx(0.0)
+        assert diagnostics["token0_delta"][0] == pytest.approx(expected_token0_out)
+        assert diagnostics["token1_delta"][0] == pytest.approx(
+            -(amount + md.fee_multiplier * amount)
+        )
+        assert diagnostics["fee_input"][0] == pytest.approx(md.fee_multiplier * amount)
         assert np.sum(state[FEES0_KEY]) == 0.0
         assert np.sum(state[FEES1_KEY]) == pytest.approx(md.fee_multiplier * amount)
 
@@ -194,13 +204,23 @@ class TestLiquidityTakerExecution:
         env, state = _make_env()
         md = env.model_dynamics
         start_tick = int(state[POOL_CURRENT_TICK_KEY][0])
+        idx = _current_idx(env)
+        liquidity = md.state[POOL_LIQUIDITY_ARRAY_KEY][0, idx - 1]
         amount = _sell_capacity(env)
+        expected_token1_out = liquidity * (
+            md.sqrt_grid[idx] - md.sqrt_grid[idx - 1]
+        )
 
         diagnostics = md.execute_liquidity_taker_orders(np.array([[-amount]]))
 
         assert state[POOL_CURRENT_TICK_KEY][0] == start_tick - 1
         assert diagnostics["tick_movement"][0] == -1
         assert diagnostics["unfilled_input"][0] == pytest.approx(0.0)
+        assert diagnostics["token0_delta"][0] == pytest.approx(
+            -(amount + md.fee_multiplier * amount)
+        )
+        assert diagnostics["token1_delta"][0] == pytest.approx(expected_token1_out)
+        assert diagnostics["fee_input"][0] == pytest.approx(md.fee_multiplier * amount)
         assert np.sum(state[FEES0_KEY]) == pytest.approx(md.fee_multiplier * amount)
         assert np.sum(state[FEES1_KEY]) == 0.0
 
@@ -217,6 +237,9 @@ class TestLiquidityTakerExecution:
             np.testing.assert_array_equal(state[key], value)
         assert diagnostics["executed_input"][0] == 0.0
         assert diagnostics["unfilled_input"][0] == 0.0
+        assert diagnostics["token0_delta"][0] == 0.0
+        assert diagnostics["token1_delta"][0] == 0.0
+        assert diagnostics["fee_input"][0] == 0.0
 
     def test_oversized_order_stops_at_boundary_and_reports_unfilled_input(self):
         env, state = _make_env(num_ticks=20)

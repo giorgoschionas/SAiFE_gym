@@ -222,6 +222,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             tick_lower_global=self.tick_lower_global,
             sqrt_grid=self.sqrt_grid,
             num_ticks=self.num_ticks,
+            fee_multiplier=self.fee_multiplier,
         )
 
         for swap_result in execution.swap_results:
@@ -240,6 +241,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
             "unfilled_input": execution.unfilled_input.copy(),
             "tick_movement": execution.tick_movement.copy(),
             "direction": execution.direction.copy(),
+            "token0_delta": execution.token0_delta.copy(),
+            "token1_delta": execution.token1_delta.copy(),
+            "fee_input": execution.fee_input.copy(),
             "pool_price_before": price_before,
             "pool_price_after": (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
         }

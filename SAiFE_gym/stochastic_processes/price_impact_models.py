@@ -35,6 +35,9 @@ class OrderExecutionResult:
     unfilled_input: np.ndarray
     tick_movement: np.ndarray
     direction: np.ndarray
+    token0_delta: np.ndarray
+    token1_delta: np.ndarray
+    fee_input: np.ndarray
     swap_results: tuple[SwapResult, ...]
 
 
@@ -81,6 +84,7 @@ class PriceImpactModel(StochasticProcessModel):
         tick_lower_global: int,
         sqrt_grid: np.ndarray,
         num_ticks: int,
+        fee_multiplier: float = 0.0,
     ) -> OrderExecutionResult:
         """
         Execute signed explicit liquidity-taker sizes using full tick intervals.
@@ -104,11 +108,19 @@ class PriceImpactModel(StochasticProcessModel):
 
         tick_before = state[POOL_CURRENT_TICK_KEY].astype(np.int64).copy()
         executed_abs = np.zeros(self.num_trajectories, dtype=np.float64)
+        output_abs = np.zeros(self.num_trajectories, dtype=np.float64)
         tick_movement = np.zeros(self.num_trajectories, dtype=np.int64)
         direction = np.sign(orders).astype(np.int64)
         swap_results = []
 
-        buy_exec, buy_move, buy_traj, buy_fee_idx, buy_amounts = self._execute_full_tick_orders(
+        (
+            buy_exec,
+            buy_output,
+            buy_move,
+            buy_traj,
+            buy_fee_idx,
+            buy_amounts,
+        ) = self._execute_full_tick_orders(
             state,
             np.abs(orders),
             orders > 0.0,
@@ -117,7 +129,14 @@ class PriceImpactModel(StochasticProcessModel):
             sqrt_grid=sqrt_grid,
             num_ticks=num_ticks,
         )
-        sell_exec, sell_move, sell_traj, sell_fee_idx, sell_amounts = self._execute_full_tick_orders(
+        (
+            sell_exec,
+            sell_output,
+            sell_move,
+            sell_traj,
+            sell_fee_idx,
+            sell_amounts,
+        ) = self._execute_full_tick_orders(
             state,
             np.abs(orders),
             orders < 0.0,
@@ -128,6 +147,7 @@ class PriceImpactModel(StochasticProcessModel):
         )
 
         executed_abs += buy_exec + sell_exec
+        output_abs += buy_output + sell_output
         tick_movement += buy_move - sell_move
 
         if buy_amounts.size:
@@ -156,12 +176,24 @@ class PriceImpactModel(StochasticProcessModel):
         state[POOL_SQRT_PRICE_KEY] = sqrt_grid[new_tick - tick_lower_global]
 
         executed_input = direction * executed_abs
+        fee_input = executed_abs * float(fee_multiplier)
+        token0_delta = np.zeros(self.num_trajectories, dtype=np.float64)
+        token1_delta = np.zeros(self.num_trajectories, dtype=np.float64)
+        buy_mask = orders > 0.0
+        sell_mask = orders < 0.0
+        token0_delta[buy_mask] = output_abs[buy_mask]
+        token1_delta[buy_mask] = -(executed_abs[buy_mask] + fee_input[buy_mask])
+        token0_delta[sell_mask] = -(executed_abs[sell_mask] + fee_input[sell_mask])
+        token1_delta[sell_mask] = output_abs[sell_mask]
         return OrderExecutionResult(
             order_input=orders.copy(),
             executed_input=executed_input,
             unfilled_input=orders - executed_input,
             tick_movement=tick_movement.copy(),
             direction=direction.copy(),
+            token0_delta=token0_delta,
+            token1_delta=token1_delta,
+            fee_input=fee_input,
             swap_results=tuple(swap_results),
         )
 
@@ -178,11 +210,12 @@ class PriceImpactModel(StochasticProcessModel):
     ):
         """Return executable full tick intervals for one explicit order side."""
         executed = np.zeros(self.num_trajectories, dtype=np.float64)
+        output = np.zeros(self.num_trajectories, dtype=np.float64)
         tick_move = np.zeros(self.num_trajectories, dtype=np.int64)
         if not np.any(active):
             empty_int = np.array([], dtype=np.int64)
             empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
+            return executed, output, tick_move, empty_int, empty_int, empty_float
 
         current_tick = state[POOL_CURRENT_TICK_KEY].astype(np.int64)
         idx_all = current_tick - tick_lower_global
@@ -201,7 +234,7 @@ class PriceImpactModel(StochasticProcessModel):
         if max_crossed == 0:
             empty_int = np.array([], dtype=np.int64)
             empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
+            return executed, output, tick_move, empty_int, empty_int, empty_float
 
         offsets = np.arange(max_crossed, dtype=np.int64)
         if direction == 1:
@@ -221,21 +254,28 @@ class PriceImpactModel(StochasticProcessModel):
             sqrt_grid,
             direction,
         ) * valid
+        outputs = self._interval_output_amount(
+            liquidity,
+            interval_indices_safe,
+            sqrt_grid,
+            direction,
+        ) * valid
 
         cumulative = np.cumsum(capacities, axis=1)
         crossed = valid & (cumulative <= requested[:, None] + 1e-12)
         tick_move[traj] = crossed.sum(axis=1)
         executed[traj] = np.sum(capacities * crossed, axis=1)
+        output[traj] = np.sum(outputs * crossed, axis=1)
 
         if not np.any(crossed):
             empty_int = np.array([], dtype=np.int64)
             empty_float = np.array([], dtype=np.float64)
-            return executed, tick_move, empty_int, empty_int, empty_float
+            return executed, output, tick_move, empty_int, empty_int, empty_float
 
         fee_indices = interval_indices_safe[crossed]
         fee_traj = np.broadcast_to(traj[:, None], interval_indices_safe.shape)[crossed]
         amounts = capacities[crossed]
-        return executed, tick_move, fee_traj, fee_indices, amounts
+        return executed, output, tick_move, fee_traj, fee_indices, amounts
 
     @staticmethod
     def _interval_input_capacity(
@@ -252,6 +292,23 @@ class PriceImpactModel(StochasticProcessModel):
         return liquidity * (
             sqrt_grid[interval_indices + 1]
             - sqrt_grid[interval_indices]
+        )
+
+    @staticmethod
+    def _interval_output_amount(
+        liquidity: np.ndarray,
+        interval_indices: np.ndarray,
+        sqrt_grid: np.ndarray,
+        direction: int,
+    ) -> np.ndarray:
+        if direction == -1:
+            return liquidity * (
+                sqrt_grid[interval_indices + 1]
+                - sqrt_grid[interval_indices]
+            )
+        return liquidity * (
+            1.0 / sqrt_grid[interval_indices]
+            - 1.0 / sqrt_grid[interval_indices + 1]
         )
 
 
