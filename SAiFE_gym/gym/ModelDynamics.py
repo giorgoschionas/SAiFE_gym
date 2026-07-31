@@ -18,7 +18,10 @@ from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.fee_accounting_models import FeeAccountingModel, UniswapV3FeeAccounting
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
-from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel, OneTickUniswapV3PriceImpact
+from SAiFE_gym.stochastic_processes.price_impact_models import (
+    PriceImpactModel,
+    OneTickUniswapV3PriceImpact,
+)
 
 class ModelDynamics(metaclass=abc.ABCMeta):
     def __init__(
@@ -196,6 +199,95 @@ class UniswapV3ModelDynamics(ModelDynamics):
             swap_result,
             self.fee_multiplier,
         )
+
+    def execute_liquidity_taker_orders(self, order_sizes: np.ndarray) -> dict:
+        """
+        Execute signed liquidity-taker order sizes against the current v3 pool.
+
+        Positive orders are gross token1 input used to buy token0 from the pool,
+        moving the pool price up. Negative orders are gross token0 input sold to
+        the pool, moving the pool price down. Fees are paid from the gross input
+        budget. This first version executes only complete tick intervals; any
+        remainder that cannot cross the next full interval is reported as
+        unfilled.
+        """
+        if self.state is None:
+            raise ValueError("State not initialized. Call reset() first.")
+        if self.sqrt_grid is None or self.tick_lower_global is None:
+            raise ValueError("sqrt_grid is not initialized. Build/reset the environment first.")
+
+        price_before = (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy()
+        execution = self.price_impact_model.process_order_sizes(
+            self.state,
+            order_sizes,
+            tick_lower_global=self.tick_lower_global,
+            sqrt_grid=self.sqrt_grid,
+            num_ticks=self.num_ticks,
+            fee_multiplier=self.fee_multiplier,
+        )
+
+        for swap_result in execution.swap_results:
+            self.fee_accounting_model.apply_fees(
+                self.state,
+                swap_result,
+                self.fee_multiplier,
+            )
+
+        if LP_LIQUIDITY_KEY in self.state:
+            self._accrue_lp_fees()
+
+        return {
+            "order_input": execution.order_input.copy(),
+            "executed_input": execution.executed_input.copy(),
+            "unfilled_input": execution.unfilled_input.copy(),
+            "curve_input": execution.curve_input.copy(),
+            "tick_movement": execution.tick_movement.copy(),
+            "direction": execution.direction.copy(),
+            "token0_delta": execution.token0_delta.copy(),
+            "token1_delta": execution.token1_delta.copy(),
+            "fee_input": execution.fee_input.copy(),
+            "pool_price_before": price_before,
+            "pool_price_after": (self.state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
+        }
+
+    def execute_liquidity_taker_speeds(
+        self,
+        trading_speeds: np.ndarray,
+        step_size: float = None,
+    ) -> dict:
+        """
+        Execute signed liquidity-taker trading speeds over one time step.
+
+        Speeds are gross input-token amount per unit simulation time. Positive
+        speeds are token1 input used to buy token0; negative speeds are token0
+        input sold to the pool. Fees are paid from the gross input budget. The
+        executed order request is ``speed * step_size``.
+        """
+        if step_size is None:
+            if self.midprice_model is None or self.midprice_model.step_size is None:
+                raise ValueError(
+                    "step_size must be provided when midprice_model.step_size is unavailable"
+                )
+            step_size = self.midprice_model.step_size
+        step_size = float(step_size)
+        if step_size <= 0.0:
+            raise ValueError("step_size must be positive")
+
+        speeds = np.asarray(trading_speeds, dtype=np.float64).reshape(
+            self.num_trajectories, -1
+        )
+        if speeds.shape[1] != 1:
+            raise ValueError(
+                "trading_speeds must have shape (num_trajectories, 1) or "
+                "(num_trajectories,)"
+            )
+        speeds = speeds[:, 0]
+        diagnostics = self.execute_liquidity_taker_orders(
+            (speeds * step_size).reshape(self.num_trajectories, 1)
+        )
+        diagnostics["trading_speed"] = speeds.copy()
+        diagnostics["step_size"] = step_size
+        return diagnostics
 
     def _state_or_current(self, state: dict = None) -> dict:
         return self.state if state is None else state
