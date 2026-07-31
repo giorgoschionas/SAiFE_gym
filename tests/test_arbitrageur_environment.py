@@ -3,6 +3,7 @@ import pytest
 
 from SAiFE_gym.gym.ArbitrageurEnvironment import (
     DEFAULT_ARBITRAGEUR_OBS_KEYS,
+    LP_POLICY_DEPLOY_ONCE,
     ArbitrageurEnvironment,
     build_arbitrageur_environment,
 )
@@ -47,16 +48,65 @@ def _buy_capacity(env: ArbitrageurEnvironment, trajectory: int = 0) -> float:
 
 
 class TestArbitrageurEnvironment:
-    def test_reset_deploys_default_lp_without_advancing_time(self):
+    def test_reset_defaults_to_no_op_lp_without_advancing_time(self):
         env = _build_env()
 
         obs, info = env.reset()
 
         assert obs.shape == (1, len(DEFAULT_ARBITRAGEUR_OBS_KEYS))
+        assert env.observation_space.shape == obs.shape
+        assert env.observation_space.contains(obs)
+        assert info == {}
+        assert env.state[TIME_KEY][0] == pytest.approx(0.0)
+        assert not bool(env.state[LP_EVER_DEPLOYED_KEY][0])
+        assert env.state[LP_LIQUIDITY_KEY][0] == 0.0
+
+    def test_deploy_once_lp_policy_can_be_enabled(self):
+        env = _build_env(lp_policy=LP_POLICY_DEPLOY_ONCE)
+
+        obs, info = env.reset()
+
+        assert obs.shape == (1, len(DEFAULT_ARBITRAGEUR_OBS_KEYS))
+        assert env.observation_space.contains(obs)
         assert info == {}
         assert env.state[TIME_KEY][0] == pytest.approx(0.0)
         assert bool(env.state[LP_EVER_DEPLOYED_KEY][0])
         assert env.state[LP_LIQUIDITY_KEY][0] > 0.0
+
+    def test_spaces_match_vectorized_observations_and_actions(self):
+        env = _build_env(num_trajectories=3)
+        obs, _ = env.reset()
+        action = np.array([[0.0], [1.0], [-1.0]], dtype=np.float32)
+
+        assert env.observation_space.shape == (
+            3,
+            len(DEFAULT_ARBITRAGEUR_OBS_KEYS),
+        )
+        assert env.action_space.shape == (3, 1)
+        assert env.observation_space.contains(obs)
+        assert env.action_space.contains(action)
+
+        obs, rewards, terminated, truncated, _ = env.step(action)
+
+        assert env.observation_space.contains(obs)
+        assert rewards.shape == (3,)
+        assert terminated.shape == (3,)
+        assert truncated.shape == (3,)
+
+    def test_sampled_action_steps_environment(self):
+        env = _build_env(num_trajectories=2)
+        env.reset()
+
+        action = env.action_space.sample()
+        obs, rewards, terminated, truncated, info = env.step(action)
+
+        assert action.shape == (2, 1)
+        assert env.action_space.contains(action)
+        assert env.observation_space.contains(obs)
+        assert rewards.shape == (2,)
+        assert terminated.shape == (2,)
+        assert truncated.shape == (2,)
+        assert info["trading_speed"].shape == (2,)
 
     def test_step_accepts_vectorized_speed_actions(self):
         env = _build_env(num_trajectories=3, initial_pool_price=99.5)
@@ -70,6 +120,7 @@ class TestArbitrageurEnvironment:
         )
 
         assert obs.shape == (3, len(DEFAULT_ARBITRAGEUR_OBS_KEYS))
+        assert env.observation_space.contains(obs)
         assert rewards.shape == (3,)
         assert terminated.shape == (3,)
         assert truncated.shape == (3,)

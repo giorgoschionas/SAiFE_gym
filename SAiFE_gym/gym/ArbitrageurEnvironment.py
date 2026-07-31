@@ -23,6 +23,8 @@ from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel
 
 
 ACTIVE_LIQUIDITY_KEY = "active_liquidity"
+LP_POLICY_NONE = "none"
+LP_POLICY_DEPLOY_ONCE = "deploy_once"
 
 DEFAULT_ARBITRAGEUR_OBS_KEYS = [
     MISPRICING_KEY,
@@ -33,6 +35,20 @@ DEFAULT_ARBITRAGEUR_OBS_KEYS = [
 ]
 
 
+class NoOpLPAgent(Agent):
+    """LP placeholder that never deploys or rebalances."""
+
+    def __init__(self, env: AMMEnvironment):
+        self.env = env
+
+    def get_action(self, state: dict) -> np.ndarray:
+        n = self.env.num_trajectories
+        lower = np.zeros(n, dtype=np.float32)
+        upper = np.ones(n, dtype=np.float32)
+        hold_flag = np.ones(n, dtype=np.float32)
+        return np.column_stack([lower, upper, hold_flag])
+
+
 class ArbitrageurEnvironment(gymnasium.Env):
     """
     Speed-control arbitrage environment over a SAiFE Uniswap-v3 AMM.
@@ -40,6 +56,8 @@ class ArbitrageurEnvironment(gymnasium.Env):
     The wrapped AMM environment still owns LP positioning, arrivals, fees, and
     midprice dynamics. This environment exposes the liquidity taker's signed
     trading speed as the external action and rewards immediate hedged token1 PnL.
+    It follows SAiFE's vectorized convention: observations and actions are
+    batched across trajectories.
     """
 
     metadata = {"render.modes": ["human"]}
@@ -67,19 +85,17 @@ class ArbitrageurEnvironment(gymnasium.Env):
         self.speed_cost_coefficient = float(speed_cost_coefficient)
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_ARBITRAGEUR_OBS_KEYS
         self.lp_agent = lp_agent
-        self.lp_agent_factory = lp_agent_factory or (
-            lambda env: DeployOnceAgent(env, lower_offset=-10, upper_offset=10)
-        )
+        self.lp_agent_factory = lp_agent_factory or (lambda env: NoOpLPAgent(env))
         self.cumulative_arb_pnl = np.zeros(self.num_trajectories, dtype=np.float64)
 
         self.observation_space = gymnasium.spaces.Box(
             low=-np.inf,
             high=np.inf,
-            shape=(len(self.obs_keys),),
+            shape=(self.num_trajectories, len(self.obs_keys)),
             dtype=np.float32,
         )
-        low = np.array([-self.max_speed], dtype=np.float32)
-        high = np.array([self.max_speed], dtype=np.float32)
+        low = np.full((self.num_trajectories, 1), -self.max_speed, dtype=np.float32)
+        high = np.full((self.num_trajectories, 1), self.max_speed, dtype=np.float32)
         self.action_space = gymnasium.spaces.Box(low=low, high=high, dtype=np.float32)
 
     @property
@@ -202,11 +218,18 @@ def build_arbitrageur_environment(
     alpha3: np.ndarray = None,
     lp_lower_offset: int = -10,
     lp_upper_offset: int = 10,
+    lp_policy: str = LP_POLICY_NONE,
     max_speed: float = np.inf,
     speed_cost_coefficient: float = 0.0,
     price_impact_model: PriceImpactModel = None,
 ) -> ArbitrageurEnvironment:
-    """Build a SAiFE arbitrage speed-control environment with LP defaults."""
+    """Build a SAiFE arbitrage speed-control environment."""
+    if lp_policy not in {LP_POLICY_NONE, LP_POLICY_DEPLOY_ONCE}:
+        raise ValueError(
+            f"lp_policy must be '{LP_POLICY_NONE}' or '{LP_POLICY_DEPLOY_ONCE}', "
+            f"got {lp_policy!r}"
+        )
+
     step_size = terminal_time / n_steps
     alpha0 = np.array([1.0, 1.0]) if alpha0 is None else np.asarray(alpha0, dtype=np.float64)
     alpha1 = np.array([15.0, 15.0]) if alpha1 is None else np.asarray(alpha1, dtype=np.float64)
@@ -254,13 +277,18 @@ def build_arbitrageur_environment(
         initial_pool_price=initial_pool_price,
         seed=seed,
     )
-    return ArbitrageurEnvironment(
-        amm_env,
-        lp_agent_factory=lambda env: DeployOnceAgent(
+    if lp_policy == LP_POLICY_DEPLOY_ONCE:
+        lp_agent_factory = lambda env: DeployOnceAgent(
             env,
             lower_offset=lp_lower_offset,
             upper_offset=lp_upper_offset,
-        ),
+        )
+    else:
+        lp_agent_factory = lambda env: NoOpLPAgent(env)
+
+    return ArbitrageurEnvironment(
+        amm_env,
+        lp_agent_factory=lp_agent_factory,
         max_speed=max_speed,
         speed_cost_coefficient=speed_cost_coefficient,
     )
