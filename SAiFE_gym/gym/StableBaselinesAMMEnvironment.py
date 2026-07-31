@@ -10,7 +10,6 @@ from SAiFE_gym.gym.index_names import (
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     FEES1_KEY,
-    GAS_COST_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
@@ -33,9 +32,8 @@ DEFAULT_OBS_KEYS = [
     # LP_COLLECTED_FEES0_KEY,  # cumulative, not actionable
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
     # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
-    TIME_KEY,                  # remaining time to recoup gas cost
-    GAS_COST_KEY,              # rebalancing cost
-]  # obs_dim = 5
+    TIME_KEY,                  # episode clock
+]  # obs_dim = 4
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 

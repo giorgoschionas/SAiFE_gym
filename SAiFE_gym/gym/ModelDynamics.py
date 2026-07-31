@@ -544,7 +544,13 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             alpha_pos = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_lower, sqrt_p_upper)
             token0_value = alpha_pos * pos_value + fee0 * external_price
-            alpha_current = np.where(wealth_with_pos > 0, token0_value / wealth_with_pos, 0.0)
+            alpha_current = np.zeros(num_traj, dtype=np.float64)
+            np.divide(
+                token0_value,
+                wealth_with_pos,
+                out=alpha_current,
+                where=wealth_with_pos > 0,
+            )
 
             wealth = np.where(has_position, wealth_with_pos, wealth)
 
