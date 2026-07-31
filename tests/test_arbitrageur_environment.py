@@ -3,7 +3,6 @@ import pytest
 
 from SAiFE_gym.gym.ArbitrageurEnvironment import (
     DEFAULT_ARBITRAGEUR_OBS_KEYS,
-    LP_POLICY_DEPLOY_ONCE,
     ArbitrageurEnvironment,
     build_arbitrageur_environment,
 )
@@ -53,6 +52,7 @@ class TestArbitrageurEnvironment:
 
         obs, info = env.reset()
 
+        assert not hasattr(env, "env")
         assert obs.shape == (1, len(DEFAULT_ARBITRAGEUR_OBS_KEYS))
         assert env.observation_space.shape == obs.shape
         assert env.observation_space.contains(obs)
@@ -60,18 +60,6 @@ class TestArbitrageurEnvironment:
         assert env.state[TIME_KEY][0] == pytest.approx(0.0)
         assert not bool(env.state[LP_EVER_DEPLOYED_KEY][0])
         assert env.state[LP_LIQUIDITY_KEY][0] == 0.0
-
-    def test_deploy_once_lp_policy_can_be_enabled(self):
-        env = _build_env(lp_policy=LP_POLICY_DEPLOY_ONCE)
-
-        obs, info = env.reset()
-
-        assert obs.shape == (1, len(DEFAULT_ARBITRAGEUR_OBS_KEYS))
-        assert env.observation_space.contains(obs)
-        assert info == {}
-        assert env.state[TIME_KEY][0] == pytest.approx(0.0)
-        assert bool(env.state[LP_EVER_DEPLOYED_KEY][0])
-        assert env.state[LP_LIQUIDITY_KEY][0] > 0.0
 
     def test_spaces_match_vectorized_observations_and_actions(self):
         env = _build_env(num_trajectories=3)
@@ -128,6 +116,31 @@ class TestArbitrageurEnvironment:
         assert info["token0_delta"].shape == (3,)
         assert info["token1_delta"].shape == (3,)
         assert info["cumulative_arb_pnl"].shape == (3,)
+
+    def test_step_advances_time_without_lp_action(self, monkeypatch):
+        env = _build_env()
+        env.reset()
+        md = env.model_dynamics
+        organic_actions = []
+        original_update_state = md.update_state
+
+        def update_state_spy(arrivals, action):
+            organic_actions.append(action)
+            return original_update_state(arrivals, action)
+
+        monkeypatch.setattr(
+            md,
+            "get_arrivals",
+            lambda: np.zeros((env.num_trajectories, 2), dtype=bool),
+        )
+        monkeypatch.setattr(md, "update_state", update_state_spy)
+
+        _, _, _, _, _ = env.step(np.array([[0.0]]))
+
+        assert organic_actions == [None]
+        assert env.state[TIME_KEY][0] == pytest.approx(env.step_size)
+        assert not bool(env.state[LP_EVER_DEPLOYED_KEY][0])
+        assert env.state[LP_LIQUIDITY_KEY][0] == 0.0
 
     def test_profitable_one_tick_buy_has_positive_hedged_pnl_with_zero_fee(self):
         env = _build_env(initial_pool_price=99.5, fee_tier=0.0)

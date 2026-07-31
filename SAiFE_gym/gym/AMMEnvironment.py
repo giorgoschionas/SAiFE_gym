@@ -1,9 +1,8 @@
 import gymnasium
 import numpy as np
-from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel, PoissonArrivalModel
+from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
-from SAiFE_gym.agents.Agent import Agent
 from SAiFE_gym.rewards.RewardFunctions import RewardFunction, PnL
 from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, POOL_LIQUIDITY_ARRAY_KEY,
@@ -15,23 +14,14 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
     PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
-from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
-
-
-def compute_derived_obs(state: dict, model_dynamics: 'ModelDynamics') -> None:
-    """Compute portfolio_value, lp_alpha, and lp_token0_amount in-place on `state`.
-
-    Centralized helper so the env, tests, and any other code that bypasses
-    AMMEnvironment.step (e.g. driving model_dynamics directly) can keep the
-    derived observation keys consistent with the rest of the state.
-    """
-    state[POOL_SQRT_PRICE_KEY] = model_dynamics.get_pool_sqrt_price(state)
-    unclaimed0, unclaimed1 = model_dynamics.compute_unclaimed_fees(state)
-    state[LP_UNCLAIMED_FEES0_KEY] = unclaimed0
-    state[LP_UNCLAIMED_FEES1_KEY] = unclaimed1
-    state[PORTFOLIO_VALUE_KEY] = model_dynamics.compute_portfolio_value(state)
-    state[LP_ALPHA_KEY] = model_dynamics.compute_lp_alpha(state)
-    state[LP_TOKEN0_AMOUNT_KEY] = model_dynamics.compute_lp_token0_amount(state)
+from SAiFE_gym.gym.simulation_core import (
+    advance_market_state,
+    compute_derived_obs,
+    create_uniswap_v3_initial_state,
+    reset_model_state,
+    reset_stochastic_processes,
+    terminated_flags,
+)
 
 
 class AMMEnvironment(gymnasium.Env):
@@ -211,93 +201,12 @@ class AMMEnvironment(gymnasium.Env):
         Returns:
             dict: Initial state dictionary with all required keys
         """
-        # External midprice comes from the midprice model; pool price defaults to
-        # the same value but can be overridden via `initial_pool_price` to start
-        # the simulation with a deliberate mispricing between the AMM and the market.
-        initial_price = self.model_dynamics.initial_price
-        pool_price = self.initial_pool_price if self.initial_pool_price is not None else initial_price
-        pool_tick = price_to_tick(pool_price)
-
-        # Center the lattice on the POOL tick (that's where the AMM lives) and
-        # build the AMM lattice so POOL_SQRT_PRICE_KEY can be read straight off the grid.
-        num_ticks = self.model_dynamics.num_ticks
-        self.model_dynamics.tick_lower_global = pool_tick - num_ticks // 2
-        self.model_dynamics._build_sqrt_grid()
-
-        # Snap the pool sqrt_price to the lattice point AMM[pool_tick]. The external
-        # midprice (ASSET_PRICE_KEY) is unchanged — only the on-chain pool price lives
-        # on the lattice.
-        initial_sqrt_price = self.model_dynamics.sqrt_grid[pool_tick - self.model_dynamics.tick_lower_global]
-
-        # Initial liquidity (uniform distribution across all ticks)
-        # This can be customized based on specific requirements
-        initial_liquidity = 100000.0  # Base liquidity per tick
-
-        return {
-            # Pool state
-            POOL_SQRT_PRICE_KEY: np.full(
-                self.num_trajectories, initial_sqrt_price, dtype=np.float64
-            ),
-            POOL_CURRENT_TICK_KEY: np.full(
-                self.num_trajectories, pool_tick, dtype=np.int64
-            ),
-            POOL_LIQUIDITY_ARRAY_KEY: np.full(
-                (self.num_trajectories, num_ticks), initial_liquidity, dtype=np.float64
-            ),
-
-            # Fee arrays (per-tick, start at zero)
-            FEES0_KEY: np.zeros(
-                (self.num_trajectories, num_ticks), dtype=np.float64
-            ),
-            FEES1_KEY: np.zeros(
-                (self.num_trajectories, num_ticks), dtype=np.float64
-            ),
-
-            # LP state (no position initially)
-            LP_LIQUIDITY_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-            LP_TICK_LOWER_KEY: np.full(
-                self.num_trajectories, pool_tick - self.model_dynamics.tau, dtype=np.int64
-            ),
-            LP_TICK_UPPER_KEY: np.full(
-                self.num_trajectories, pool_tick + self.model_dynamics.tau, dtype=np.int64
-            ),
-
-            # LP cumulative fee tracking (lifetime earnings, updated every step)
-            LP_COLLECTED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-            LP_COLLECTED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-
-            # LP unclaimed fee bucket (accrued-but-not-yet-absorbed; reset at rebalance)
-            LP_UNCLAIMED_FEES0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-            LP_UNCLAIMED_FEES1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-
-            # LP fee snapshots (for excluding pre-entry fees)
-            LP_FEE_SNAPSHOT0_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-            LP_FEE_SNAPSHOT1_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-
-            # Deployment flag: False until first position is deployed (never resets to False)
-            LP_EVER_DEPLOYED_KEY: np.zeros(self.num_trajectories, dtype=bool),
-
-            # Market state
-            ASSET_PRICE_KEY: np.full(
-                self.num_trajectories, initial_price, dtype=np.float64
-            ),
-            TIME_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-
-            # Environment parameters (constant per episode)
-            GAS_COST_KEY: np.full(
-                self.num_trajectories, self.model_dynamics.gas_cost, dtype=np.float64
-            ),
-            INITIAL_WEALTH_KEY: np.full(
-                self.num_trajectories, self.initial_wealth, dtype=np.float64
-            ),
-
-            # Derived observation features (updated each step)
-            PORTFOLIO_VALUE_KEY: np.full(
-                self.num_trajectories, self.initial_wealth, dtype=np.float64
-            ),
-            LP_ALPHA_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-            LP_TOKEN0_AMOUNT_KEY: np.zeros(self.num_trajectories, dtype=np.float64),
-        }
+        return create_uniswap_v3_initial_state(
+            self.model_dynamics,
+            self.num_trajectories,
+            self.initial_wealth,
+            self.initial_pool_price,
+        )
 
     def seed(self, seed: int = None):
         """Set random seed for the environment."""
@@ -318,16 +227,13 @@ class AMMEnvironment(gymnasium.Env):
         if seed is not None:
             self.seed(seed)
 
-        # Reset stochastic processes
-        if self.model_dynamics:
-            if self.model_dynamics.midprice_model:
-                self.model_dynamics.midprice_model.reset()
-            if self.model_dynamics.arrival_model:
-                self.model_dynamics.arrival_model.reset()
+        reset_stochastic_processes(self.model_dynamics)
 
-        # Reset state
-        self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
-        self.model_dynamics.last_arrivals = np.zeros((self.num_trajectories, 2), dtype=bool)
+        reset_model_state(
+            self.model_dynamics,
+            self._initial_state,
+            self.num_trajectories,
+        )
 
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
@@ -388,33 +294,16 @@ class AMMEnvironment(gymnasium.Env):
         Processes are updated with ACTUAL arrivals
         after they are generated, not before.
         """
-        md = self.model_dynamics
-
-        md.midprice_model.update(arrivals, None, action, md.state)
-        md.state[ASSET_PRICE_KEY] = md.midprice_model.current_state[:, 0].copy()
-
-        tick_idx = np.clip(
-            (md.state[POOL_CURRENT_TICK_KEY] - md.tick_lower_global).astype(np.int64),
-            0,
-            md.num_ticks - 1,
-        )
-        active_liq = md.state[POOL_LIQUIDITY_ARRAY_KEY][
-            np.arange(md.num_trajectories), tick_idx
-        ]
-        context = {
-            'active_liquidity': active_liq,
-            'amm_price': md.state[POOL_SQRT_PRICE_KEY] ** 2,
-            'midprice': md.state[ASSET_PRICE_KEY],
-            'liquidity_array': md.state[POOL_LIQUIDITY_ARRAY_KEY],
-            'current_tick': md.state[POOL_CURRENT_TICK_KEY],
-            'tick_lower_global': md.tick_lower_global,
-        }
-        md.arrival_model.update(arrivals, None, action, context)
+        advance_market_state(self.model_dynamics, arrivals, action)
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""
-        done = self.model_dynamics.state[TIME_KEY][0] >= self.terminal_time - self._step_size / 2
-        return np.full((self.num_trajectories,), done, dtype=bool)
+        return terminated_flags(
+            self.model_dynamics.state,
+            self.terminal_time,
+            self._step_size,
+            self.num_trajectories,
+        )
 
     def _calculate_infos(self, state, action, rewards):
         """Return lightweight batched diagnostics for the completed step."""

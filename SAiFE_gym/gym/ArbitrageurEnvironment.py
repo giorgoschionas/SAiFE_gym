@@ -1,11 +1,8 @@
-from typing import Callable, Optional
+from typing import Optional
 
 import gymnasium
 import numpy as np
 
-from SAiFE_gym.agents.BaselineAgents import DeployOnceAgent
-from SAiFE_gym.agents.Agent import Agent
-from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
@@ -16,15 +13,20 @@ from SAiFE_gym.gym.index_names import (
     TIME_KEY,
 )
 from SAiFE_gym.gym.observation_features import compute_sb3_observation_features
-from SAiFE_gym.rewards.RewardFunctions import PnL
+from SAiFE_gym.gym.simulation_core import (
+    advance_market_state,
+    compute_derived_obs,
+    create_uniswap_v3_initial_state,
+    reset_model_state,
+    reset_stochastic_processes,
+    terminated_flags,
+)
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import OrnsteinUhlenbeckMidpriceModel
 from SAiFE_gym.stochastic_processes.price_impact_models import PriceImpactModel
 
 
 ACTIVE_LIQUIDITY_KEY = "active_liquidity"
-LP_POLICY_NONE = "none"
-LP_POLICY_DEPLOY_ONCE = "deploy_once"
 
 DEFAULT_ARBITRAGEUR_OBS_KEYS = [
     MISPRICING_KEY,
@@ -35,57 +37,49 @@ DEFAULT_ARBITRAGEUR_OBS_KEYS = [
 ]
 
 
-class NoOpLPAgent(Agent):
-    """LP placeholder that never deploys or rebalances."""
-
-    def __init__(self, env: AMMEnvironment):
-        self.env = env
-
-    def get_action(self, state: dict) -> np.ndarray:
-        n = self.env.num_trajectories
-        lower = np.zeros(n, dtype=np.float32)
-        upper = np.ones(n, dtype=np.float32)
-        hold_flag = np.ones(n, dtype=np.float32)
-        return np.column_stack([lower, upper, hold_flag])
-
-
 class ArbitrageurEnvironment(gymnasium.Env):
     """
     Speed-control arbitrage environment over a SAiFE Uniswap-v3 AMM.
 
-    The wrapped AMM environment still owns LP positioning, arrivals, fees, and
-    midprice dynamics. This environment exposes the liquidity taker's signed
+    This environment owns the same vectorized pool, arrival, and midprice state
+    as the LP-facing AMMEnvironment, but exposes the liquidity taker's signed
     trading speed as the external action and rewards immediate hedged token1 PnL.
-    It follows SAiFE's vectorized convention: observations and actions are
-    batched across trajectories.
+    No internal LP policy is applied.
     """
 
     metadata = {"render.modes": ["human"]}
 
     def __init__(
         self,
-        amm_env: AMMEnvironment,
-        lp_agent: Optional[Agent] = None,
-        lp_agent_factory: Optional[Callable[[AMMEnvironment], Agent]] = None,
+        terminal_time: float = 1.0,
+        n_steps: int = 1000,
+        initial_wealth: float = 1000.0,
+        model_dynamics: UniswapV3ModelDynamics = None,
+        num_trajectories: int = 1,
+        initial_pool_price: float = None,
+        seed: int = None,
         max_speed: float = np.inf,
         speed_cost_coefficient: float = 0.0,
         obs_keys: Optional[list[str]] = None,
     ):
-        if not isinstance(amm_env.model_dynamics, UniswapV3ModelDynamics):
+        if not isinstance(model_dynamics, UniswapV3ModelDynamics):
             raise TypeError("ArbitrageurEnvironment requires UniswapV3ModelDynamics")
         if max_speed <= 0.0:
             raise ValueError("max_speed must be positive")
         if speed_cost_coefficient < 0.0:
             raise ValueError("speed_cost_coefficient must be non-negative")
 
-        self.env = amm_env
-        self.model_dynamics = amm_env.model_dynamics
-        self.num_trajectories = amm_env.num_trajectories
+        super().__init__()
+        self.terminal_time = terminal_time
+        self.n_steps = n_steps
+        self.initial_wealth = initial_wealth
+        self.model_dynamics = model_dynamics
+        self.num_trajectories = num_trajectories
+        self.initial_pool_price = initial_pool_price
+        self._step_size = self.terminal_time / self.n_steps
         self.max_speed = float(max_speed)
         self.speed_cost_coefficient = float(speed_cost_coefficient)
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_ARBITRAGEUR_OBS_KEYS
-        self.lp_agent = lp_agent
-        self.lp_agent_factory = lp_agent_factory or (lambda env: NoOpLPAgent(env))
         self.cumulative_arb_pnl = np.zeros(self.num_trajectories, dtype=np.float64)
 
         self.observation_space = gymnasium.spaces.Box(
@@ -98,35 +92,64 @@ class ArbitrageurEnvironment(gymnasium.Env):
         high = np.full((self.num_trajectories, 1), self.max_speed, dtype=np.float32)
         self.action_space = gymnasium.spaces.Box(low=low, high=high, dtype=np.float32)
 
+        self._initial_state = create_uniswap_v3_initial_state(
+            self.model_dynamics,
+            self.num_trajectories,
+            self.initial_wealth,
+            self.initial_pool_price,
+        )
+        reset_model_state(
+            self.model_dynamics,
+            self._initial_state,
+            self.num_trajectories,
+        )
+
+        if seed:
+            self.seed(seed)
+        self.rng = np.random.default_rng(seed)
+
     @property
     def step_size(self):
-        return self.env.step_size
+        return self._step_size
 
     @property
     def state(self):
-        return self.env.state
+        return self.model_dynamics.state
+
+    @property
+    def initial_state(self):
+        return {k: v.copy() for k, v in self._initial_state.items()}
+
+    def seed(self, seed: int = None):
+        self.rng = np.random.default_rng(seed)
+        if self.model_dynamics.midprice_model:
+            self.model_dynamics.midprice_model.seed(seed)
+        if self.model_dynamics.arrival_model:
+            self.model_dynamics.arrival_model.seed(seed + 1 if seed else None)
 
     def reset(self, seed: int = None, options: dict = None):
-        state, info = self.env.reset(seed=seed, options=options)
-        self.cumulative_arb_pnl = np.zeros(self.num_trajectories, dtype=np.float64)
-        if self.lp_agent is None:
-            self.lp_agent = self.lp_agent_factory(self.env)
+        if seed is not None:
+            self.seed(seed)
 
-        lp_action = self.lp_agent.get_action(state)
-        zero_arrivals = np.zeros((self.num_trajectories, 2), dtype=bool)
-        self.model_dynamics.update_state(zero_arrivals, lp_action)
-        self.env._compute_derived_obs()
-        return self._flatten_obs(self.env.state), info
+        reset_stochastic_processes(self.model_dynamics)
+        reset_model_state(
+            self.model_dynamics,
+            self._initial_state,
+            self.num_trajectories,
+        )
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
+        self.cumulative_arb_pnl = np.zeros(self.num_trajectories, dtype=np.float64)
+        return self._flatten_obs(self.model_dynamics.state), {}
 
     def step(self, action: np.ndarray):
         trading_speeds = self._prepare_action(action)
-        observed_midprice = self.env.state[ASSET_PRICE_KEY].copy()
+        observed_midprice = self.model_dynamics.state[ASSET_PRICE_KEY].copy()
 
         arb_info = self.model_dynamics.execute_liquidity_taker_speeds(
             trading_speeds,
             step_size=self.step_size,
         )
-        self.env._compute_derived_obs()
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
 
         hedged_pnl = (
             arb_info["token1_delta"]
@@ -140,9 +163,20 @@ class ArbitrageurEnvironment(gymnasium.Env):
         rewards = hedged_pnl - speed_cost
         self.cumulative_arb_pnl += rewards
 
-        lp_action = self.lp_agent.get_action(self.env.state)
-        _, _, terminated, truncated, _ = self.env.step(lp_action)
-        obs = self._flatten_obs(self.env.state)
+        arrivals = self.model_dynamics.get_arrivals()
+        self.model_dynamics.update_state(arrivals, action=None)
+        advance_market_state(self.model_dynamics, arrivals, action=None)
+        self.model_dynamics.state[TIME_KEY] += self.step_size
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
+
+        terminated = terminated_flags(
+            self.model_dynamics.state,
+            self.terminal_time,
+            self.step_size,
+            self.num_trajectories,
+        )
+        truncated = np.zeros(self.num_trajectories, dtype=bool)
+        obs = self._flatten_obs(self.model_dynamics.state)
         info = self._calculate_info(arb_info, rewards, hedged_pnl, speed_cost)
         return obs, rewards, terminated, truncated, info
 
@@ -190,9 +224,11 @@ class ArbitrageurEnvironment(gymnasium.Env):
                 "speed_cost": speed_cost.copy(),
                 "arb_reward": rewards.copy(),
                 "cumulative_arb_pnl": self.cumulative_arb_pnl.copy(),
-                "asset_price": self.env.state[ASSET_PRICE_KEY].copy(),
-                "pool_price": (self.env.state[POOL_SQRT_PRICE_KEY] ** 2).copy(),
-                "time": self.env.state[TIME_KEY].copy(),
+                "asset_price": self.model_dynamics.state[ASSET_PRICE_KEY].copy(),
+                "pool_price": (
+                    self.model_dynamics.state[POOL_SQRT_PRICE_KEY] ** 2
+                ).copy(),
+                "time": self.model_dynamics.state[TIME_KEY].copy(),
             }
         )
         return info
@@ -216,20 +252,11 @@ def build_arbitrageur_environment(
     alpha1: np.ndarray = None,
     alpha2: np.ndarray = None,
     alpha3: np.ndarray = None,
-    lp_lower_offset: int = -10,
-    lp_upper_offset: int = 10,
-    lp_policy: str = LP_POLICY_NONE,
     max_speed: float = np.inf,
     speed_cost_coefficient: float = 0.0,
     price_impact_model: PriceImpactModel = None,
 ) -> ArbitrageurEnvironment:
     """Build a SAiFE arbitrage speed-control environment."""
-    if lp_policy not in {LP_POLICY_NONE, LP_POLICY_DEPLOY_ONCE}:
-        raise ValueError(
-            f"lp_policy must be '{LP_POLICY_NONE}' or '{LP_POLICY_DEPLOY_ONCE}', "
-            f"got {lp_policy!r}"
-        )
-
     step_size = terminal_time / n_steps
     alpha0 = np.array([1.0, 1.0]) if alpha0 is None else np.asarray(alpha0, dtype=np.float64)
     alpha1 = np.array([15.0, 15.0]) if alpha1 is None else np.asarray(alpha1, dtype=np.float64)
@@ -267,28 +294,14 @@ def build_arbitrageur_environment(
         exponential_value=exponential_value,
         seed=seed + 2 if seed is not None else None,
     )
-    amm_env = AMMEnvironment(
+    return ArbitrageurEnvironment(
         terminal_time=terminal_time,
         n_steps=n_steps,
         initial_wealth=initial_wealth,
-        reward_function=PnL(),
         model_dynamics=model_dynamics,
         num_trajectories=num_trajectories,
         initial_pool_price=initial_pool_price,
         seed=seed,
-    )
-    if lp_policy == LP_POLICY_DEPLOY_ONCE:
-        lp_agent_factory = lambda env: DeployOnceAgent(
-            env,
-            lower_offset=lp_lower_offset,
-            upper_offset=lp_upper_offset,
-        )
-    else:
-        lp_agent_factory = lambda env: NoOpLPAgent(env)
-
-    return ArbitrageurEnvironment(
-        amm_env,
-        lp_agent_factory=lp_agent_factory,
         max_speed=max_speed,
         speed_cost_coefficient=speed_cost_coefficient,
     )
