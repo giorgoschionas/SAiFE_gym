@@ -17,6 +17,7 @@ __pycache__/
 *.pth
 
 prompts/
+docs/
 
 .claude/settings.local.json
 .trees/
