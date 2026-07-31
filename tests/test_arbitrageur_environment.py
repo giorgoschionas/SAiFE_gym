@@ -113,6 +113,7 @@ class TestArbitrageurEnvironment:
         assert terminated.shape == (3,)
         assert truncated.shape == (3,)
         assert info["trading_speed"].shape == (3,)
+        assert info["curve_input"].shape == (3,)
         assert info["token0_delta"].shape == (3,)
         assert info["token1_delta"].shape == (3,)
         assert info["cumulative_arb_pnl"].shape == (3,)

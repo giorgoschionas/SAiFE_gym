@@ -43,8 +43,8 @@ class ArbitrageurEnvironment(gymnasium.Env):
 
     This environment owns the same vectorized pool, arrival, and midprice state
     as the LP-facing AMMEnvironment, but exposes the liquidity taker's signed
-    trading speed as the external action and rewards immediate hedged token1 PnL.
-    No internal LP policy is applied.
+    gross input-token trading speed as the external action and rewards immediate
+    hedged token1 PnL. No internal LP policy is applied.
     """
 
     metadata = {"render.modes": ["human"]}

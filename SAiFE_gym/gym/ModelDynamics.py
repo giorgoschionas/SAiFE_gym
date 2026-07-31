@@ -204,11 +204,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Execute signed liquidity-taker order sizes against the current v3 pool.
 
-        Positive orders are token1 input used to buy token0 from the pool, moving
-        the pool price up. Negative orders are token0 input sold to the pool,
-        moving the pool price down. This first version executes only complete
-        tick intervals; any remainder that cannot cross the next full interval
-        is reported as unfilled.
+        Positive orders are gross token1 input used to buy token0 from the pool,
+        moving the pool price up. Negative orders are gross token0 input sold to
+        the pool, moving the pool price down. Fees are paid from the gross input
+        budget. This first version executes only complete tick intervals; any
+        remainder that cannot cross the next full interval is reported as
+        unfilled.
         """
         if self.state is None:
             raise ValueError("State not initialized. Call reset() first.")
@@ -239,6 +240,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             "order_input": execution.order_input.copy(),
             "executed_input": execution.executed_input.copy(),
             "unfilled_input": execution.unfilled_input.copy(),
+            "curve_input": execution.curve_input.copy(),
             "tick_movement": execution.tick_movement.copy(),
             "direction": execution.direction.copy(),
             "token0_delta": execution.token0_delta.copy(),
@@ -256,9 +258,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
         """
         Execute signed liquidity-taker trading speeds over one time step.
 
-        Speeds are input-token amount per unit simulation time. Positive speeds
-        are token1 input used to buy token0; negative speeds are token0 input
-        sold to the pool. The executed order request is ``speed * step_size``.
+        Speeds are gross input-token amount per unit simulation time. Positive
+        speeds are token1 input used to buy token0; negative speeds are token0
+        input sold to the pool. Fees are paid from the gross input budget. The
+        executed order request is ``speed * step_size``.
         """
         if step_size is None:
             if self.midprice_model is None or self.midprice_model.step_size is None:

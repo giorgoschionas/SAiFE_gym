@@ -52,6 +52,10 @@ def _sell_capacity(state, sqrt_grid, trajectory, fee_idx):
     return liquidity * (1.0 / sqrt_grid[fee_idx] - 1.0 / sqrt_grid[fee_idx + 1])
 
 
+def _gross_input(curve_input, fee_multiplier):
+    return curve_input * (1.0 + fee_multiplier)
+
+
 def _fixed_sampler(values):
     values = np.asarray(values, dtype=np.float64)
 
@@ -198,6 +202,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert result.tick_movement[0] == 1
         assert result.executed_input[0] == pytest.approx(amount)
         assert result.unfilled_input[0] == pytest.approx(0.0)
+        assert result.curve_input[0] == pytest.approx(amount)
         assert len(result.swap_results) == 1
         swap_result = result.swap_results[0]
         assert swap_result.fee_key == FEES1_KEY
@@ -227,6 +232,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert result.tick_movement[0] == -1
         assert result.executed_input[0] == pytest.approx(-amount)
         assert result.unfilled_input[0] == pytest.approx(0.0)
+        assert result.curve_input[0] == pytest.approx(-amount)
         assert len(result.swap_results) == 1
         swap_result = result.swap_results[0]
         assert swap_result.fee_key == FEES0_KEY
@@ -254,6 +260,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             np.testing.assert_array_equal(state[key], value)
         assert result.executed_input[0] == 0.0
         assert result.unfilled_input[0] == 0.0
+        assert result.curve_input[0] == 0.0
         assert result.tick_movement[0] == 0
         assert result.swap_results == ()
 
@@ -283,6 +290,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.tick_movement, np.array([1, -1, 0]))
         np.testing.assert_allclose(result.executed_input, np.array([buy_amount, -sell_amount, 0.0]))
         np.testing.assert_allclose(result.unfilled_input, np.zeros(3))
+        np.testing.assert_allclose(result.curve_input, np.array([buy_amount, -sell_amount, 0.0]))
         assert len(result.swap_results) == 2
         assert result.swap_results[0].fee_key == FEES1_KEY
         assert result.swap_results[1].fee_key == FEES0_KEY
@@ -306,6 +314,100 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert result.tick_movement[0] == 2
         assert result.executed_input[0] > 0.0
         assert result.unfilled_input[0] > 0.0
+
+    def test_explicit_positive_order_fees_are_paid_from_gross_budget(self):
+        fee_multiplier = 0.25
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        curve_input = _buy_capacity(state, sqrt_grid, 0, idx)
+        gross_input = _gross_input(curve_input, fee_multiplier)
+        expected_token0_out = state[POOL_LIQUIDITY_ARRAY_KEY][0, idx] * (
+            1.0 / sqrt_grid[idx] - 1.0 / sqrt_grid[idx + 1]
+        )
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(0.0),
+        )
+
+        too_small = model.process_order_sizes(
+            state,
+            np.array([[curve_input]]),
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+            fee_multiplier=fee_multiplier,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 105
+        assert too_small.tick_movement[0] == 0
+        assert too_small.executed_input[0] == pytest.approx(0.0)
+        assert too_small.unfilled_input[0] == pytest.approx(curve_input)
+        assert too_small.curve_input[0] == pytest.approx(0.0)
+
+        result = model.process_order_sizes(
+            state,
+            np.array([[gross_input]]),
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+            fee_multiplier=fee_multiplier,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 106
+        assert result.tick_movement[0] == 1
+        assert result.executed_input[0] == pytest.approx(gross_input)
+        assert result.unfilled_input[0] == pytest.approx(0.0)
+        assert result.curve_input[0] == pytest.approx(curve_input)
+        assert result.fee_input[0] == pytest.approx(fee_multiplier * curve_input)
+        assert result.token0_delta[0] == pytest.approx(expected_token0_out)
+        assert result.token1_delta[0] == pytest.approx(-gross_input)
+        np.testing.assert_allclose(result.swap_results[0].amounts, np.array([curve_input]))
+
+    def test_explicit_negative_order_fees_are_paid_from_gross_budget(self):
+        fee_multiplier = 0.25
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        curve_input = _sell_capacity(state, sqrt_grid, 0, idx - 1)
+        gross_input = _gross_input(curve_input, fee_multiplier)
+        expected_token1_out = state[POOL_LIQUIDITY_ARRAY_KEY][0, idx - 1] * (
+            sqrt_grid[idx] - sqrt_grid[idx - 1]
+        )
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(0.0),
+        )
+
+        too_small = model.process_order_sizes(
+            state,
+            np.array([[-curve_input]]),
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+            fee_multiplier=fee_multiplier,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 105
+        assert too_small.tick_movement[0] == 0
+        assert too_small.executed_input[0] == pytest.approx(0.0)
+        assert too_small.unfilled_input[0] == pytest.approx(-curve_input)
+        assert too_small.curve_input[0] == pytest.approx(0.0)
+
+        result = model.process_order_sizes(
+            state,
+            np.array([[-gross_input]]),
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+            fee_multiplier=fee_multiplier,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 104
+        assert result.tick_movement[0] == -1
+        assert result.executed_input[0] == pytest.approx(-gross_input)
+        assert result.unfilled_input[0] == pytest.approx(0.0)
+        assert result.curve_input[0] == pytest.approx(-curve_input)
+        assert result.fee_input[0] == pytest.approx(fee_multiplier * curve_input)
+        assert result.token0_delta[0] == pytest.approx(-gross_input)
+        assert result.token1_delta[0] == pytest.approx(expected_token1_out)
+        np.testing.assert_allclose(result.swap_results[0].amounts, np.array([curve_input]))
 
     def test_explicit_order_sizes_do_not_call_trade_size_sampler(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)

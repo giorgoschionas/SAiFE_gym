@@ -33,6 +33,7 @@ class OrderExecutionResult:
     order_input: np.ndarray
     executed_input: np.ndarray
     unfilled_input: np.ndarray
+    curve_input: np.ndarray
     tick_movement: np.ndarray
     direction: np.ndarray
     token0_delta: np.ndarray
@@ -89,9 +90,10 @@ class PriceImpactModel(StochasticProcessModel):
         """
         Execute signed explicit liquidity-taker sizes using full tick intervals.
 
-        Positive orders are token1 input used to buy token0 from the pool.
-        Negative orders are token0 input sold to the pool. Any amount that
-        cannot cross a complete tick interval remains unfilled.
+        Positive orders are gross token1 input used to buy token0 from the
+        pool. Negative orders are gross token0 input sold to the pool. Fees
+        are paid from this gross input budget. Any amount that cannot cross a
+        complete tick interval remains unfilled.
         """
         if sqrt_grid is None or tick_lower_global is None:
             raise ValueError("sqrt_grid is not initialized. Build/reset the environment first.")
@@ -107,11 +109,12 @@ class PriceImpactModel(StochasticProcessModel):
         orders = orders[:, 0]
 
         tick_before = state[POOL_CURRENT_TICK_KEY].astype(np.int64).copy()
-        executed_abs = np.zeros(self.num_trajectories, dtype=np.float64)
+        curve_abs = np.zeros(self.num_trajectories, dtype=np.float64)
         output_abs = np.zeros(self.num_trajectories, dtype=np.float64)
         tick_movement = np.zeros(self.num_trajectories, dtype=np.int64)
         direction = np.sign(orders).astype(np.int64)
         swap_results = []
+        gross_multiplier = 1.0 + float(fee_multiplier)
 
         (
             buy_exec,
@@ -128,6 +131,7 @@ class PriceImpactModel(StochasticProcessModel):
             tick_lower_global=tick_lower_global,
             sqrt_grid=sqrt_grid,
             num_ticks=num_ticks,
+            gross_multiplier=gross_multiplier,
         )
         (
             sell_exec,
@@ -144,9 +148,10 @@ class PriceImpactModel(StochasticProcessModel):
             tick_lower_global=tick_lower_global,
             sqrt_grid=sqrt_grid,
             num_ticks=num_ticks,
+            gross_multiplier=gross_multiplier,
         )
 
-        executed_abs += buy_exec + sell_exec
+        curve_abs += buy_exec + sell_exec
         output_abs += buy_output + sell_output
         tick_movement += buy_move - sell_move
 
@@ -175,20 +180,23 @@ class PriceImpactModel(StochasticProcessModel):
         state[POOL_CURRENT_TICK_KEY] = new_tick
         state[POOL_SQRT_PRICE_KEY] = sqrt_grid[new_tick - tick_lower_global]
 
+        executed_abs = curve_abs * gross_multiplier
         executed_input = direction * executed_abs
-        fee_input = executed_abs * float(fee_multiplier)
+        curve_input = direction * curve_abs
+        fee_input = curve_abs * float(fee_multiplier)
         token0_delta = np.zeros(self.num_trajectories, dtype=np.float64)
         token1_delta = np.zeros(self.num_trajectories, dtype=np.float64)
         buy_mask = orders > 0.0
         sell_mask = orders < 0.0
         token0_delta[buy_mask] = output_abs[buy_mask]
-        token1_delta[buy_mask] = -(executed_abs[buy_mask] + fee_input[buy_mask])
-        token0_delta[sell_mask] = -(executed_abs[sell_mask] + fee_input[sell_mask])
+        token1_delta[buy_mask] = -executed_abs[buy_mask]
+        token0_delta[sell_mask] = -executed_abs[sell_mask]
         token1_delta[sell_mask] = output_abs[sell_mask]
         return OrderExecutionResult(
             order_input=orders.copy(),
             executed_input=executed_input,
             unfilled_input=orders - executed_input,
+            curve_input=curve_input,
             tick_movement=tick_movement.copy(),
             direction=direction.copy(),
             token0_delta=token0_delta,
@@ -207,6 +215,7 @@ class PriceImpactModel(StochasticProcessModel):
         tick_lower_global: int,
         sqrt_grid: np.ndarray,
         num_ticks: int,
+        gross_multiplier: float,
     ):
         """Return executable full tick intervals for one explicit order side."""
         executed = np.zeros(self.num_trajectories, dtype=np.float64)
@@ -261,7 +270,8 @@ class PriceImpactModel(StochasticProcessModel):
             direction,
         ) * valid
 
-        cumulative = np.cumsum(capacities, axis=1)
+        gross_costs = capacities * gross_multiplier
+        cumulative = np.cumsum(gross_costs, axis=1)
         crossed = valid & (cumulative <= requested[:, None] + 1e-12)
         tick_move[traj] = crossed.sum(axis=1)
         executed[traj] = np.sum(capacities * crossed, axis=1)

@@ -242,11 +242,11 @@ class ArbitrageurAgent(Agent):
     """
     Deterministic liquidity-taker arbitrage baseline for Uniswap-v3 pools.
 
-    Action format: one signed input amount per trajectory, shape
+    Action format: one signed gross input amount per trajectory, shape
     ``(num_trajectories, 1)``.
 
-    - ``order_size > 0``: token1 input, buy token0 from the pool, move price up.
-    - ``order_size < 0``: token0 input, sell token0 to the pool, move price down.
+    - ``order_size > 0``: gross token1 input, buy token0 from the pool, move price up.
+    - ``order_size < 0``: gross token0 input, sell token0 to the pool, move price down.
     - ``order_size == 0``: no trade.
 
     The default policy trades toward the external midprice until the AMM price
@@ -329,8 +329,17 @@ class ArbitrageurAgent(Agent):
             desired_up = np.minimum(desired_up, max_ticks)
             desired_down = np.minimum(desired_down, max_ticks)
 
-        orders = self._input_for_tick_moves(state, desired_up, direction=1)
-        orders -= self._input_for_tick_moves(state, desired_down, direction=-1)
+        gross_multiplier = 1.0 + md.fee_multiplier
+        orders = gross_multiplier * self._input_for_tick_moves(
+            state,
+            desired_up,
+            direction=1,
+        )
+        orders -= gross_multiplier * self._input_for_tick_moves(
+            state,
+            desired_down,
+            direction=-1,
+        )
 
         if np.isfinite(max_order_size):
             orders = np.sign(orders) * np.minimum(np.abs(orders), max_order_size)
@@ -382,8 +391,9 @@ class SpeedControlArbitrageurAgent(ArbitrageurAgent):
     ``(num_trajectories, 1)``. Execution size over a step is
     ``order_size = trading_speed * env.step_size``.
 
-    Positive speeds are token1-per-unit-time inputs used to buy token0 from the
-    pool. Negative speeds are token0-per-unit-time inputs sold to the pool.
+    Positive speeds are gross token1-per-unit-time inputs used to buy token0
+    from the pool. Negative speeds are gross token0-per-unit-time inputs sold to
+    the pool.
     """
 
     def __init__(
