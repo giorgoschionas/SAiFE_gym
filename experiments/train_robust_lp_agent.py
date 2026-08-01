@@ -27,13 +27,17 @@ if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
 from experiments.helpers import (  # noqa: E402
+    FEE_TIER,
+    INITIAL_PRICE,
     INITIAL_WEALTH,
+    NUM_TICKS,
     SEED,
     TERMINAL_TIME,
-    get_amm_env,
     wrap_env,
 )
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent  # noqa: E402
+from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment  # noqa: E402
+from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics  # noqa: E402
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (  # noqa: E402
     StableBaselinesAMMEnvironment,
 )
@@ -42,6 +46,24 @@ from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
+from SAiFE_gym.rewards.RewardFunctions import PnL  # noqa: E402
+from SAiFE_gym.stochastic_processes.arrival_models import (  # noqa: E402
+    LiquidityKernelArrivalModel,
+)
+from SAiFE_gym.stochastic_processes.midprice_models import (  # noqa: E402
+    GeometricBrownianMotionMidpriceModel,
+)
+from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
+    LiquidityDepthUniswapV3PriceImpact,
+)
+from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
+
+
+def constant_trade_size_sampler(trade_notional: float):
+    def sampler(rng: np.random.Generator, size: int) -> np.ndarray:
+        return np.full(size, trade_notional, dtype=np.float64)
+
+    return sampler
 
 
 def parse_args() -> argparse.Namespace:
@@ -61,17 +83,24 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 
-    parser.add_argument("--nominal-sigma", type=float, default=2.0)
+    parser.add_argument("--nominal-sigma", type=float, default=0.10)
     parser.add_argument("--nominal-arrival-rate", type=float, default=100.0)
     parser.add_argument("--nominal-gas-cost", type=float, default=0.0)
 
-    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(1.0, 4.0))
+    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.05, 0.20))
     parser.add_argument(
         "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
     )
     parser.add_argument("--train-gas-cost-range", nargs=2, type=float, default=(0.0, 20.0))
+    parser.add_argument("--arrival-alpha2", type=float, default=0.0)
+    parser.add_argument("--kernel-beta", type=float, default=0.5)
+    parser.add_argument("--kernel-window", type=int, default=10)
+    parser.add_argument("--liquidity-scale", type=float, default=1e6)
+    parser.add_argument("--trade-size-notional", type=float, default=40.0)
+    parser.add_argument("--price-impact-depth-window", type=int, default=10)
+    parser.add_argument("--price-impact-min-depth", type=float, default=1e-12)
 
-    parser.add_argument("--eval-sigma-values", nargs="+", type=float, default=[0.5, 2.0, 6.0])
+    parser.add_argument("--eval-sigma-values", nargs="+", type=float, default=[0.025, 0.10, 0.30])
     parser.add_argument(
         "--eval-arrival-rate-values",
         nargs="+",
@@ -95,7 +124,7 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.num_trajectories = 2
     args.n_steps = 5
     args.n_eval_episodes = 1
-    args.eval_sigma_values = [1.0, 2.0]
+    args.eval_sigma_values = [0.05, 0.10]
     args.eval_arrival_rate_values = [50.0, 100.0]
     args.eval_gas_cost_values = [0.0, 10.0]
 
@@ -105,15 +134,59 @@ def make_fixed_env(
     params: DomainParameters,
     seed: int,
 ):
-    return get_amm_env(
+    step_size = args.terminal_time / args.n_steps
+    alpha = np.array([
+        [10.0, 10.0],
+        [params.arrival_rate, params.arrival_rate],
+        [args.arrival_alpha2, args.arrival_alpha2],
+        [args.alpha3, args.alpha3],
+    ])
+    midprice_model = GeometricBrownianMotionMidpriceModel(
+        drift=0.0,
+        volatility=params.sigma,
+        initial_price=INITIAL_PRICE,
+        terminal_time=args.terminal_time,
+        step_size=step_size,
         num_trajectories=args.num_trajectories,
+        seed=seed,
+    )
+    arrival_model = LiquidityKernelArrivalModel(
+        alpha=alpha,
+        beta=args.kernel_beta,
+        K=args.kernel_window,
+        liquidity_scale=args.liquidity_scale,
+        step_size=step_size,
+        num_trajectories=args.num_trajectories,
+        seed=seed + 1,
+    )
+    price_impact_model = LiquidityDepthUniswapV3PriceImpact(
+        trade_size_sampler=constant_trade_size_sampler(args.trade_size_notional),
+        depth_window=args.price_impact_depth_window,
+        min_depth=args.price_impact_min_depth,
+        trade_size_unit="token1_notional",
+        num_trajectories=args.num_trajectories,
+        seed=seed + 2,
+    )
+    model_dynamics = UniswapV3ModelDynamics(
+        midprice_model=midprice_model,
+        arrival_model=arrival_model,
+        price_impact_model=price_impact_model,
+        num_trajectories=args.num_trajectories,
+        fee_tier=FEE_TIER,
+        tau=args.tau,
+        num_ticks=NUM_TICKS,
+        exponential_value=1.0001,
+        gas_cost=params.gas_cost,
+        swap_fee_rate=0.0,
+        seed=seed + 3,
+    )
+    return AMMEnvironment(
         terminal_time=args.terminal_time,
         n_steps=args.n_steps,
-        tau=args.tau,
-        volatility=params.sigma,
-        arrival_rate=params.arrival_rate,
-        alpha3=args.alpha3,
-        gas_cost=params.gas_cost,
+        model_dynamics=model_dynamics,
+        reward_function=PnL(),
+        initial_wealth=INITIAL_WEALTH,
+        num_trajectories=args.num_trajectories,
         seed=seed,
     )
 
@@ -136,14 +209,16 @@ def make_robust_env(args: argparse.Namespace):
     return DomainRandomizedAMMEnvironment(base_env, config, seed=args.seed + 10_000)
 
 
-def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object]:
+def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
+    vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
+    ppo_env = StructuredMultiDiscreteVecEnv(vec_env, args.tau)
     rollout_size = args.n_steps * args.num_trajectories
     batch_size = min(max(64, rollout_size // 16), rollout_size)
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     model = PPO(
         "MlpPolicy",
-        vec_env,
+        ppo_env,
         verbose=1,
         policy_kwargs=policy_kwargs,
         learning_rate=args.learning_rate,
@@ -155,7 +230,7 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object]:
         gamma=1.0,
         seed=args.seed,
     )
-    return model, vec_env
+    return model, ppo_env, vec_normalize
 
 
 def train_and_save(
@@ -164,11 +239,10 @@ def train_and_save(
     args: argparse.Namespace,
     run_dir: Path,
 ) -> tuple[PPO, Optional[VecNormalize]]:
-    model, vec_env = build_ppo(env, args)
+    model, _, vec_normalize = build_ppo(env, args)
     model.learn(total_timesteps=args.total_timesteps)
 
     model.save(str(run_dir / f"{label}_ppo"))
-    vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
     if vec_normalize is not None:
         vec_normalize.save(str(run_dir / f"{label}_vecnormalize.pkl"))
         vec_normalize.training = False
@@ -189,13 +263,15 @@ def evaluate_ppo(
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env)
+        action_wrapper = StructuredMultiDiscreteVecEnv(sb3_env, args.tau)
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
 
         for _ in range(env.n_steps):
             flat_obs = sb3_env._flatten_obs(obs)
             model_obs = normalize_obs(flat_obs, vec_normalize)
-            action, _ = model.predict(model_obs, deterministic=True)
+            structured_action, _ = model.predict(model_obs, deterministic=True)
+            action = action_wrapper.unscale(structured_action)
             obs, rewards, terminated, truncated, _ = env.step(action)
             cumulative_reward += rewards
             if (terminated | truncated).all():

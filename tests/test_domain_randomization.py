@@ -1,6 +1,9 @@
+from argparse import Namespace
+
 import numpy as np
 from stable_baselines3 import PPO
 
+from experiments.train_robust_lp_agent import make_fixed_env
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
@@ -8,12 +11,24 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
     StableBaselinesAMMEnvironment,
 )
 from SAiFE_gym.gym.domain_randomization import (
+    DomainParameters,
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
 from SAiFE_gym.gym.index_names import GAS_COST_KEY
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from SAiFE_gym.rewards.RewardFunctions import PnL
+from SAiFE_gym.stochastic_processes.arrival_models import (
+    LiquidityKernelArrivalModel,
+    PoissonLinearArrivalModel,
+)
+from SAiFE_gym.stochastic_processes.midprice_models import (
+    BrownianMotionMidpriceModel,
+    GeometricBrownianMotionMidpriceModel,
+)
+from SAiFE_gym.stochastic_processes.price_impact_models import (
+    LiquidityDepthUniswapV3PriceImpact,
+)
+from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv
 
 
 def create_test_amm_env(
@@ -141,6 +156,50 @@ def test_default_sb3_observation_hides_gas_cost():
     assert env.state[GAS_COST_KEY][0] == 11.0
 
 
+def test_robust_script_factory_uses_requested_market_components():
+    args = Namespace(
+        num_trajectories=2,
+        terminal_time=1.0,
+        n_steps=5,
+        tau=5,
+        alpha3=7.0,
+        arrival_alpha2=2.0,
+        kernel_beta=0.25,
+        kernel_window=3,
+        liquidity_scale=1e5,
+        trade_size_notional=12.0,
+        price_impact_depth_window=4,
+        price_impact_min_depth=1e-9,
+    )
+    params = DomainParameters(sigma=0.12, arrival_rate=80.0, gas_cost=6.0)
+
+    env = make_fixed_env(args, params, seed=123)
+
+    assert isinstance(env.model_dynamics.midprice_model, GeometricBrownianMotionMidpriceModel)
+    assert env.model_dynamics.midprice_model.volatility == 0.12
+    assert isinstance(env.model_dynamics.arrival_model, LiquidityKernelArrivalModel)
+    assert env.model_dynamics.arrival_model.beta == 0.25
+    assert env.model_dynamics.arrival_model.K == 3
+    assert env.model_dynamics.arrival_model.liquidity_scale == 1e5
+    np.testing.assert_allclose(env.model_dynamics.arrival_model.alpha[0], [10.0, 10.0])
+    np.testing.assert_allclose(env.model_dynamics.arrival_model.alpha[1], [80.0, 80.0])
+    np.testing.assert_allclose(env.model_dynamics.arrival_model.alpha[2], [2.0, 2.0])
+    np.testing.assert_allclose(env.model_dynamics.arrival_model.alpha[3], [7.0, 7.0])
+    assert isinstance(env.model_dynamics.price_impact_model, LiquidityDepthUniswapV3PriceImpact)
+    assert env.model_dynamics.price_impact_model.depth_window == 4
+    assert env.model_dynamics.price_impact_model.min_depth == 1e-9
+    assert env.model_dynamics.price_impact_model.trade_size_unit == "token1_notional"
+    np.testing.assert_allclose(
+        env.model_dynamics.price_impact_model.trade_size_sampler(
+            np.random.default_rng(0),
+            3,
+        ),
+        np.full(3, 12.0),
+    )
+    assert isinstance(env.reward_function, PnL)
+    assert env.model_dynamics.gas_cost == 6.0
+
+
 def test_ppo_smoke_learns_on_domain_randomized_env():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 1.5),
@@ -149,9 +208,10 @@ def test_ppo_smoke_learns_on_domain_randomized_env():
     )
     env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=5)
     sb3_env = StableBaselinesAMMEnvironment(env)
+    train_env = StructuredMultiDiscreteVecEnv(sb3_env, tau=5)
     model = PPO(
         "MlpPolicy",
-        sb3_env,
+        train_env,
         n_steps=5,
         batch_size=10,
         n_epochs=1,
@@ -160,4 +220,5 @@ def test_ppo_smoke_learns_on_domain_randomized_env():
         seed=5,
     )
 
+    np.testing.assert_array_equal(model.action_space.nvec, np.array([11, 5, 2]))
     model.learn(total_timesteps=10)
