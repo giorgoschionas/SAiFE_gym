@@ -52,7 +52,7 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--arrival-rate", type=float, default=100.0)
     parser.add_argument("--gas-cost", type=float, default=0.0)
     parser.add_argument("--alpha3", type=float, default=15000.0)
-    parser.add_argument("--inventory-phi", type=float, default=50.0)
+    parser.add_argument("--inventory-phi", type=float, default=20.0)
     parser.add_argument("--arrival-alpha2", type=float, default=0.0)
     parser.add_argument("--kernel-beta", type=float, default=0.5)
     parser.add_argument("--kernel-window", type=int, default=10)

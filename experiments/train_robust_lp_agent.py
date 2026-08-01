@@ -77,7 +77,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--n-steps", type=int, default=200)
     parser.add_argument("--tau", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=15000.0)
-    parser.add_argument("--inventory-phi", type=float, default=50.0)
+    parser.add_argument("--inventory-phi", type=float, default=20.0)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)

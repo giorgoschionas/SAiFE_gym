@@ -169,7 +169,7 @@ def test_robust_script_factory_uses_requested_market_components():
         n_steps=5,
         tau=5,
         alpha3=7.0,
-        inventory_phi=50.0,
+        inventory_phi=20.0,
         arrival_alpha2=2.0,
         kernel_beta=0.25,
         kernel_window=3,
@@ -204,7 +204,7 @@ def test_robust_script_factory_uses_requested_market_components():
         np.full(3, 12.0),
     )
     assert isinstance(env.reward_function, RunningInventoryPenalty)
-    assert env.reward_function.per_step_inventory_aversion == 50.0
+    assert env.reward_function.per_step_inventory_aversion == 20.0
     assert env.reward_function.terminal_inventory_aversion == 0.0
     assert env.reward_function.inventory_exponent == 2.0
     assert env.model_dynamics.gas_cost == 6.0
@@ -213,7 +213,7 @@ def test_robust_script_factory_uses_requested_market_components():
 def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
     args = parse_args([])
 
-    assert args.inventory_phi == 50.0
+    assert args.inventory_phi == 20.0
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
     assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
