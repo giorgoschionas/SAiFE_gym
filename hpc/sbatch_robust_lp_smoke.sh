@@ -14,10 +14,15 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
-VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/saife_gym_py312}
+VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
 
 module purge
 module load miniforge3/25.3.0-python3.12.10
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+  echo "ERROR: no virtualenv found at $VENV_DIR" >&2
+  echo "Create it with 'bash hpc/setup_barkla2_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
+  exit 1
+fi
 source "$VENV_DIR/bin/activate"
 
 export OMP_NUM_THREADS=$SLURM_NTASKS

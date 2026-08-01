@@ -14,14 +14,15 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
-VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/saife_gym_py312}
+VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
 
 TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-1000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
 N_STEPS=${N_STEPS:-200}
 TAU=${TAU:-5}
 ALPHA3=${ALPHA3:-15000.0}
-INVENTORY_PHI=${INVENTORY_PHI:-20.0}
+INITIAL_WEALTH=${INITIAL_WEALTH:-1000000.0}
+INVENTORY_PHI=${INVENTORY_PHI:-0.02}
 SEED=${SEED:-42}
 N_EVAL_EPISODES=${N_EVAL_EPISODES:-10}
 LEARNING_RATE=${LEARNING_RATE:-3e-4}
@@ -44,6 +45,11 @@ EVAL_GAS_COST_VALUES=${EVAL_GAS_COST_VALUES:-"0.0 10.0 40.0"}
 
 module purge
 module load miniforge3/25.3.0-python3.12.10
+if [ ! -f "$VENV_DIR/bin/activate" ]; then
+  echo "ERROR: no virtualenv found at $VENV_DIR" >&2
+  echo "Create it with 'bash hpc/setup_barkla2_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
+  exit 1
+fi
 source "$VENV_DIR/bin/activate"
 
 export OMP_NUM_THREADS=$SLURM_NTASKS
@@ -63,7 +69,7 @@ echo "Working directory: $(pwd)"
 echo "Python: $(which python)"
 echo "SLURM job id: $SLURM_JOB_ID"
 echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks=$SLURM_NTASKS"
-echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 inventory_phi=$INVENTORY_PHI seed=$SEED"
+echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
 echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX]"
 echo "Evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_SIGMA_VALUES] arrival=[$EVAL_ARRIVAL_RATE_VALUES] gas=[$EVAL_GAS_COST_VALUES]"
 echo "Output dir: $OUTPUT_DIR"
@@ -75,6 +81,7 @@ python -u experiments/train_robust_lp_agent.py \
   --n-steps "$N_STEPS" \
   --tau "$TAU" \
   --alpha3 "$ALPHA3" \
+  --initial-wealth "$INITIAL_WEALTH" \
   --inventory-phi "$INVENTORY_PHI" \
   --seed "$SEED" \
   --n-eval-episodes "$N_EVAL_EPISODES" \

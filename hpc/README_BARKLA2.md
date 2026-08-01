@@ -9,7 +9,7 @@ Recommended layout on Barkla2:
 
 ```bash
 /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym        # project checkout / working directory
-/mnt/fastscratch/users/$USER/venvs/saife_gym_py312       # Python virtual environment
+/mnt/fastscratch/users/$USER/venvs/rl_venv       # Python virtual environment
 ```
 
 The guide recommends using `scratch` as a work directory and `fastscratch` for Python

@@ -3,6 +3,7 @@ from argparse import Namespace
 import numpy as np
 from stable_baselines3 import PPO
 
+from experiments.helpers import INITIAL_WEALTH
 from experiments.train_robust_lp_agent import (
     add_gap_columns,
     make_fixed_env,
@@ -169,6 +170,7 @@ def test_robust_script_factory_uses_requested_market_components():
         n_steps=5,
         tau=5,
         alpha3=7.0,
+        initial_wealth=INITIAL_WEALTH,
         inventory_phi=20.0,
         arrival_alpha2=2.0,
         kernel_beta=0.25,
@@ -207,13 +209,15 @@ def test_robust_script_factory_uses_requested_market_components():
     assert env.reward_function.per_step_inventory_aversion == 20.0
     assert env.reward_function.terminal_inventory_aversion == 0.0
     assert env.reward_function.inventory_exponent == 2.0
+    # Penalty is value-normalized, so phi is a fraction of wealth per unit time
+    assert env.reward_function.reference_wealth == INITIAL_WEALTH
     assert env.model_dynamics.gas_cost == 6.0
 
 
 def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
     args = parse_args([])
 
-    assert args.inventory_phi == 20.0
+    assert args.inventory_phi == 0.02
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
     assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)

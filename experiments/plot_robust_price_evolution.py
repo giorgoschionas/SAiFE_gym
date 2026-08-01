@@ -27,7 +27,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.helpers import SEED, TERMINAL_TIME  # noqa: E402
+from experiments.helpers import INITIAL_WEALTH, SEED, TERMINAL_TIME  # noqa: E402
 from experiments.train_robust_lp_agent import make_fixed_env  # noqa: E402
 from SAiFE_gym.agents.BaselineAgents import DoNothingAgent  # noqa: E402
 from SAiFE_gym.gym.domain_randomization import DomainParameters  # noqa: E402
@@ -52,7 +52,8 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--arrival-rate", type=float, default=100.0)
     parser.add_argument("--gas-cost", type=float, default=0.0)
     parser.add_argument("--alpha3", type=float, default=15000.0)
-    parser.add_argument("--inventory-phi", type=float, default=20.0)
+    parser.add_argument("--initial-wealth", type=float, default=INITIAL_WEALTH)
+    parser.add_argument("--inventory-phi", type=float, default=0.02)
     parser.add_argument("--arrival-alpha2", type=float, default=0.0)
     parser.add_argument("--kernel-beta", type=float, default=0.5)
     parser.add_argument("--kernel-window", type=int, default=10)

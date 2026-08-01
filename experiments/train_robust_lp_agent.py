@@ -77,7 +77,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--n-steps", type=int, default=200)
     parser.add_argument("--tau", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=15000.0)
-    parser.add_argument("--inventory-phi", type=float, default=20.0)
+    # LP capital. Fee income scales with pool volume, not with this, so raising
+    # it dilutes fees relative to the position's mark-to-market price noise. At
+    # the 1e6 default, per-episode fees (~1e1) are dwarfed by PnL spread (~5e4)
+    # and holding no position is the reward-maximizing policy.
+    parser.add_argument("--initial-wealth", type=float, default=INITIAL_WEALTH)
+    # Risk charge as a fraction of --initial-wealth per unit time at full token0
+    # exposure; see RunningInventoryPenalty's value-normalized formulation.
+    parser.add_argument("--inventory-phi", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -187,8 +194,9 @@ def make_fixed_env(
         model_dynamics=model_dynamics,
         reward_function=RunningInventoryPenalty(
             per_step_inventory_aversion=args.inventory_phi,
+            reference_wealth=args.initial_wealth,
         ),
-        initial_wealth=INITIAL_WEALTH,
+        initial_wealth=args.initial_wealth,
         num_trajectories=args.num_trajectories,
         seed=seed,
     )
@@ -424,11 +432,24 @@ def save_json(path: Path, payload: dict) -> None:
 
 
 def make_run_dir(output_dir: str, smoke_test: bool) -> Path:
+    """Create a fresh run directory, tolerating same-second sibling jobs.
+
+    Slurm array tasks start within the same second and share an output dir, so
+    the timestamp alone collides. mkdir(exist_ok=False) is atomic, which makes
+    the retry loop safe against concurrent tasks racing for the same name.
+    """
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    suffix = "smoke" if smoke_test else "run"
-    run_dir = Path(output_dir) / f"{suffix}_{timestamp}"
-    run_dir.mkdir(parents=True, exist_ok=False)
-    return run_dir
+    base = Path(output_dir) / f"{'smoke' if smoke_test else 'run'}_{timestamp}"
+
+    run_dir = base
+    attempt = 1
+    while True:
+        try:
+            run_dir.mkdir(parents=True, exist_ok=False)
+            return run_dir
+        except FileExistsError:
+            run_dir = base.with_name(f"{base.name}_{attempt}")
+            attempt += 1
 
 
 def main() -> int:
