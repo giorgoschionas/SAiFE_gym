@@ -3,7 +3,13 @@ from argparse import Namespace
 import numpy as np
 from stable_baselines3 import PPO
 
-from experiments.train_robust_lp_agent import make_fixed_env
+from experiments.train_robust_lp_agent import (
+    add_gap_columns,
+    make_fixed_env,
+    parse_args,
+    summarize_running_inventory_objective,
+    summarize_rows,
+)
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
@@ -16,7 +22,7 @@ from SAiFE_gym.gym.domain_randomization import (
     UniformDomainRandomizationConfig,
 )
 from SAiFE_gym.gym.index_names import GAS_COST_KEY
-from SAiFE_gym.rewards.RewardFunctions import PnL
+from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty
 from SAiFE_gym.stochastic_processes.arrival_models import (
     LiquidityKernelArrivalModel,
     PoissonLinearArrivalModel,
@@ -163,6 +169,7 @@ def test_robust_script_factory_uses_requested_market_components():
         n_steps=5,
         tau=5,
         alpha3=7.0,
+        inventory_phi=50.0,
         arrival_alpha2=2.0,
         kernel_beta=0.25,
         kernel_window=3,
@@ -196,8 +203,66 @@ def test_robust_script_factory_uses_requested_market_components():
         ),
         np.full(3, 12.0),
     )
-    assert isinstance(env.reward_function, PnL)
+    assert isinstance(env.reward_function, RunningInventoryPenalty)
+    assert env.reward_function.per_step_inventory_aversion == 50.0
+    assert env.reward_function.terminal_inventory_aversion == 0.0
+    assert env.reward_function.inventory_exponent == 2.0
     assert env.model_dynamics.gas_cost == 6.0
+
+
+def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
+    args = parse_args([])
+
+    assert args.inventory_phi == 50.0
+    assert tuple(args.train_sigma_range) == (0.01, 0.10)
+    assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
+    assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
+    assert args.eval_sigma_values == [0.025, 0.10, 0.30]
+    assert args.eval_gas_cost_values == [0.0, 10.0, 40.0]
+
+
+def test_robust_script_reports_running_inventory_objective_columns():
+    params = DomainParameters(sigma=0.01, arrival_rate=50.0, gas_cost=1.0)
+
+    row = summarize_running_inventory_objective(
+        "robust_ppo",
+        params,
+        np.array([-2.0, 4.0]),
+    )
+
+    assert row["mean_running_inventory_objective"] == 1.0
+    assert row["std_running_inventory_objective"] == 3.0
+    assert "mean_pnl" not in row
+    assert "mean_final_wealth" not in row
+
+    rows = [
+        summarize_running_inventory_objective(
+            "robust_ppo",
+            params,
+            np.array([3.0]),
+        ),
+        summarize_running_inventory_objective(
+            "nominal_ppo",
+            params,
+            np.array([1.0]),
+        ),
+        summarize_running_inventory_objective(
+            "uniform",
+            params,
+            np.array([-1.0]),
+        ),
+    ]
+    add_gap_columns(rows)
+
+    assert rows[0]["robust_vs_nominal_mean_running_inventory_objective_gap"] == 2.0
+    assert rows[0]["robust_vs_uniform_mean_running_inventory_objective_gap"] == 4.0
+    assert "robust_vs_nominal_mean_pnl_gap" not in rows[0]
+
+    summary = summarize_rows(rows)
+    assert summary["robust_ppo"]["mean_of_regime_mean_running_inventory_objective"] == 3.0
+    assert summary["robust_ppo"]["worst_regime_mean_running_inventory_objective"] == 3.0
+    assert summary["robust_ppo"]["best_regime_mean_running_inventory_objective"] == 3.0
+    assert "mean_of_regime_mean_pnl" not in summary["robust_ppo"]
 
 
 def test_ppo_smoke_learns_on_domain_randomized_env():

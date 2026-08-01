@@ -13,7 +13,7 @@ import os
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Optional, Sequence
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -46,7 +46,7 @@ from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
-from SAiFE_gym.rewards.RewardFunctions import PnL  # noqa: E402
+from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty  # noqa: E402
 from SAiFE_gym.stochastic_processes.arrival_models import (  # noqa: E402
     LiquidityKernelArrivalModel,
 )
@@ -66,7 +66,7 @@ def constant_trade_size_sampler(trade_notional: float):
     return sampler
 
 
-def parse_args() -> argparse.Namespace:
+def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description="Train and evaluate robust LP PPO with domain randomization."
     )
@@ -76,7 +76,8 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=200)
     parser.add_argument("--tau", type=int, default=5)
-    parser.add_argument("--alpha3", type=float, default=0.0)
+    parser.add_argument("--alpha3", type=float, default=15000.0)
+    parser.add_argument("--inventory-phi", type=float, default=50.0)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
@@ -87,11 +88,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--nominal-arrival-rate", type=float, default=100.0)
     parser.add_argument("--nominal-gas-cost", type=float, default=0.0)
 
-    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.05, 0.20))
+    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.10))
     parser.add_argument(
         "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
     )
-    parser.add_argument("--train-gas-cost-range", nargs=2, type=float, default=(0.0, 20.0))
+    parser.add_argument("--train-gas-cost-range", nargs=2, type=float, default=(1.0, 6.0))
     parser.add_argument("--arrival-alpha2", type=float, default=0.0)
     parser.add_argument("--kernel-beta", type=float, default=0.5)
     parser.add_argument("--kernel-window", type=int, default=10)
@@ -113,7 +114,7 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="Run a tiny end-to-end check instead of an HPC-sized experiment.",
     )
-    return parser.parse_args()
+    return parser.parse_args(argv)
 
 
 def apply_smoke_overrides(args: argparse.Namespace) -> None:
@@ -184,7 +185,9 @@ def make_fixed_env(
         terminal_time=args.terminal_time,
         n_steps=args.n_steps,
         model_dynamics=model_dynamics,
-        reward_function=PnL(),
+        reward_function=RunningInventoryPenalty(
+            per_step_inventory_aversion=args.inventory_phi,
+        ),
         initial_wealth=INITIAL_WEALTH,
         num_trajectories=args.num_trajectories,
         seed=seed,
@@ -258,7 +261,7 @@ def evaluate_ppo(
     args: argparse.Namespace,
     regime_seed: int,
 ) -> dict:
-    wealths = []
+    objective_values = []
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
@@ -277,9 +280,13 @@ def evaluate_ppo(
             if (terminated | truncated).all():
                 break
 
-        wealths.append(INITIAL_WEALTH + cumulative_reward)
+        objective_values.append(cumulative_reward)
 
-    return summarize_wealth(policy_name, params, np.concatenate(wealths))
+    return summarize_running_inventory_objective(
+        policy_name,
+        params,
+        np.concatenate(objective_values),
+    )
 
 
 def evaluate_uniform(
@@ -287,7 +294,7 @@ def evaluate_uniform(
     args: argparse.Namespace,
     regime_seed: int,
 ) -> dict:
-    wealths = []
+    objective_values = []
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
@@ -302,9 +309,13 @@ def evaluate_uniform(
             if (terminated | truncated).all():
                 break
 
-        wealths.append(INITIAL_WEALTH + cumulative_reward)
+        objective_values.append(cumulative_reward)
 
-    return summarize_wealth("uniform", params, np.concatenate(wealths))
+    return summarize_running_inventory_objective(
+        "uniform",
+        params,
+        np.concatenate(objective_values),
+    )
 
 
 def normalize_obs(
@@ -321,22 +332,19 @@ def normalize_obs(
     return normalized
 
 
-def summarize_wealth(
+def summarize_running_inventory_objective(
     policy_name: str,
     params: DomainParameters,
-    final_wealths: np.ndarray,
+    objective_values: np.ndarray,
 ) -> dict:
-    pnl = final_wealths - INITIAL_WEALTH
     return {
         "policy": policy_name,
         "sigma": params.sigma,
         "arrival_rate": params.arrival_rate,
         "gas_cost": params.gas_cost,
-        "mean_final_wealth": float(np.mean(final_wealths)),
-        "std_final_wealth": float(np.std(final_wealths)),
-        "mean_pnl": float(np.mean(pnl)),
-        "std_pnl": float(np.std(pnl)),
-        "n_samples": int(final_wealths.shape[0]),
+        "mean_running_inventory_objective": float(np.mean(objective_values)),
+        "std_running_inventory_objective": float(np.std(objective_values)),
+        "n_samples": int(objective_values.shape[0]),
     }
 
 
@@ -359,13 +367,15 @@ def add_gap_columns(rows: list[dict]) -> None:
         robust = by_key.get((*key, "robust_ppo"))
         nominal = by_key.get((*key, "nominal_ppo"))
         uniform = by_key.get((*key, "uniform"))
-        row["robust_vs_nominal_mean_pnl_gap"] = (
-            robust["mean_pnl"] - nominal["mean_pnl"]
+        row["robust_vs_nominal_mean_running_inventory_objective_gap"] = (
+            robust["mean_running_inventory_objective"]
+            - nominal["mean_running_inventory_objective"]
             if robust is not None and nominal is not None
             else ""
         )
-        row["robust_vs_uniform_mean_pnl_gap"] = (
-            robust["mean_pnl"] - uniform["mean_pnl"]
+        row["robust_vs_uniform_mean_running_inventory_objective_gap"] = (
+            robust["mean_running_inventory_objective"]
+            - uniform["mean_running_inventory_objective"]
             if robust is not None and uniform is not None
             else ""
         )
@@ -375,14 +385,26 @@ def summarize_rows(rows: list[dict]) -> dict:
     policies = sorted({row["policy"] for row in rows})
     return {
         policy: {
-            "mean_of_regime_mean_pnl": float(
-                np.mean([row["mean_pnl"] for row in rows if row["policy"] == policy])
+            "mean_of_regime_mean_running_inventory_objective": float(
+                np.mean([
+                    row["mean_running_inventory_objective"]
+                    for row in rows
+                    if row["policy"] == policy
+                ])
             ),
-            "worst_regime_mean_pnl": float(
-                np.min([row["mean_pnl"] for row in rows if row["policy"] == policy])
+            "worst_regime_mean_running_inventory_objective": float(
+                np.min([
+                    row["mean_running_inventory_objective"]
+                    for row in rows
+                    if row["policy"] == policy
+                ])
             ),
-            "best_regime_mean_pnl": float(
-                np.max([row["mean_pnl"] for row in rows if row["policy"] == policy])
+            "best_regime_mean_running_inventory_objective": float(
+                np.max([
+                    row["mean_running_inventory_objective"]
+                    for row in rows
+                    if row["policy"] == policy
+                ])
             ),
         }
         for policy in policies
