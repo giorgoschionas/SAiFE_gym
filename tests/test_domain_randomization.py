@@ -6,6 +6,7 @@ from stable_baselines3 import PPO
 from experiments.helpers import INITIAL_WEALTH
 from experiments.train_robust_lp_agent import (
     add_gap_columns,
+    evaluate_cash,
     make_fixed_env,
     parse_args,
     summarize_running_inventory_objective,
@@ -217,7 +218,11 @@ def test_robust_script_factory_uses_requested_market_components():
 def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
     args = parse_args([])
 
+    assert args.n_steps == 1000
+    assert args.alpha3 == 4000.0
     assert args.inventory_phi == 0.02
+    assert args.periodic_rebalance_every == 5
+    assert args.periodic_width == 2
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
     assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
@@ -251,15 +256,26 @@ def test_robust_script_reports_running_inventory_objective_columns():
             np.array([1.0]),
         ),
         summarize_running_inventory_objective(
-            "uniform",
+            "periodic_rebalance",
             params,
             np.array([-1.0]),
+        ),
+        summarize_running_inventory_objective(
+            "cash",
+            params,
+            np.array([0.0]),
         ),
     ]
     add_gap_columns(rows)
 
     assert rows[0]["robust_vs_nominal_mean_running_inventory_objective_gap"] == 2.0
-    assert rows[0]["robust_vs_uniform_mean_running_inventory_objective_gap"] == 4.0
+    assert (
+        rows[0][
+            "robust_vs_periodic_rebalance_mean_running_inventory_objective_gap"
+        ]
+        == 4.0
+    )
+    assert rows[0]["robust_vs_cash_mean_running_inventory_objective_gap"] == 3.0
     assert "robust_vs_nominal_mean_pnl_gap" not in rows[0]
 
     summary = summarize_rows(rows)
@@ -267,6 +283,20 @@ def test_robust_script_reports_running_inventory_objective_columns():
     assert summary["robust_ppo"]["worst_regime_mean_running_inventory_objective"] == 3.0
     assert summary["robust_ppo"]["best_regime_mean_running_inventory_objective"] == 3.0
     assert "mean_of_regime_mean_pnl" not in summary["robust_ppo"]
+
+
+def test_cash_baseline_is_zero_with_expected_sample_count():
+    args = parse_args([])
+    args.n_eval_episodes = 3
+    args.num_trajectories = 4
+    params = DomainParameters(sigma=0.3, arrival_rate=300.0, gas_cost=40.0)
+
+    row = evaluate_cash(params, args)
+
+    assert row["policy"] == "cash"
+    assert row["mean_running_inventory_objective"] == 0.0
+    assert row["std_running_inventory_objective"] == 0.0
+    assert row["n_samples"] == 12
 
 
 def test_ppo_smoke_learns_on_domain_randomized_env():

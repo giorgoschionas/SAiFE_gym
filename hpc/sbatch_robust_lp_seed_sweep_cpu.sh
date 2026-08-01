@@ -22,13 +22,15 @@ SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 
 TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-1000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
-N_STEPS=${N_STEPS:-200}
+N_STEPS=${N_STEPS:-1000}
 TAU=${TAU:-5}
-ALPHA3=${ALPHA3:-15000.0}
+ALPHA3=${ALPHA3:-4000.0}
 INITIAL_WEALTH=${INITIAL_WEALTH:-1000000.0}
 INVENTORY_PHI=${INVENTORY_PHI:-0.02}
 N_EVAL_EPISODES=${N_EVAL_EPISODES:-10}
 LEARNING_RATE=${LEARNING_RATE:-3e-4}
+PERIODIC_REBALANCE_EVERY=${PERIODIC_REBALANCE_EVERY:-5}
+PERIODIC_WIDTH=${PERIODIC_WIDTH:-2}
 OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/robust_rl/barkla2_seed_sweep}/seed_${SEED}
 
 NOMINAL_SIGMA=${NOMINAL_SIGMA:-0.10}
@@ -73,6 +75,7 @@ echo "Python: $(which python)"
 echo "SLURM job id: $SLURM_JOB_ID array=$SLURM_ARRAY_JOB_ID task=$SLURM_ARRAY_TASK_ID"
 echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks=$SLURM_NTASKS"
 echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
+echo "Periodic baseline: rebalance_every=$PERIODIC_REBALANCE_EVERY width=$PERIODIC_WIDTH"
 echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX]"
 echo "Evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_SIGMA_VALUES] arrival=[$EVAL_ARRIVAL_RATE_VALUES] gas=[$EVAL_GAS_COST_VALUES]"
 echo "Output dir: $OUTPUT_DIR"
@@ -89,6 +92,8 @@ python -u experiments/train_robust_lp_agent.py \
   --seed "$SEED" \
   --n-eval-episodes "$N_EVAL_EPISODES" \
   --learning-rate "$LEARNING_RATE" \
+  --periodic-rebalance-every "$PERIODIC_REBALANCE_EVERY" \
+  --periodic-width "$PERIODIC_WIDTH" \
   --nominal-sigma "$NOMINAL_SIGMA" \
   --nominal-arrival-rate "$NOMINAL_ARRIVAL_RATE" \
   --nominal-gas-cost "$NOMINAL_GAS_COST" \

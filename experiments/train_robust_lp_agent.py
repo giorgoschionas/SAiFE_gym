@@ -35,7 +35,7 @@ from experiments.helpers import (  # noqa: E402
     TERMINAL_TIME,
     wrap_env,
 )
-from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent  # noqa: E402
+from SAiFE_gym.agents.BaselineAgents import PeriodicRebalanceAgent  # noqa: E402
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment  # noqa: E402
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics  # noqa: E402
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (  # noqa: E402
@@ -74,9 +74,9 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--total-timesteps", type=int, default=1_000_000)
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
-    parser.add_argument("--n-steps", type=int, default=200)
+    parser.add_argument("--n-steps", type=int, default=1000)
     parser.add_argument("--tau", type=int, default=5)
-    parser.add_argument("--alpha3", type=float, default=15000.0)
+    parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise. At
     # the 1e6 default, per-episode fees (~1e1) are dwarfed by PnL spread (~5e4)
@@ -88,6 +88,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
+    parser.add_argument("--periodic-rebalance-every", type=int, default=5)
+    parser.add_argument("--periodic-width", type=int, default=2)
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 
@@ -297,7 +299,7 @@ def evaluate_ppo(
     )
 
 
-def evaluate_uniform(
+def evaluate_periodic_rebalance(
     params: DomainParameters,
     args: argparse.Namespace,
     regime_seed: int,
@@ -306,7 +308,11 @@ def evaluate_uniform(
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
-        agent = UniformAllocationAgent(env)
+        agent = PeriodicRebalanceAgent(
+            env,
+            rebalance_every=args.periodic_rebalance_every,
+            width=args.periodic_width,
+        )
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
 
@@ -320,9 +326,27 @@ def evaluate_uniform(
         objective_values.append(cumulative_reward)
 
     return summarize_running_inventory_objective(
-        "uniform",
+        "periodic_rebalance",
         params,
         np.concatenate(objective_values),
+    )
+
+
+def evaluate_cash(
+    params: DomainParameters,
+    args: argparse.Namespace,
+) -> dict:
+    """Report the undeployed token1 baseline without simulating market paths.
+
+    Token1 is the numeraire. An agent that never deploys keeps portfolio value
+    fixed at initial wealth and has no token0 inventory, so both PnL and the
+    running inventory penalty are exactly zero under the current objective.
+    """
+    objective_values = np.zeros(args.n_eval_episodes * args.num_trajectories)
+    return summarize_running_inventory_objective(
+        "cash",
+        params,
+        objective_values,
     )
 
 
@@ -374,17 +398,24 @@ def add_gap_columns(rows: list[dict]) -> None:
         key = (row["sigma"], row["arrival_rate"], row["gas_cost"])
         robust = by_key.get((*key, "robust_ppo"))
         nominal = by_key.get((*key, "nominal_ppo"))
-        uniform = by_key.get((*key, "uniform"))
+        periodic_rebalance = by_key.get((*key, "periodic_rebalance"))
+        cash = by_key.get((*key, "cash"))
         row["robust_vs_nominal_mean_running_inventory_objective_gap"] = (
             robust["mean_running_inventory_objective"]
             - nominal["mean_running_inventory_objective"]
             if robust is not None and nominal is not None
             else ""
         )
-        row["robust_vs_uniform_mean_running_inventory_objective_gap"] = (
+        row["robust_vs_periodic_rebalance_mean_running_inventory_objective_gap"] = (
             robust["mean_running_inventory_objective"]
-            - uniform["mean_running_inventory_objective"]
-            if robust is not None and uniform is not None
+            - periodic_rebalance["mean_running_inventory_objective"]
+            if robust is not None and periodic_rebalance is not None
+            else ""
+        )
+        row["robust_vs_cash_mean_running_inventory_objective_gap"] = (
+            robust["mean_running_inventory_objective"]
+            - cash["mean_running_inventory_objective"]
+            if robust is not None and cash is not None
             else ""
         )
 
@@ -496,7 +527,8 @@ def main() -> int:
                 regime_seed,
             )
         )
-        rows.append(evaluate_uniform(params, args, regime_seed))
+        rows.append(evaluate_periodic_rebalance(params, args, regime_seed))
+        rows.append(evaluate_cash(params, args))
 
     add_gap_columns(rows)
     save_csv(run_dir / "evaluation_grid.csv", rows)
