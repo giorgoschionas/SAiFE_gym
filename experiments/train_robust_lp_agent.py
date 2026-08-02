@@ -11,9 +11,10 @@ import csv
 import json
 import os
 import sys
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, Sequence
+from typing import Literal, Optional, Sequence
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -57,6 +58,14 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
     LiquidityDepthUniswapV3PriceImpact,
 )
 from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
+
+
+@dataclass(frozen=True)
+class EvaluationRegime:
+    """A fixed evaluation domain and its diagnostic evaluation set."""
+
+    evaluation_set: Literal["in_distribution", "stress"]
+    parameters: DomainParameters
 
 
 def constant_trade_size_sampler(trade_notional: float):
@@ -122,14 +131,51 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--price-impact-depth-window", type=int, default=10)
     parser.add_argument("--price-impact-min-depth", type=float, default=1e-12)
 
-    parser.add_argument("--eval-sigma-values", nargs="+", type=float, default=[0.025, 0.10, 0.30])
     parser.add_argument(
-        "--eval-arrival-rate-values",
+        "--eval-in-distribution-sigma-values",
+        nargs="+",
+        type=float,
+        default=[0.025, 0.055, 0.085],
+        help="Sigma values for the in-distribution Cartesian evaluation grid.",
+    )
+    parser.add_argument(
+        "--eval-in-distribution-arrival-rate-values",
+        nargs="+",
+        type=float,
+        default=[75.0, 125.0, 175.0],
+        help=(
+            "Arrival-rate values for the in-distribution Cartesian "
+            "evaluation grid."
+        ),
+    )
+    parser.add_argument(
+        "--eval-in-distribution-gas-cost-values",
+        nargs="+",
+        type=float,
+        default=[2.0, 3.5, 5.0],
+        help="Gas-cost values for the in-distribution Cartesian evaluation grid.",
+    )
+    parser.add_argument(
+        "--eval-stress-sigma-values",
+        nargs="+",
+        type=float,
+        default=[0.025, 0.10, 0.30],
+        help="Sigma values for the out-of-distribution stress grid.",
+    )
+    parser.add_argument(
+        "--eval-stress-arrival-rate-values",
         nargs="+",
         type=float,
         default=[25.0, 100.0, 300.0],
+        help="Arrival-rate values for the out-of-distribution stress grid.",
     )
-    parser.add_argument("--eval-gas-cost-values", nargs="+", type=float, default=[0.0, 10.0, 40.0])
+    parser.add_argument(
+        "--eval-stress-gas-cost-values",
+        nargs="+",
+        type=float,
+        default=[0.0, 10.0, 40.0],
+        help="Gas-cost values for the out-of-distribution stress grid.",
+    )
     parser.add_argument(
         "--smoke-test",
         action="store_true",
@@ -146,9 +192,12 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.num_trajectories = 2
     args.n_steps = 5
     args.n_eval_episodes = 1
-    args.eval_sigma_values = [0.05, 0.10]
-    args.eval_arrival_rate_values = [50.0, 100.0]
-    args.eval_gas_cost_values = [0.0, 10.0]
+    args.eval_in_distribution_sigma_values = [0.055]
+    args.eval_in_distribution_arrival_rate_values = [125.0]
+    args.eval_in_distribution_gas_cost_values = [3.5]
+    args.eval_stress_sigma_values = [0.10]
+    args.eval_stress_arrival_rate_values = [100.0]
+    args.eval_stress_gas_cost_values = [0.0]
 
 
 def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
@@ -167,6 +216,87 @@ def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
         )
     args.train_domains_per_reset = int(num_domains)
     return args.train_domains_per_reset
+
+
+def _validate_evaluation_values(name: str, values: Sequence[float]) -> None:
+    values_array = np.asarray(values, dtype=np.float64)
+    if values_array.ndim != 1 or values_array.size == 0:
+        raise ValueError(f"{name} must contain at least one value")
+    if not np.all(np.isfinite(values_array)):
+        raise ValueError(f"{name} must contain only finite values")
+    if np.any(values_array < 0.0):
+        raise ValueError(f"{name} must contain only non-negative values")
+    if len(set(values_array.tolist())) != values_array.size:
+        raise ValueError(f"{name} must not contain duplicate values")
+
+
+def _parameters_within_training_support(
+    params: DomainParameters,
+    config: UniformDomainRandomizationConfig,
+) -> bool:
+    return all([
+        config.sigma_range[0] <= params.sigma <= config.sigma_range[1],
+        config.arrival_rate_range[0]
+        <= params.arrival_rate
+        <= config.arrival_rate_range[1],
+        config.gas_cost_range[0] <= params.gas_cost <= config.gas_cost_range[1],
+    ])
+
+
+def validate_evaluation_configuration(args: argparse.Namespace) -> None:
+    """Validate that diagnostic grids match their declared semantics."""
+    config = UniformDomainRandomizationConfig(
+        sigma_range=tuple(args.train_sigma_range),
+        arrival_rate_range=tuple(args.train_arrival_rate_range),
+        gas_cost_range=tuple(args.train_gas_cost_range),
+    )
+    dimensions = [
+        (
+            "sigma",
+            config.sigma_range,
+            args.eval_in_distribution_sigma_values,
+            args.eval_stress_sigma_values,
+        ),
+        (
+            "arrival_rate",
+            config.arrival_rate_range,
+            args.eval_in_distribution_arrival_rate_values,
+            args.eval_stress_arrival_rate_values,
+        ),
+        (
+            "gas_cost",
+            config.gas_cost_range,
+            args.eval_in_distribution_gas_cost_values,
+            args.eval_stress_gas_cost_values,
+        ),
+    ]
+
+    for parameter_name, training_range, in_distribution, stress in dimensions:
+        in_distribution_name = f"eval_in_distribution_{parameter_name}_values"
+        stress_name = f"eval_stress_{parameter_name}_values"
+        _validate_evaluation_values(in_distribution_name, in_distribution)
+        _validate_evaluation_values(stress_name, stress)
+
+        low, high = training_range
+        outside = [value for value in in_distribution if not low <= value <= high]
+        if outside:
+            raise ValueError(
+                f"{in_distribution_name} must lie within training range "
+                f"[{low}, {high}], got out-of-support values {outside}"
+            )
+
+    in_support_stress_regimes = [
+        regime.parameters
+        for regime in evaluation_regimes(args)
+        if regime.evaluation_set == "stress"
+        and _parameters_within_training_support(regime.parameters, config)
+    ]
+    if in_support_stress_regimes:
+        raise ValueError(
+            "every stress evaluation regime must have at least one parameter "
+            "outside the training support; fully in-support regimes: "
+            f"{in_support_stress_regimes}"
+        )
 
 
 def make_fixed_env(
@@ -310,6 +440,7 @@ def evaluate_ppo(
     model: PPO,
     vec_normalize: Optional[VecNormalize],
     params: DomainParameters,
+    evaluation_set: Literal["in_distribution", "stress"],
     args: argparse.Namespace,
     regime_seed: int,
 ) -> dict:
@@ -337,12 +468,14 @@ def evaluate_ppo(
     return summarize_running_inventory_objective(
         policy_name,
         params,
+        evaluation_set,
         np.concatenate(objective_values),
     )
 
 
 def evaluate_periodic_rebalance(
     params: DomainParameters,
+    evaluation_set: Literal["in_distribution", "stress"],
     args: argparse.Namespace,
     regime_seed: int,
 ) -> dict:
@@ -370,12 +503,14 @@ def evaluate_periodic_rebalance(
     return summarize_running_inventory_objective(
         "periodic_rebalance",
         params,
+        evaluation_set,
         np.concatenate(objective_values),
     )
 
 
 def evaluate_cash(
     params: DomainParameters,
+    evaluation_set: Literal["in_distribution", "stress"],
     args: argparse.Namespace,
 ) -> dict:
     """Report the undeployed token1 baseline without simulating market paths.
@@ -388,6 +523,7 @@ def evaluate_cash(
     return summarize_running_inventory_objective(
         "cash",
         params,
+        evaluation_set,
         objective_values,
     )
 
@@ -409,9 +545,11 @@ def normalize_obs(
 def summarize_running_inventory_objective(
     policy_name: str,
     params: DomainParameters,
+    evaluation_set: Literal["in_distribution", "stress"],
     objective_values: np.ndarray,
 ) -> dict:
     return {
+        "evaluation_set": evaluation_set,
         "policy": policy_name,
         "sigma": params.sigma,
         "arrival_rate": params.arrival_rate,
@@ -422,22 +560,56 @@ def summarize_running_inventory_objective(
     }
 
 
-def evaluation_grid(args: argparse.Namespace) -> list[DomainParameters]:
+def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
+    grid_definitions = [
+        (
+            "in_distribution",
+            args.eval_in_distribution_sigma_values,
+            args.eval_in_distribution_arrival_rate_values,
+            args.eval_in_distribution_gas_cost_values,
+        ),
+        (
+            "stress",
+            args.eval_stress_sigma_values,
+            args.eval_stress_arrival_rate_values,
+            args.eval_stress_gas_cost_values,
+        ),
+    ]
     return [
-        DomainParameters(sigma=sigma, arrival_rate=arrival_rate, gas_cost=gas_cost)
-        for sigma in args.eval_sigma_values
-        for arrival_rate in args.eval_arrival_rate_values
-        for gas_cost in args.eval_gas_cost_values
+        EvaluationRegime(
+            evaluation_set=evaluation_set,
+            parameters=DomainParameters(
+                sigma=sigma,
+                arrival_rate=arrival_rate,
+                gas_cost=gas_cost,
+            ),
+        )
+        for evaluation_set, sigma_values, arrival_rate_values, gas_cost_values
+        in grid_definitions
+        for sigma in sigma_values
+        for arrival_rate in arrival_rate_values
+        for gas_cost in gas_cost_values
     ]
 
 
 def add_gap_columns(rows: list[dict]) -> None:
     by_key = {
-        (row["sigma"], row["arrival_rate"], row["gas_cost"], row["policy"]): row
+        (
+            row["evaluation_set"],
+            row["sigma"],
+            row["arrival_rate"],
+            row["gas_cost"],
+            row["policy"],
+        ): row
         for row in rows
     }
     for row in rows:
-        key = (row["sigma"], row["arrival_rate"], row["gas_cost"])
+        key = (
+            row["evaluation_set"],
+            row["sigma"],
+            row["arrival_rate"],
+            row["gas_cost"],
+        )
         domain_randomized = by_key.get((*key, "domain_randomized_ppo"))
         nominal = by_key.get((*key, "nominal_ppo"))
         periodic_rebalance = by_key.get((*key, "periodic_rebalance"))
@@ -467,31 +639,39 @@ def add_gap_columns(rows: list[dict]) -> None:
 
 def summarize_rows(rows: list[dict]) -> dict:
     policies = sorted({row["policy"] for row in rows})
+    evaluation_sets = ["in_distribution", "stress"]
     return {
         policy: {
-            "mean_of_evaluation_grid_regime_mean_running_inventory_objective": float(
-                np.mean([
-                    row["mean_running_inventory_objective"]
-                    for row in rows
-                    if row["policy"] == policy
-                ])
-            ),
-            "minimum_evaluation_grid_regime_mean_running_inventory_objective": float(
-                np.min([
-                    row["mean_running_inventory_objective"]
-                    for row in rows
-                    if row["policy"] == policy
-                ])
-            ),
-            "maximum_evaluation_grid_regime_mean_running_inventory_objective": float(
-                np.max([
-                    row["mean_running_inventory_objective"]
-                    for row in rows
-                    if row["policy"] == policy
-                ])
-            ),
+            evaluation_set: _summarize_policy_evaluation_set(
+                rows,
+                policy,
+                evaluation_set,
+            )
+            for evaluation_set in evaluation_sets
         }
         for policy in policies
+    }
+
+
+def _summarize_policy_evaluation_set(
+    rows: list[dict],
+    policy: str,
+    evaluation_set: str,
+) -> dict:
+    values = [
+        row["mean_running_inventory_objective"]
+        for row in rows
+        if row["policy"] == policy and row["evaluation_set"] == evaluation_set
+    ]
+    if not values:
+        raise ValueError(
+            f"no rows found for policy={policy!r}, evaluation_set={evaluation_set!r}"
+        )
+    return {
+        "num_regimes": len(values),
+        "mean_of_regime_mean_running_inventory_objective": float(np.mean(values)),
+        "minimum_regime_mean_running_inventory_objective": float(np.min(values)),
+        "maximum_regime_mean_running_inventory_objective": float(np.max(values)),
     }
 
 
@@ -532,6 +712,7 @@ def main() -> int:
     args = parse_args()
     apply_smoke_overrides(args)
     resolve_train_domains_per_reset(args)
+    validate_evaluation_configuration(args)
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
     save_json(run_dir / "config.json", vars(args))
 
@@ -551,7 +732,8 @@ def main() -> int:
     )
 
     rows = []
-    for regime_idx, params in enumerate(evaluation_grid(args)):
+    for regime_idx, regime in enumerate(evaluation_regimes(args)):
+        params = regime.parameters
         regime_seed = args.seed + 100_000 + regime_idx * 1_000
         rows.append(
             evaluate_ppo(
@@ -559,6 +741,7 @@ def main() -> int:
                 domain_randomized_model,
                 domain_randomized_vecnormalize,
                 params,
+                regime.evaluation_set,
                 args,
                 regime_seed,
             )
@@ -569,19 +752,28 @@ def main() -> int:
                 nominal_model,
                 nominal_vecnormalize,
                 params,
+                regime.evaluation_set,
                 args,
                 regime_seed,
             )
         )
-        rows.append(evaluate_periodic_rebalance(params, args, regime_seed))
-        rows.append(evaluate_cash(params, args))
+        rows.append(
+            evaluate_periodic_rebalance(
+                params,
+                regime.evaluation_set,
+                args,
+                regime_seed,
+            )
+        )
+        rows.append(evaluate_cash(params, regime.evaluation_set, args))
 
     add_gap_columns(rows)
+    summary = summarize_rows(rows)
     save_csv(run_dir / "evaluation_grid.csv", rows)
-    save_json(run_dir / "summary.json", summarize_rows(rows))
+    save_json(run_dir / "summary.json", summary)
 
     print(f"Saved domain-randomized PPO run artifacts to: {run_dir}")
-    print(json.dumps(summarize_rows(rows), indent=2, sort_keys=True))
+    print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 
 

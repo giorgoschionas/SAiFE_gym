@@ -7,7 +7,9 @@ from stable_baselines3 import PPO
 from experiments.helpers import INITIAL_WEALTH
 from experiments.train_robust_lp_agent import (
     add_gap_columns,
+    apply_smoke_overrides,
     evaluate_cash,
+    evaluation_regimes,
     make_domain_randomized_env,
     make_fixed_env,
     make_robust_env,
@@ -15,6 +17,7 @@ from experiments.train_robust_lp_agent import (
     resolve_train_domains_per_reset,
     summarize_running_inventory_objective,
     summarize_rows,
+    validate_evaluation_configuration,
 )
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -545,9 +548,84 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
     assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
-    assert args.eval_sigma_values == [0.025, 0.10, 0.30]
-    assert args.eval_gas_cost_values == [0.0, 10.0, 40.0]
+    assert args.eval_in_distribution_sigma_values == [0.025, 0.055, 0.085]
+    assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
+    assert args.eval_in_distribution_gas_cost_values == [2.0, 3.5, 5.0]
+    assert args.eval_stress_sigma_values == [0.025, 0.10, 0.30]
+    assert args.eval_stress_arrival_rate_values == [25.0, 100.0, 300.0]
+    assert args.eval_stress_gas_cost_values == [0.0, 10.0, 40.0]
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
+    validate_evaluation_configuration(args)
+
+
+def test_evaluation_regimes_separate_interpolation_and_stress_grids():
+    args = parse_args([])
+
+    regimes = evaluation_regimes(args)
+    in_distribution = [
+        regime for regime in regimes if regime.evaluation_set == "in_distribution"
+    ]
+    stress = [regime for regime in regimes if regime.evaluation_set == "stress"]
+
+    assert len(in_distribution) == 27
+    assert len(stress) == 27
+    assert regimes[:27] == in_distribution
+    assert regimes[27:] == stress
+    assert len({regime.parameters for regime in regimes}) == 54
+    assert in_distribution[0].parameters == DomainParameters(0.025, 75.0, 2.0)
+    assert in_distribution[-1].parameters == DomainParameters(0.085, 175.0, 5.0)
+    assert stress[0].parameters == DomainParameters(0.025, 25.0, 0.0)
+    assert stress[-1].parameters == DomainParameters(0.30, 300.0, 40.0)
+    assert DomainParameters(0.10, 100.0, 0.0) in {
+        regime.parameters for regime in stress
+    }
+
+
+def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
+    args = parse_args(["--smoke-test"])
+
+    apply_smoke_overrides(args)
+    validate_evaluation_configuration(args)
+
+    assert [
+        (regime.evaluation_set, regime.parameters)
+        for regime in evaluation_regimes(args)
+    ] == [
+        ("in_distribution", DomainParameters(0.055, 125.0, 3.5)),
+        ("stress", DomainParameters(0.10, 100.0, 0.0)),
+    ]
+
+
+def test_removed_generic_evaluation_cli_flags_are_rejected():
+    with pytest.raises(SystemExit):
+        parse_args(["--eval-gas-cost-values", "0.0"])
+
+
+@pytest.mark.parametrize(
+    ("attribute", "values", "error"),
+    [
+        ("eval_in_distribution_gas_cost_values", [0.0], "training range"),
+        ("eval_in_distribution_sigma_values", [0.025, 0.025], "duplicate"),
+        ("eval_stress_arrival_rate_values", [-1.0], "non-negative"),
+        ("eval_stress_sigma_values", [np.inf], "finite"),
+    ],
+)
+def test_evaluation_grid_value_validation(attribute, values, error):
+    args = parse_args([])
+    setattr(args, attribute, values)
+
+    with pytest.raises(ValueError, match=error):
+        validate_evaluation_configuration(args)
+
+
+def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
+    args = parse_args([])
+    args.eval_stress_sigma_values = [0.055, 0.30]
+    args.eval_stress_arrival_rate_values = [125.0, 300.0]
+    args.eval_stress_gas_cost_values = [3.5, 40.0]
+
+    with pytest.raises(ValueError, match="every stress evaluation regime"):
+        validate_evaluation_configuration(args)
 
 
 def test_domain_randomized_factory_defaults_to_one_domain_per_trajectory():
@@ -586,9 +664,11 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
     row = summarize_running_inventory_objective(
         "domain_randomized_ppo",
         params,
+        "in_distribution",
         np.array([-2.0, 4.0]),
     )
 
+    assert row["evaluation_set"] == "in_distribution"
     assert row["mean_running_inventory_objective"] == 1.0
     assert row["std_running_inventory_objective"] == 3.0
     assert "mean_pnl" not in row
@@ -598,21 +678,49 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
         summarize_running_inventory_objective(
             "domain_randomized_ppo",
             params,
+            "in_distribution",
             np.array([3.0]),
         ),
         summarize_running_inventory_objective(
             "nominal_ppo",
             params,
+            "in_distribution",
             np.array([1.0]),
         ),
         summarize_running_inventory_objective(
             "periodic_rebalance",
             params,
+            "in_distribution",
             np.array([-1.0]),
         ),
         summarize_running_inventory_objective(
             "cash",
             params,
+            "in_distribution",
+            np.array([0.0]),
+        ),
+        summarize_running_inventory_objective(
+            "domain_randomized_ppo",
+            params,
+            "stress",
+            np.array([-2.0]),
+        ),
+        summarize_running_inventory_objective(
+            "nominal_ppo",
+            params,
+            "stress",
+            np.array([-3.0]),
+        ),
+        summarize_running_inventory_objective(
+            "periodic_rebalance",
+            params,
+            "stress",
+            np.array([-4.0]),
+        ),
+        summarize_running_inventory_objective(
+            "cash",
+            params,
+            "stress",
             np.array([0.0]),
         ),
     ]
@@ -635,30 +743,77 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
         rows[0]["domain_randomized_vs_cash_mean_running_inventory_objective_gap"]
         == 3.0
     )
+    assert (
+        rows[4][
+            "domain_randomized_vs_nominal_mean_running_inventory_objective_gap"
+        ]
+        == 1.0
+    )
+    assert (
+        rows[4][
+            "domain_randomized_vs_periodic_rebalance_"
+            "mean_running_inventory_objective_gap"
+        ]
+        == 2.0
+    )
     assert not any(key.startswith("robust_") for key in rows[0])
 
     summary = summarize_rows(rows)
     domain_randomized_summary = summary["domain_randomized_ppo"]
     assert (
-        domain_randomized_summary[
-            "mean_of_evaluation_grid_regime_mean_running_inventory_objective"
+        domain_randomized_summary["in_distribution"][
+            "mean_of_regime_mean_running_inventory_objective"
         ]
         == 3.0
     )
     assert (
-        domain_randomized_summary[
-            "minimum_evaluation_grid_regime_mean_running_inventory_objective"
+        domain_randomized_summary["in_distribution"][
+            "minimum_regime_mean_running_inventory_objective"
         ]
         == 3.0
     )
     assert (
-        domain_randomized_summary[
-            "maximum_evaluation_grid_regime_mean_running_inventory_objective"
+        domain_randomized_summary["stress"][
+            "maximum_regime_mean_running_inventory_objective"
         ]
-        == 3.0
+        == -2.0
     )
+    assert domain_randomized_summary["in_distribution"]["num_regimes"] == 1
+    assert domain_randomized_summary["stress"]["num_regimes"] == 1
     assert "robust_ppo" not in summary
-    assert not any("worst" in key for key in domain_randomized_summary)
+    assert not any("evaluation_grid" in key for key in domain_randomized_summary)
+
+
+def test_summary_aggregates_each_evaluation_set_independently():
+    params = DomainParameters(sigma=0.055, arrival_rate=125.0, gas_cost=3.5)
+    rows = [
+        summarize_running_inventory_objective(
+            "domain_randomized_ppo",
+            params,
+            evaluation_set,
+            np.array([value]),
+        )
+        for evaluation_set, values in [
+            ("in_distribution", [1.0, 5.0]),
+            ("stress", [-8.0, -2.0]),
+        ]
+        for value in values
+    ]
+
+    summary = summarize_rows(rows)["domain_randomized_ppo"]
+
+    assert summary["in_distribution"] == {
+        "num_regimes": 2,
+        "mean_of_regime_mean_running_inventory_objective": 3.0,
+        "minimum_regime_mean_running_inventory_objective": 1.0,
+        "maximum_regime_mean_running_inventory_objective": 5.0,
+    }
+    assert summary["stress"] == {
+        "num_regimes": 2,
+        "mean_of_regime_mean_running_inventory_objective": -5.0,
+        "minimum_regime_mean_running_inventory_objective": -8.0,
+        "maximum_regime_mean_running_inventory_objective": -2.0,
+    }
 
 
 def test_cash_baseline_is_zero_with_expected_sample_count():
@@ -667,8 +822,9 @@ def test_cash_baseline_is_zero_with_expected_sample_count():
     args.num_trajectories = 4
     params = DomainParameters(sigma=0.3, arrival_rate=300.0, gas_cost=40.0)
 
-    row = evaluate_cash(params, args)
+    row = evaluate_cash(params, "stress", args)
 
+    assert row["evaluation_set"] == "stress"
     assert row["policy"] == "cash"
     assert row["mean_running_inventory_objective"] == 0.0
     assert row["std_running_inventory_objective"] == 0.0

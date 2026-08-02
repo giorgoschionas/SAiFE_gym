@@ -54,6 +54,23 @@ Domain-randomized training uses one sampled domain per trajectory by default. Se
 `TRAIN_DOMAINS_PER_RESET=1` to restore a single shared domain, or choose any
 value from `1` through `NUM_TRAJECTORIES` for balanced grouped assignments.
 
+Evaluation is reported separately on an in-distribution interpolation grid and
+an out-of-distribution stress grid. Override their Cartesian axes independently
+with `EVAL_IN_DISTRIBUTION_SIGMA_VALUES`,
+`EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES`,
+`EVAL_IN_DISTRIBUTION_GAS_COST_VALUES`, `EVAL_STRESS_SIGMA_VALUES`,
+`EVAL_STRESS_ARRIVAL_RATE_VALUES`, and `EVAL_STRESS_GAS_COST_VALUES`. Each
+variable is a space-separated list, for example:
+
+```bash
+sbatch --export=ALL,EVAL_IN_DISTRIBUTION_GAS_COST_VALUES="2.0 3.5 5.0" \
+  hpc/sbatch_train_robust_lp_agent_cpu.sh
+```
+
+Every in-distribution value must lie within its corresponding training range,
+and every stress-grid tuple must have at least one value outside training
+support.
+
 ## Seed sweep
 
 Submit independent replicate runs:
