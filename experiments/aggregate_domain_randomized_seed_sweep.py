@@ -3,11 +3,22 @@
 import argparse
 import csv
 import json
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional, Sequence
 
 import numpy as np
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
+
+from experiments.policy_behavior_diagnostics import (  # noqa: E402
+    BEHAVIOR_DIAGNOSTIC_COLUMNS,
+    FRACTION_BEHAVIOR_DIAGNOSTIC_COLUMNS,
+    NONNEGATIVE_BEHAVIOR_DIAGNOSTIC_COLUMNS,
+)
 
 
 RESULT_FILENAME = "evaluation_grid.csv"
@@ -38,6 +49,7 @@ REQUIRED_RESULT_COLUMNS = {
     "mean_running_inventory_objective",
     "evaluation_path_std_running_inventory_objective",
     "n_evaluation_paths",
+    *BEHAVIOR_DIAGNOSTIC_COLUMNS,
     "domain_randomized_vs_nominal_mean_running_inventory_objective_gap",
     (
         "domain_randomized_vs_periodic_rebalance_"
@@ -183,6 +195,10 @@ def _read_result_rows(result_path: Path) -> list[dict]:
                 row[gap_column] = _parse_float(
                     raw_row[gap_column], gap_column, result_path
                 )
+            for diagnostic in BEHAVIOR_DIAGNOSTIC_COLUMNS:
+                row[diagnostic] = _parse_float(
+                    raw_row[diagnostic], diagnostic, result_path
+                )
             if row["evaluation_path_std_running_inventory_objective"] < 0.0:
                 raise ValueError(
                     "evaluation path standard deviation must be non-negative "
@@ -191,6 +207,30 @@ def _read_result_rows(result_path: Path) -> list[dict]:
             if row["n_evaluation_paths"] < 1:
                 raise ValueError(
                     f"n_evaluation_paths must be positive in {result_path}"
+                )
+            for diagnostic in NONNEGATIVE_BEHAVIOR_DIAGNOSTIC_COLUMNS:
+                if row[diagnostic] < -1e-10:
+                    raise ValueError(
+                        f"{diagnostic} must be non-negative in {result_path}"
+                    )
+            for diagnostic in FRACTION_BEHAVIOR_DIAGNOSTIC_COLUMNS:
+                if not -1e-10 <= row[diagnostic] <= 1.0 + 1e-10:
+                    raise ValueError(
+                        f"{diagnostic} must lie in [0, 1] in {result_path}"
+                    )
+            decomposed_objective = (
+                row["mean_pnl_per_path"]
+                - row["mean_inventory_penalty_per_path"]
+            )
+            if not np.isclose(
+                row["mean_running_inventory_objective"],
+                decomposed_objective,
+                rtol=1e-9,
+                atol=1e-7,
+            ):
+                raise ValueError(
+                    "objective does not equal PnL minus inventory penalty in "
+                    f"{result_path}"
                 )
             rows.append(row)
 
@@ -464,6 +504,47 @@ def aggregate_gaps(
     return rows
 
 
+def aggregate_behavior_diagnostics(
+    runs: list[SeedRun],
+    bootstrap_indices: np.ndarray,
+    confidence_level: float,
+) -> list[dict]:
+    """Return long-form training-seed statistics for every behavior metric."""
+    rows = []
+    for key in sorted(runs[0].rows_by_key):
+        seed_rows = [run.rows_by_key[key] for run in runs]
+        regime_mapping = dict(zip(REGIME_FIELDS, key))
+        for diagnostic in BEHAVIOR_DIAGNOSTIC_COLUMNS:
+            values = np.array([row[diagnostic] for row in seed_rows])
+            stats = summarize_seed_values(
+                values,
+                bootstrap_indices,
+                confidence_level,
+            )
+            rows.append({
+                **regime_mapping,
+                "diagnostic": diagnostic,
+                "n_training_seeds": stats["n_training_seeds"],
+                "mean_across_training_seeds": stats[
+                    "mean_across_training_seeds"
+                ],
+                "training_seed_sample_std": stats[
+                    "training_seed_sample_std"
+                ],
+                "training_seed_standard_error": stats[
+                    "training_seed_standard_error"
+                ],
+                "confidence_level": stats["confidence_level"],
+                "training_seed_confidence_interval_lower": stats[
+                    "training_seed_confidence_interval_lower"
+                ],
+                "training_seed_confidence_interval_upper": stats[
+                    "training_seed_confidence_interval_upper"
+                ],
+            })
+    return rows
+
+
 def aggregate_set_summaries(
     runs: list[SeedRun],
     bootstrap_indices: np.ndarray,
@@ -495,6 +576,23 @@ def aggregate_set_summaries(
                         confidence_level,
                     )
                 )
+            summary[policy][evaluation_set][
+                "behavior_diagnostics_mean_across_regimes"
+            ] = {
+                diagnostic: summarize_seed_values(
+                    np.array([
+                        np.mean([
+                            row[diagnostic]
+                            for key, row in run.rows_by_key.items()
+                            if key[0] == evaluation_set and key[1] == policy
+                        ])
+                        for run in runs
+                    ]),
+                    bootstrap_indices,
+                    confidence_level,
+                )
+                for diagnostic in BEHAVIOR_DIAGNOSTIC_COLUMNS
+            }
     return summary
 
 
@@ -534,6 +632,11 @@ def aggregate_seed_sweep(args: argparse.Namespace) -> Path:
         bootstrap_indices,
         args.confidence_level,
     )
+    behavior_rows = aggregate_behavior_diagnostics(
+        runs,
+        bootstrap_indices,
+        args.confidence_level,
+    )
     summary = {
         "summary_scope": "training_seed_aggregate",
         "n_training_seeds": len(runs),
@@ -562,6 +665,7 @@ def aggregate_seed_sweep(args: argparse.Namespace) -> Path:
     output_dir.mkdir(parents=True, exist_ok=True)
     save_csv(output_dir / "training_seed_regime_summary.csv", regime_rows)
     save_csv(output_dir / "training_seed_gap_summary.csv", gap_rows)
+    save_csv(output_dir / "training_seed_behavior_summary.csv", behavior_rows)
     save_json(output_dir / "training_seed_summary.json", summary)
     return output_dir
 

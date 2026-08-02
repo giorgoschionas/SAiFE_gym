@@ -10,6 +10,11 @@ from experiments.aggregate_domain_randomized_seed_sweep import (
     discover_seed_runs,
     parse_args,
 )
+from experiments.policy_behavior_diagnostics import (
+    BEHAVIOR_DIAGNOSTIC_COLUMNS,
+    cash_behavior_diagnostics,
+    zero_behavior_diagnostics,
+)
 
 
 POLICIES = (
@@ -34,6 +39,37 @@ def _policy_values(seed_index: int, evaluation_set: str) -> dict[str, float]:
         "periodic_rebalance": -4.0,
         "cash": 0.0,
     }
+
+
+def _behavior_values(
+    policy: str,
+    objective: float,
+    seed_index: int,
+) -> dict[str, float]:
+    if policy == "cash":
+        return cash_behavior_diagnostics()
+
+    diagnostics = zero_behavior_diagnostics()
+    seed_variation = seed_index if policy in {
+        "domain_randomized_ppo",
+        "nominal_ppo",
+    } else 0
+    diagnostics.update({
+        "never_deployed_fraction": 0.1 * seed_variation,
+        "hold_action_fraction": 0.5 + 0.05 * seed_variation,
+        "rebalance_action_fraction": 0.5 - 0.05 * seed_variation,
+        "mean_rebalances_after_deployment_per_path": 2.0 + seed_variation,
+        "mean_selected_range_width_ticks": 4.0,
+        "mean_active_range_width_ticks": 4.0,
+        "mean_gas_spend_per_path": 3.0,
+        "mean_fee_income_token1_per_path": 8.0,
+        "mean_inventory_penalty_per_path": 2.0,
+        "mean_in_range_fraction_among_deployed_paths": 0.75,
+    })
+    diagnostics["mean_pnl_per_path"] = (
+        objective + diagnostics["mean_inventory_penalty_per_path"]
+    )
+    return diagnostics
 
 
 def _make_rows(
@@ -63,6 +99,7 @@ def _make_rows(
             ),
         }
         for policy in POLICIES:
+            behavior = _behavior_values(policy, values[policy], seed_index)
             rows.append({
                 "evaluation_set": evaluation_set,
                 "training_seed": training_seed,
@@ -78,6 +115,7 @@ def _make_rows(
                     else 10.0 + seed_index
                 ),
                 "n_evaluation_paths": n_evaluation_paths,
+                **behavior,
                 **gaps,
             })
     return rows
@@ -93,6 +131,7 @@ def _write_seed_run(
     n_evaluation_paths: int = 6,
     drop_last_row: bool = False,
     legacy_schema: bool = False,
+    missing_behavior_schema: bool = False,
 ) -> Path:
     run_dir = root / directory_name / "run_20260802_000000"
     run_dir.mkdir(parents=True)
@@ -120,6 +159,9 @@ def _write_seed_run(
                 "evaluation_path_std_running_inventory_objective"
             )
             row["n_samples"] = row.pop("n_evaluation_paths")
+    if missing_behavior_schema:
+        for row in rows:
+            row.pop("never_deployed_fraction")
 
     with (run_dir / "evaluation_grid.csv").open("w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=list(rows[0]))
@@ -193,6 +235,26 @@ def test_seed_sweep_aggregation_reports_training_and_path_variation(tmp_path):
         ]
     ) == 11.0
 
+    behavior_rows = _read_csv(
+        first_output / "training_seed_behavior_summary.csv"
+    )
+    never_deployed = next(
+        row
+        for row in behavior_rows
+        if row["evaluation_set"] == "in_distribution"
+        and row["policy"] == "domain_randomized_ppo"
+        and row["diagnostic"] == "never_deployed_fraction"
+    )
+    assert float(never_deployed["mean_across_training_seeds"]) == pytest.approx(
+        0.1
+    )
+    assert float(never_deployed["training_seed_sample_std"]) == pytest.approx(
+        0.1
+    )
+    assert len(behavior_rows) == 2 * len(POLICIES) * len(
+        BEHAVIOR_DIAGNOSTIC_COLUMNS
+    )
+
     for baseline_policy in ["cash", "periodic_rebalance"]:
         baseline_row = next(
             row
@@ -242,6 +304,13 @@ def test_seed_sweep_aggregation_reports_training_and_path_variation(tmp_path):
     ]["mean_of_regime_mean_running_inventory_objective"]
     assert set_stats["mean_across_training_seeds"] == 5.0
     assert set_stats["training_seed_sample_std"] == 2.0
+    behavior_stats = summary["policies"]["domain_randomized_ppo"][
+        "in_distribution"
+    ]["behavior_diagnostics_mean_across_regimes"][
+        "never_deployed_fraction"
+    ]
+    assert behavior_stats["mean_across_training_seeds"] == pytest.approx(0.1)
+    assert behavior_stats["training_seed_sample_std"] == pytest.approx(0.1)
 
     second_output = tmp_path / "aggregate_b"
     second_args = parse_args([
@@ -259,6 +328,11 @@ def test_seed_sweep_aggregation_reports_training_and_path_variation(tmp_path):
         first_output / "training_seed_regime_summary.csv"
     ).read_text() == (
         second_output / "training_seed_regime_summary.csv"
+    ).read_text()
+    assert (
+        first_output / "training_seed_behavior_summary.csv"
+    ).read_text() == (
+        second_output / "training_seed_behavior_summary.csv"
     ).read_text()
 
 
@@ -290,6 +364,7 @@ def test_discovery_rejects_inconsistent_evaluation_seed(tmp_path):
         ({"drop_last_row": True}, "expected"),
         ({"n_evaluation_paths": 7}, "path counts"),
         ({"legacy_schema": True}, "legacy result schema"),
+        ({"missing_behavior_schema": True}, "missing columns"),
     ],
 )
 def test_discovery_rejects_incomplete_or_incompatible_results(

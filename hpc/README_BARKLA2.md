@@ -99,10 +99,33 @@ networks. These are distinct uncertainty sources and should not be interpreted
 interchangeably.
 
 The aggregation job writes `training_seed_regime_summary.csv`,
-`training_seed_gap_summary.csv`, and `training_seed_summary.json` under the
-seed-sweep aggregate directory. Periodic-rebalance and cash results use the
-same fixed evaluation paths in every replicate, so their across-training-seed
-standard deviations should be zero.
+`training_seed_gap_summary.csv`, `training_seed_behavior_summary.csv`, and
+`training_seed_summary.json` under the seed-sweep aggregate directory.
+`training_seed_behavior_summary.csv` is long-form: each row reports one
+policy, regime, and behavior diagnostic with its training-seed mean, sample
+standard deviation, standard error, and bootstrap interval. Periodic-rebalance
+and cash results use the same fixed evaluation paths in every replicate, so
+their across-training-seed standard deviations should be zero.
+
+Every per-seed `evaluation_grid.csv` also reports policy behavior diagnostics:
+
+- `never_deployed_fraction` and `bankruptcy_fraction` expose cash collapse and
+  terminal loss of all deployed wealth.
+- `hold_action_fraction`, `rebalance_action_fraction`, and
+  `mean_rebalances_after_deployment_per_path` describe activity. Initial
+  deployment is a rebalance action but is excluded from the latter count.
+- `mean_selected_range_width_ticks` averages requested rebalance widths, while
+  `mean_active_range_width_ticks` averages live position widths over deployed
+  trajectory-steps. Both are zero when there are no applicable observations.
+- `mean_gas_spend_per_path` reports modeled gas actually deducted, capped by
+  remaining wealth.
+- `mean_fee_income_token1_per_path` values each step's newly accrued token0
+  fees at that step's external price and adds token1 fees.
+- `mean_pnl_per_path` and `mean_inventory_penalty_per_path` provide an exact
+  reward decomposition: mean objective equals mean PnL minus mean inventory
+  penalty.
+- `mean_in_range_fraction_among_deployed_paths` averages each deployed path's
+  fraction of deployed steps spent in range; never-deployed paths are excluded.
 
 ## Monitoring
 

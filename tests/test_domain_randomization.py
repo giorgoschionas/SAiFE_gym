@@ -5,6 +5,10 @@ import pytest
 from stable_baselines3 import PPO
 
 from experiments.helpers import INITIAL_WEALTH
+from experiments.policy_behavior_diagnostics import (
+    BEHAVIOR_DIAGNOSTIC_COLUMNS,
+    zero_behavior_diagnostics,
+)
 from experiments.train_robust_lp_agent import (
     add_gap_columns,
     apply_smoke_overrides,
@@ -695,6 +699,7 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
     assert row["mean_running_inventory_objective"] == 1.0
     assert row["evaluation_path_std_running_inventory_objective"] == 3.0
     assert row["n_evaluation_paths"] == 2
+    assert all(row[name] == 0.0 for name in BEHAVIOR_DIAGNOSTIC_COLUMNS)
     assert "std_running_inventory_objective" not in row
     assert "n_samples" not in row
     assert "mean_pnl" not in row
@@ -846,18 +851,42 @@ def test_summary_aggregates_each_evaluation_set_independently():
 
     summary = summarize_rows(rows)["domain_randomized_ppo"]
 
-    assert summary["in_distribution"] == {
-        "num_regimes": 2,
-        "mean_of_regime_mean_running_inventory_objective": 3.0,
-        "minimum_regime_mean_running_inventory_objective": 1.0,
-        "maximum_regime_mean_running_inventory_objective": 5.0,
-    }
-    assert summary["stress"] == {
-        "num_regimes": 2,
-        "mean_of_regime_mean_running_inventory_objective": -5.0,
-        "minimum_regime_mean_running_inventory_objective": -8.0,
-        "maximum_regime_mean_running_inventory_objective": -2.0,
-    }
+    assert summary["in_distribution"]["num_regimes"] == 2
+    assert (
+        summary["in_distribution"][
+            "mean_of_regime_mean_running_inventory_objective"
+        ]
+        == 3.0
+    )
+    assert (
+        summary["in_distribution"][
+            "minimum_regime_mean_running_inventory_objective"
+        ]
+        == 1.0
+    )
+    assert (
+        summary["in_distribution"][
+            "maximum_regime_mean_running_inventory_objective"
+        ]
+        == 5.0
+    )
+    assert summary["stress"]["num_regimes"] == 2
+    assert (
+        summary["stress"]["mean_of_regime_mean_running_inventory_objective"]
+        == -5.0
+    )
+    assert (
+        summary["stress"]["minimum_regime_mean_running_inventory_objective"]
+        == -8.0
+    )
+    assert (
+        summary["stress"]["maximum_regime_mean_running_inventory_objective"]
+        == -2.0
+    )
+    for evaluation_set in ["in_distribution", "stress"]:
+        assert summary[evaluation_set][
+            "behavior_diagnostics_mean_across_regimes"
+        ] == zero_behavior_diagnostics()
 
     wrapped = summarize_single_training_seed(
         rows,
@@ -883,6 +912,42 @@ def test_cash_baseline_is_zero_with_expected_sample_count():
     assert row["mean_running_inventory_objective"] == 0.0
     assert row["evaluation_path_std_running_inventory_objective"] == 0.0
     assert row["n_evaluation_paths"] == 12
+    assert row["never_deployed_fraction"] == 1.0
+    assert row["hold_action_fraction"] == 1.0
+    assert row["rebalance_action_fraction"] == 0.0
+    assert row["bankruptcy_fraction"] == 0.0
+    assert row["mean_pnl_per_path"] == 0.0
+    assert row["mean_inventory_penalty_per_path"] == 0.0
+
+
+def test_objective_summary_validates_behavior_reward_decomposition():
+    params = DomainParameters(sigma=0.055, arrival_rate=125.0, gas_cost=3.5)
+    diagnostics = zero_behavior_diagnostics()
+    diagnostics["mean_pnl_per_path"] = 5.0
+    diagnostics["mean_inventory_penalty_per_path"] = 2.0
+
+    row = summarize_running_inventory_objective(
+        "domain_randomized_ppo",
+        params,
+        "in_distribution",
+        np.array([1.0, 5.0]),
+        training_seed=43,
+        evaluation_seed=100042,
+        behavior_diagnostics=diagnostics,
+    )
+    assert row["mean_running_inventory_objective"] == 3.0
+
+    diagnostics["mean_pnl_per_path"] = 6.0
+    with pytest.raises(ValueError, match="PnL minus mean inventory penalty"):
+        summarize_running_inventory_objective(
+            "domain_randomized_ppo",
+            params,
+            "in_distribution",
+            np.array([1.0, 5.0]),
+            training_seed=43,
+            evaluation_seed=100042,
+            behavior_diagnostics=diagnostics,
+        )
 
 
 def test_ppo_smoke_learns_on_domain_randomized_env():

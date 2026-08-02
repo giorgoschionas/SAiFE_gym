@@ -36,6 +36,13 @@ from experiments.helpers import (  # noqa: E402
     TERMINAL_TIME,
     wrap_env,
 )
+from experiments.policy_behavior_diagnostics import (  # noqa: E402
+    BEHAVIOR_DIAGNOSTIC_COLUMNS,
+    BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION,
+    PolicyBehaviorAccumulator,
+    cash_behavior_diagnostics,
+    zero_behavior_diagnostics,
+)
 from SAiFE_gym.agents.BaselineAgents import PeriodicRebalanceAgent  # noqa: E402
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment  # noqa: E402
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics  # noqa: E402
@@ -470,6 +477,7 @@ def evaluate_ppo(
     regime_seed: int,
 ) -> dict:
     objective_values = []
+    behavior = PolicyBehaviorAccumulator()
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
@@ -477,17 +485,21 @@ def evaluate_ppo(
         action_wrapper = StructuredMultiDiscreteVecEnv(sb3_env, args.tau)
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
+        behavior.begin_episode(env.num_trajectories)
 
         for _ in range(env.n_steps):
             flat_obs = sb3_env._flatten_obs(obs)
             model_obs = normalize_obs(flat_obs, vec_normalize)
             structured_action, _ = model.predict(model_obs, deterministic=True)
             action = action_wrapper.unscale(structured_action)
+            behavior_snapshot = behavior.before_step(obs, action)
             obs, rewards, terminated, truncated, _ = env.step(action)
+            behavior.after_step(behavior_snapshot, obs, rewards)
             cumulative_reward += rewards
             if (terminated | truncated).all():
                 break
 
+        behavior.finish_episode(obs)
         objective_values.append(cumulative_reward)
 
     return summarize_running_inventory_objective(
@@ -497,6 +509,7 @@ def evaluate_ppo(
         np.concatenate(objective_values),
         training_seed=args.seed,
         evaluation_seed=args.evaluation_seed,
+        behavior_diagnostics=behavior.summarize(),
     )
 
 
@@ -507,6 +520,7 @@ def evaluate_periodic_rebalance(
     regime_seed: int,
 ) -> dict:
     objective_values = []
+    behavior = PolicyBehaviorAccumulator()
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
@@ -517,14 +531,18 @@ def evaluate_periodic_rebalance(
         )
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
+        behavior.begin_episode(env.num_trajectories)
 
         for _ in range(env.n_steps):
             action = agent.get_action(obs)
+            behavior_snapshot = behavior.before_step(obs, action)
             obs, rewards, terminated, truncated, _ = env.step(action)
+            behavior.after_step(behavior_snapshot, obs, rewards)
             cumulative_reward += rewards
             if (terminated | truncated).all():
                 break
 
+        behavior.finish_episode(obs)
         objective_values.append(cumulative_reward)
 
     return summarize_running_inventory_objective(
@@ -534,6 +552,7 @@ def evaluate_periodic_rebalance(
         np.concatenate(objective_values),
         training_seed=args.seed,
         evaluation_seed=args.evaluation_seed,
+        behavior_diagnostics=behavior.summarize(),
     )
 
 
@@ -556,6 +575,7 @@ def evaluate_cash(
         objective_values,
         training_seed=args.seed,
         evaluation_seed=args.evaluation_seed,
+        behavior_diagnostics=cash_behavior_diagnostics(),
     )
 
 
@@ -580,7 +600,38 @@ def summarize_running_inventory_objective(
     objective_values: np.ndarray,
     training_seed: int,
     evaluation_seed: int,
+    behavior_diagnostics: Optional[dict[str, float]] = None,
 ) -> dict:
+    objective_values = np.asarray(objective_values, dtype=np.float64)
+    if objective_values.ndim != 1 or objective_values.size == 0:
+        raise ValueError("objective_values must be a non-empty one-dimensional array")
+    if not np.all(np.isfinite(objective_values)):
+        raise ValueError("objective_values must contain only finite values")
+
+    diagnostics = (
+        zero_behavior_diagnostics()
+        if behavior_diagnostics is None
+        else behavior_diagnostics
+    )
+    if set(diagnostics) != set(BEHAVIOR_DIAGNOSTIC_COLUMNS):
+        raise ValueError("behavior diagnostics do not match the required schema")
+    if not all(np.isfinite(value) for value in diagnostics.values()):
+        raise ValueError("behavior diagnostics must contain only finite values")
+    if behavior_diagnostics is not None:
+        decomposed_objective = (
+            diagnostics["mean_pnl_per_path"]
+            - diagnostics["mean_inventory_penalty_per_path"]
+        )
+        if not np.isclose(
+            np.mean(objective_values),
+            decomposed_objective,
+            rtol=1e-9,
+            atol=1e-7,
+        ):
+            raise ValueError(
+                "mean objective must equal mean PnL minus mean inventory penalty"
+            )
+
     return {
         "evaluation_set": evaluation_set,
         "training_seed": training_seed,
@@ -594,6 +645,7 @@ def summarize_running_inventory_objective(
             np.std(objective_values)
         ),
         "n_evaluation_paths": int(objective_values.shape[0]),
+        **diagnostics,
     }
 
 
@@ -722,6 +774,15 @@ def _summarize_policy_evaluation_set(
         "mean_of_regime_mean_running_inventory_objective": float(np.mean(values)),
         "minimum_regime_mean_running_inventory_objective": float(np.min(values)),
         "maximum_regime_mean_running_inventory_objective": float(np.max(values)),
+        "behavior_diagnostics_mean_across_regimes": {
+            diagnostic: float(np.mean([
+                row[diagnostic]
+                for row in rows
+                if row["policy"] == policy
+                and row["evaluation_set"] == evaluation_set
+            ]))
+            for diagnostic in BEHAVIOR_DIAGNOSTIC_COLUMNS
+        },
     }
 
 
@@ -763,6 +824,9 @@ def main() -> int:
     apply_smoke_overrides(args)
     resolve_train_domains_per_reset(args)
     validate_evaluation_configuration(args)
+    args.behavior_diagnostics_schema_version = (
+        BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION
+    )
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
     save_json(run_dir / "config.json", vars(args))
 
