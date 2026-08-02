@@ -30,7 +30,6 @@ if str(ROOT) not in sys.path:
 from experiments.helpers import (  # noqa: E402
     FEE_TIER,
     INITIAL_PRICE,
-    INITIAL_WEALTH,
     NUM_TICKS,
     SEED,
     TERMINAL_TIME,
@@ -97,13 +96,13 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
-    parser.add_argument("--tau", type=int, default=5)
+    parser.add_argument("--tau", type=int, default=500)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
-    # it dilutes fees relative to the position's mark-to-market price noise. At
-    # the 1e6 default, per-episode fees (~1e1) are dwarfed by PnL spread (~5e4)
-    # and holding no position is the reward-maximizing policy.
-    parser.add_argument("--initial-wealth", type=float, default=INITIAL_WEALTH)
+    # it dilutes fees relative to the position's mark-to-market price noise.
+    # The previous 1e6 default made fee income negligible relative to PnL;
+    # 5e3 keeps the LP's capital scale closer to the modeled trading volume.
+    parser.add_argument("--initial-wealth", type=float, default=5_000.0)
     # Risk charge as a fraction of --initial-wealth per unit time at full token0
     # exposure; see RunningInventoryPenalty's value-normalized formulation.
     parser.add_argument("--inventory-phi", type=float, default=0.02)

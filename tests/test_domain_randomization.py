@@ -37,7 +37,13 @@ from SAiFE_gym.gym.domain_randomization import (
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
-from SAiFE_gym.gym.index_names import GAS_COST_KEY
+from SAiFE_gym.gym.index_names import (
+    GAS_COST_KEY,
+    LP_TICK_LOWER_KEY,
+    LP_TICK_UPPER_KEY,
+    POOL_CURRENT_TICK_KEY,
+    PORTFOLIO_VALUE_KEY,
+)
 from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty
 from SAiFE_gym.stochastic_processes.arrival_models import (
     LiquidityKernelArrivalModel,
@@ -547,7 +553,9 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
 
     assert args.output_dir == "experiments/results/domain_randomized_ppo"
     assert args.n_steps == 1000
+    assert args.tau == 500
     assert args.alpha3 == 4000.0
+    assert args.initial_wealth == 5_000.0
     assert args.inventory_phi == 0.02
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
@@ -561,6 +569,40 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.eval_stress_sigma_values == [0.025, 0.10, 0.30]
     assert args.eval_stress_arrival_rate_values == [25.0, 100.0, 300.0]
     assert args.eval_stress_gas_cost_values == [0.0, 10.0, 40.0]
+
+
+def test_domain_randomized_script_defaults_propagate_to_environment_and_action_space():
+    args = parse_args([])
+    args.num_trajectories = 2
+    args.n_steps = 5
+    params = DomainParameters(
+        sigma=args.nominal_sigma,
+        arrival_rate=args.nominal_arrival_rate,
+        gas_cost=args.nominal_gas_cost,
+    )
+
+    env = make_fixed_env(args, params, seed=123)
+    state, _ = env.reset(seed=123)
+    ppo_env = StructuredMultiDiscreteVecEnv(
+        StableBaselinesAMMEnvironment(env),
+        args.tau,
+    )
+
+    assert env.initial_wealth == 5_000.0
+    assert env.reward_function.reference_wealth == 5_000.0
+    assert env.model_dynamics.tau == 500
+    np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
+    np.testing.assert_array_equal(env.action_space.high, [499.0, 500.0, 1.0])
+    np.testing.assert_array_equal(ppo_env.action_space.nvec, [1001, 500, 2])
+    np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [5_000.0, 5_000.0])
+    np.testing.assert_array_equal(
+        state[LP_TICK_LOWER_KEY],
+        state[POOL_CURRENT_TICK_KEY] - 500,
+    )
+    np.testing.assert_array_equal(
+        state[LP_TICK_UPPER_KEY],
+        state[POOL_CURRENT_TICK_KEY] + 500,
+    )
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
     validate_evaluation_configuration(args)
 
