@@ -15,6 +15,7 @@ set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
 VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
+TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-2}
 
 module purge
 module load miniforge3/25.3.0-python3.12.10
@@ -41,9 +42,11 @@ echo "Running on node: $(hostname)"
 echo "Working directory: $(pwd)"
 echo "Python: $(which python)"
 echo "SLURM job id: $SLURM_JOB_ID"
+echo "Training domains per reset: $TRAIN_DOMAINS_PER_RESET"
 
 python -u experiments/train_robust_lp_agent.py \
   --smoke-test \
+  --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
   --output-dir experiments/results/robust_rl/barkla2_smoke
 
 echo "Job finished at: $(date)"

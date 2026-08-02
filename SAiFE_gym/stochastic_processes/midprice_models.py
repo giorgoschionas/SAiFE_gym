@@ -6,7 +6,37 @@ from SAiFE_gym.stochastic_processes.StochasticProcessModel import StochasticProc
 import numpy as np
 
 
-MidpriceModel = StochasticProcessModel
+class MidpriceModel(StochasticProcessModel):
+    """Base class for vectorized midprice processes.
+
+    ``volatility`` remains the scalar constructor/configuration value. Domain
+    randomization uses ``episode_volatility`` so every trajectory can carry a
+    different value without changing the public scalar API.
+    """
+
+    def set_episode_volatility(self, volatility: np.ndarray) -> None:
+        episode_volatility = np.asarray(volatility, dtype=np.float64)
+        expected_shape = (self.num_trajectories, 1)
+        if episode_volatility.shape != expected_shape:
+            raise ValueError(
+                "episode volatility must have shape "
+                f"{expected_shape}, got {episode_volatility.shape}"
+            )
+        if not np.all(np.isfinite(episode_volatility)):
+            raise ValueError("episode volatility must contain only finite values")
+        if np.any(episode_volatility < 0.0):
+            raise ValueError("episode volatility must be non-negative")
+        self.episode_volatility = episode_volatility.copy()
+
+
+def _initialize_episode_volatility(model: MidpriceModel) -> None:
+    model.set_episode_volatility(
+        np.full(
+            (model.num_trajectories, 1),
+            model.volatility,
+            dtype=np.float64,
+        )
+    )
 
 class BrownianMotionMidpriceModel(MidpriceModel):
     def __init__(
@@ -20,7 +50,7 @@ class BrownianMotionMidpriceModel(MidpriceModel):
         seed: Optional[int] = None,
     ):
         self.drift = drift
-        self.volatility = volatility
+        self.volatility = float(volatility)
         self.terminal_time = terminal_time
         super().__init__(
             min_value=np.array([[initial_price - (self._get_max_value(initial_price, terminal_time) - initial_price)]]),
@@ -31,12 +61,15 @@ class BrownianMotionMidpriceModel(MidpriceModel):
             num_trajectories=num_trajectories,
             seed=seed,
         )
+        _initialize_episode_volatility(self)
 
     def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None) -> np.ndarray:
         self.current_state = (
             self.current_state
             + self.drift * self.step_size * np.ones((self.num_trajectories, 1))
-            + self.volatility * sqrt(self.step_size) * self.rng.normal(size=(self.num_trajectories, 1))
+            + self.episode_volatility
+            * sqrt(self.step_size)
+            * self.rng.normal(size=(self.num_trajectories, 1))
         )
 
     def _get_max_value(self, initial_price, terminal_time):
@@ -55,7 +88,7 @@ class GeometricBrownianMotionMidpriceModel(MidpriceModel):
         seed: Optional[int] = None,
     ):
         self.drift = drift
-        self.volatility = volatility
+        self.volatility = float(volatility)
         self.terminal_time = terminal_time
         super().__init__(
             min_value=np.array([[initial_price - (self._get_max_value(initial_price, terminal_time) - initial_price)]]),
@@ -66,12 +99,13 @@ class GeometricBrownianMotionMidpriceModel(MidpriceModel):
             num_trajectories=num_trajectories,
             seed=seed,
         )
+        _initialize_episode_volatility(self)
 
     def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None) -> np.ndarray:
         self.current_state = (
             self.current_state
             + self.drift * self.current_state * self.step_size
-            + self.volatility
+            + self.episode_volatility
             * self.current_state
             * sqrt(self.step_size)
             * self.rng.normal(size=(self.num_trajectories, 1))
@@ -112,7 +146,7 @@ class OrnsteinUhlenbeckMidpriceModel(MidpriceModel):
         assert mean_reversion > 0, f"mean_reversion (κ) must be positive, got {mean_reversion}"
         self.mean_reversion = mean_reversion
         self.long_term_mean = initial_price if long_term_mean is None else long_term_mean
-        self.volatility = volatility
+        self.volatility = float(volatility)
         self.terminal_time = terminal_time
         max_val = self._get_max_value(initial_price, terminal_time)
         super().__init__(
@@ -124,6 +158,7 @@ class OrnsteinUhlenbeckMidpriceModel(MidpriceModel):
             num_trajectories=num_trajectories,
             seed=seed,
         )
+        _initialize_episode_volatility(self)
 
     def update(self, arrivals: np.ndarray, fills: np.ndarray, actions: np.ndarray, state: np.ndarray = None) -> np.ndarray:
         self.current_state = (
@@ -131,10 +166,12 @@ class OrnsteinUhlenbeckMidpriceModel(MidpriceModel):
             + self.mean_reversion
             * (self.long_term_mean - self.current_state)
             * self.step_size
-            + self.volatility * self.current_state * sqrt(self.step_size) * self.rng.normal(size=(self.num_trajectories, 1))
+            + self.episode_volatility
+            * self.current_state
+            * sqrt(self.step_size)
+            * self.rng.normal(size=(self.num_trajectories, 1))
         )
 
     def _get_max_value(self, initial_price, terminal_time):
         stationary_std = self.volatility / sqrt(2 * self.mean_reversion)
         return self.long_term_mean + 4 * stationary_std
-

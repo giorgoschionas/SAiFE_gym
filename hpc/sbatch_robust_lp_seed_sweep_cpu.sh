@@ -22,6 +22,7 @@ SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
 
 TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-1000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
+TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-$NUM_TRAJECTORIES}
 N_STEPS=${N_STEPS:-1000}
 TAU=${TAU:-5}
 ALPHA3=${ALPHA3:-4000.0}
@@ -76,7 +77,7 @@ echo "SLURM job id: $SLURM_JOB_ID array=$SLURM_ARRAY_JOB_ID task=$SLURM_ARRAY_TA
 echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks=$SLURM_NTASKS"
 echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
 echo "Periodic baseline: rebalance_every=$PERIODIC_REBALANCE_EVERY width=$PERIODIC_WIDTH"
-echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX]"
+echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX] domains_per_reset=$TRAIN_DOMAINS_PER_RESET"
 echo "Evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_SIGMA_VALUES] arrival=[$EVAL_ARRIVAL_RATE_VALUES] gas=[$EVAL_GAS_COST_VALUES]"
 echo "Output dir: $OUTPUT_DIR"
 
@@ -100,6 +101,7 @@ python -u experiments/train_robust_lp_agent.py \
   --train-sigma-range "$TRAIN_SIGMA_MIN" "$TRAIN_SIGMA_MAX" \
   --train-arrival-rate-range "$TRAIN_ARRIVAL_RATE_MIN" "$TRAIN_ARRIVAL_RATE_MAX" \
   --train-gas-cost-range "$TRAIN_GAS_COST_MIN" "$TRAIN_GAS_COST_MAX" \
+  --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
   --eval-sigma-values $EVAL_SIGMA_VALUES \
   --eval-arrival-rate-values $EVAL_ARRIVAL_RATE_VALUES \
   --eval-gas-cost-values $EVAL_GAS_COST_VALUES

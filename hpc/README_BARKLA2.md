@@ -50,6 +50,10 @@ sbatch --export=ALL,TOTAL_TIMESTEPS=2000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
+Robust training uses one sampled domain per trajectory by default. Set
+`TRAIN_DOMAINS_PER_RESET=1` to restore a single shared domain, or choose any
+value from `1` through `NUM_TRAJECTORIES` for balanced grouped assignments.
+
 ## Seed sweep
 
 Submit independent replicate runs:

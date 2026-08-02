@@ -102,6 +102,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
     )
     parser.add_argument("--train-gas-cost-range", nargs=2, type=float, default=(1.0, 6.0))
+    parser.add_argument(
+        "--train-domains-per-reset",
+        type=int,
+        default=None,
+        help=(
+            "Number of balanced episode domains assigned across training "
+            "trajectories (default: one domain per trajectory)."
+        ),
+    )
     parser.add_argument("--arrival-alpha2", type=float, default=0.0)
     parser.add_argument("--kernel-beta", type=float, default=0.5)
     parser.add_argument("--kernel-window", type=int, default=10)
@@ -137,6 +146,24 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.eval_sigma_values = [0.05, 0.10]
     args.eval_arrival_rate_values = [50.0, 100.0]
     args.eval_gas_cost_values = [0.0, 10.0]
+
+
+def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
+    """Resolve and validate the robust environment's domain batch size."""
+    num_domains = getattr(args, "train_domains_per_reset", None)
+    if num_domains is None:
+        num_domains = args.num_trajectories
+    if isinstance(num_domains, bool) or not isinstance(
+        num_domains, (int, np.integer)
+    ):
+        raise ValueError("train_domains_per_reset must be an integer")
+    if not 1 <= num_domains <= args.num_trajectories:
+        raise ValueError(
+            "train_domains_per_reset must satisfy 1 <= value <= "
+            f"num_trajectories ({args.num_trajectories}), got {num_domains}"
+        )
+    args.train_domains_per_reset = int(num_domains)
+    return args.train_domains_per_reset
 
 
 def make_fixed_env(
@@ -205,6 +232,7 @@ def make_fixed_env(
 
 
 def make_robust_env(args: argparse.Namespace):
+    num_domains = resolve_train_domains_per_reset(args)
     base_env = make_fixed_env(
         args,
         DomainParameters(
@@ -219,7 +247,12 @@ def make_robust_env(args: argparse.Namespace):
         arrival_rate_range=tuple(args.train_arrival_rate_range),
         gas_cost_range=tuple(args.train_gas_cost_range),
     )
-    return DomainRandomizedAMMEnvironment(base_env, config, seed=args.seed + 10_000)
+    return DomainRandomizedAMMEnvironment(
+        base_env,
+        config,
+        seed=args.seed + 10_000,
+        num_domains=num_domains,
+    )
 
 
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
@@ -486,6 +519,7 @@ def make_run_dir(output_dir: str, smoke_test: bool) -> Path:
 def main() -> int:
     args = parse_args()
     apply_smoke_overrides(args)
+    resolve_train_domains_per_reset(args)
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
     save_json(run_dir / "config.json", vars(args))
 

@@ -12,7 +12,7 @@ from SAiFE_gym.gym.index_names import (
     LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
     LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
     LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
-    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY,
+    LP_EVER_DEPLOYED_KEY, INITIAL_WEALTH_KEY, GAS_COST_KEY,
 )
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
@@ -574,7 +574,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if np.any(has_position):
             alpha_new = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper)
             swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
-            total_cost = np.where(has_position, self.gas_cost + swap_cost, 0.0)
+            episode_gas_cost = self.state.get(GAS_COST_KEY, self.gas_cost)
+            total_cost = np.where(has_position, episode_gas_cost + swap_cost, 0.0)
             wealth = np.maximum(wealth - total_cost, 0.0)
 
         # Value per unit liquidity at new range
