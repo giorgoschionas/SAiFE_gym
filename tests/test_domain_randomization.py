@@ -8,6 +8,7 @@ from experiments.helpers import INITIAL_WEALTH
 from experiments.train_robust_lp_agent import (
     add_gap_columns,
     evaluate_cash,
+    make_domain_randomized_env,
     make_fixed_env,
     make_robust_env,
     parse_args,
@@ -481,7 +482,7 @@ def test_default_sb3_observation_hides_gas_cost():
     assert env.state[GAS_COST_KEY][0] == 11.0
 
 
-def test_robust_script_factory_uses_requested_market_components():
+def test_domain_randomized_script_factory_uses_requested_market_components():
     args = Namespace(
         num_trajectories=2,
         terminal_time=1.0,
@@ -532,9 +533,10 @@ def test_robust_script_factory_uses_requested_market_components():
     assert env.model_dynamics.gas_cost == 6.0
 
 
-def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
+def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     args = parse_args([])
 
+    assert args.output_dir == "experiments/results/domain_randomized_ppo"
     assert args.n_steps == 1000
     assert args.alpha3 == 4000.0
     assert args.inventory_phi == 0.02
@@ -548,17 +550,29 @@ def test_robust_script_parser_defaults_use_inventory_penalty_domain_ranges():
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
 
 
-def test_robust_factory_defaults_to_one_domain_per_trajectory():
+def test_domain_randomized_factory_defaults_to_one_domain_per_trajectory():
     args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
 
-    env = make_robust_env(args)
+    env = make_domain_randomized_env(args)
 
     assert env.num_domains == 3
     assert args.train_domains_per_reset == 3
 
 
+def test_robust_factory_alias_preserves_existing_imports():
+    canonical_args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
+    compatibility_args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
+
+    canonical_env = make_domain_randomized_env(canonical_args)
+    compatibility_env = make_robust_env(compatibility_args)
+
+    assert isinstance(canonical_env, DomainRandomizedAMMEnvironment)
+    assert isinstance(compatibility_env, DomainRandomizedAMMEnvironment)
+    assert compatibility_env.num_domains == canonical_env.num_domains == 3
+
+
 @pytest.mark.parametrize("num_domains", [0, 4, 1.5])
-def test_robust_domain_count_validation(num_domains):
+def test_domain_randomized_domain_count_validation(num_domains):
     args = parse_args(["--num-trajectories", "3"])
     args.train_domains_per_reset = num_domains
 
@@ -566,11 +580,11 @@ def test_robust_domain_count_validation(num_domains):
         resolve_train_domains_per_reset(args)
 
 
-def test_robust_script_reports_running_inventory_objective_columns():
+def test_domain_randomized_script_reports_unambiguous_objective_columns():
     params = DomainParameters(sigma=0.01, arrival_rate=50.0, gas_cost=1.0)
 
     row = summarize_running_inventory_objective(
-        "robust_ppo",
+        "domain_randomized_ppo",
         params,
         np.array([-2.0, 4.0]),
     )
@@ -582,7 +596,7 @@ def test_robust_script_reports_running_inventory_objective_columns():
 
     rows = [
         summarize_running_inventory_objective(
-            "robust_ppo",
+            "domain_randomized_ppo",
             params,
             np.array([3.0]),
         ),
@@ -604,21 +618,47 @@ def test_robust_script_reports_running_inventory_objective_columns():
     ]
     add_gap_columns(rows)
 
-    assert rows[0]["robust_vs_nominal_mean_running_inventory_objective_gap"] == 2.0
     assert (
         rows[0][
-            "robust_vs_periodic_rebalance_mean_running_inventory_objective_gap"
+            "domain_randomized_vs_nominal_mean_running_inventory_objective_gap"
+        ]
+        == 2.0
+    )
+    assert (
+        rows[0][
+            "domain_randomized_vs_periodic_rebalance_"
+            "mean_running_inventory_objective_gap"
         ]
         == 4.0
     )
-    assert rows[0]["robust_vs_cash_mean_running_inventory_objective_gap"] == 3.0
-    assert "robust_vs_nominal_mean_pnl_gap" not in rows[0]
+    assert (
+        rows[0]["domain_randomized_vs_cash_mean_running_inventory_objective_gap"]
+        == 3.0
+    )
+    assert not any(key.startswith("robust_") for key in rows[0])
 
     summary = summarize_rows(rows)
-    assert summary["robust_ppo"]["mean_of_regime_mean_running_inventory_objective"] == 3.0
-    assert summary["robust_ppo"]["worst_regime_mean_running_inventory_objective"] == 3.0
-    assert summary["robust_ppo"]["best_regime_mean_running_inventory_objective"] == 3.0
-    assert "mean_of_regime_mean_pnl" not in summary["robust_ppo"]
+    domain_randomized_summary = summary["domain_randomized_ppo"]
+    assert (
+        domain_randomized_summary[
+            "mean_of_evaluation_grid_regime_mean_running_inventory_objective"
+        ]
+        == 3.0
+    )
+    assert (
+        domain_randomized_summary[
+            "minimum_evaluation_grid_regime_mean_running_inventory_objective"
+        ]
+        == 3.0
+    )
+    assert (
+        domain_randomized_summary[
+            "maximum_evaluation_grid_regime_mean_running_inventory_objective"
+        ]
+        == 3.0
+    )
+    assert "robust_ppo" not in summary
+    assert not any("worst" in key for key in domain_randomized_summary)
 
 
 def test_cash_baseline_is_zero_with_expected_sample_count():

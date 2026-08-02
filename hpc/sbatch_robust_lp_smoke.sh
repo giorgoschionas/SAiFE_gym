@@ -2,7 +2,7 @@
 
 # Example Barkla2 Slurm smoke-test job for experiments/train_robust_lp_agent.py.
 
-#SBATCH -J robust_lp_smoke
+#SBATCH -J dr_ppo_smoke
 #SBATCH -p short
 #SBATCH -N 1
 #SBATCH -n 2
@@ -35,7 +35,7 @@ export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/users/$USER/saife_matplotlib_${SLURM_JO
 
 mkdir -p "$MPLCONFIGDIR"
 cd "$PROJECT_DIR"
-mkdir -p logs experiments/results/robust_rl
+mkdir -p logs experiments/results/domain_randomized_ppo
 
 echo "Job started at: $(date)"
 echo "Running on node: $(hostname)"
@@ -47,6 +47,6 @@ echo "Training domains per reset: $TRAIN_DOMAINS_PER_RESET"
 python -u experiments/train_robust_lp_agent.py \
   --smoke-test \
   --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
-  --output-dir experiments/results/robust_rl/barkla2_smoke
+  --output-dir experiments/results/domain_randomized_ppo/barkla2_smoke
 
 echo "Job finished at: $(date)"

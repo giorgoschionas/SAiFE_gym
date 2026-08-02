@@ -1,7 +1,7 @@
-# Barkla2 example Slurm scripts for robust LP PPO
+# Barkla2 example Slurm scripts for domain-randomized LP PPO
 
 These example scripts are written for the University of Liverpool Barkla2 Slurm setup described
-in `docs/Barkla2_User_Guide (2).pdf`. They are templates for reproducing the robust LP PPO
+in `docs/Barkla2_User_Guide (2).pdf`. They are templates for reproducing the domain-randomized PPO
 experiment on that cluster; adjust paths, partitions, time limits, and resources for other HPC
 systems.
 
@@ -50,7 +50,7 @@ sbatch --export=ALL,TOTAL_TIMESTEPS=2000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
-Robust training uses one sampled domain per trajectory by default. Set
+Domain-randomized training uses one sampled domain per trajectory by default. Set
 `TRAIN_DOMAINS_PER_RESET=1` to restore a single shared domain, or choose any
 value from `1` through `NUM_TRAJECTORIES` for balanced grouped assignments.
 
@@ -75,5 +75,5 @@ squeue -j <job_id>
 scancel <job_id>
 ```
 
-Run artifacts are written under `experiments/results/robust_rl/...` inside the project directory.
+Run artifacts are written under `experiments/results/domain_randomized_ppo/...` inside the project directory.
 Slurm output/error files are written under `logs/`; the setup script creates that directory.

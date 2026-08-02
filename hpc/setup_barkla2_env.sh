@@ -1,5 +1,5 @@
 #!/bin/bash -l
-# Example Barkla2 environment setup for the robust LP PPO experiment.
+# Example Barkla2 environment setup for the domain-randomized LP PPO experiment.
 
 set -euo pipefail
 
@@ -11,7 +11,7 @@ module load miniforge3/25.3.0-python3.12.10
 
 mkdir -p "$(dirname "$VENV_DIR")"
 mkdir -p "$PROJECT_DIR/logs"
-mkdir -p "$PROJECT_DIR/experiments/results/robust_rl"
+mkdir -p "$PROJECT_DIR/experiments/results/domain_randomized_ppo"
 
 cd "$PROJECT_DIR"
 

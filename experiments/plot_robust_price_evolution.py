@@ -1,9 +1,9 @@
 """
-Plot price evolution for the robust AMM environment without training an agent.
+Plot price evolution for the fixed-parameter AMM market model.
 
 The environment is constructed through ``train_robust_lp_agent.make_fixed_env``
 so this diagnostic uses the same GBM midprice, liquidity-kernel arrivals, and
-liquidity-depth Uniswap v3 price impact as the robust RL experiment.
+liquidity-depth Uniswap v3 price impact as the domain-randomized PPO experiment.
 """
 
 import argparse
@@ -41,9 +41,12 @@ from SAiFE_gym.gym.index_names import (  # noqa: E402
 
 def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Plot robust-environment pool price and external midprice."
+        description="Plot fixed-parameter AMM pool price and external midprice."
     )
-    parser.add_argument("--output-dir", default="experiments/figures/robust_price_evolution")
+    parser.add_argument(
+        "--output-dir",
+        default="experiments/figures/amm_price_evolution",
+    )
     parser.add_argument("--num-sims", type=int, default=1)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
@@ -178,7 +181,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         save_rollout_csv(output_dir / f"rollout_sim_{sim_idx + 1:03d}.csv", data)
 
     plot_price_paths(paths, output_dir / "price_evolution.png")
-    print(f"Saved robust price evolution artifacts to: {output_dir}")
+    print(f"Saved AMM price evolution artifacts to: {output_dir}")
     return 0
 
 

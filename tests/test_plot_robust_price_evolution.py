@@ -1,9 +1,13 @@
 import csv
 
-from experiments.plot_robust_price_evolution import main
+from experiments.plot_robust_price_evolution import main, parse_args
 
 
-def test_plot_robust_price_evolution_smoke(tmp_path):
+def test_price_evolution_default_output_directory_is_neutral():
+    assert parse_args([]).output_dir == "experiments/figures/amm_price_evolution"
+
+
+def test_plot_price_evolution_smoke(tmp_path):
     rc = main([
         "--output-dir",
         str(tmp_path),

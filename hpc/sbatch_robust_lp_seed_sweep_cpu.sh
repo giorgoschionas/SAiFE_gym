@@ -1,8 +1,8 @@
 #!/bin/bash -l
 
-# Example Barkla2 Slurm array job for independent robust LP PPO seed replicates.
+# Example Barkla2 Slurm array job for domain-randomized LP PPO seed replicates.
 
-#SBATCH -J robust_lp_seed_sweep
+#SBATCH -J dr_ppo_seed_sweep
 #SBATCH -p nodes
 #SBATCH -N 1
 #SBATCH -n 16
@@ -32,7 +32,7 @@ N_EVAL_EPISODES=${N_EVAL_EPISODES:-10}
 LEARNING_RATE=${LEARNING_RATE:-3e-4}
 PERIODIC_REBALANCE_EVERY=${PERIODIC_REBALANCE_EVERY:-5}
 PERIODIC_WIDTH=${PERIODIC_WIDTH:-2}
-OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/robust_rl/barkla2_seed_sweep}/seed_${SEED}
+OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/domain_randomized_ppo/barkla2_seed_sweep}/seed_${SEED}
 
 NOMINAL_SIGMA=${NOMINAL_SIGMA:-0.10}
 NOMINAL_ARRIVAL_RATE=${NOMINAL_ARRIVAL_RATE:-100.0}

@@ -94,7 +94,7 @@ class BatchedDomainParameters:
 
 @dataclass(frozen=True)
 class UniformDomainRandomizationConfig:
-    """Uniform sampling ranges for robust LP training."""
+    """Uniform sampling ranges for domain-randomized LP training."""
 
     sigma_range: tuple[float, float] = (1.0, 4.0)
     arrival_rate_range: tuple[float, float] = (50.0, 200.0)

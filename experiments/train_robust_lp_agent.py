@@ -68,9 +68,12 @@ def constant_trade_size_sampler(trade_notional: float):
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train and evaluate robust LP PPO with domain randomization."
+        description="Train and evaluate domain-randomized LP PPO."
     )
-    parser.add_argument("--output-dir", default="experiments/results/robust_rl")
+    parser.add_argument(
+        "--output-dir",
+        default="experiments/results/domain_randomized_ppo",
+    )
     parser.add_argument("--total-timesteps", type=int, default=1_000_000)
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
@@ -149,7 +152,7 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
 
 
 def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
-    """Resolve and validate the robust environment's domain batch size."""
+    """Resolve and validate the randomized environment's domain batch size."""
     num_domains = getattr(args, "train_domains_per_reset", None)
     if num_domains is None:
         num_domains = args.num_trajectories
@@ -231,7 +234,8 @@ def make_fixed_env(
     )
 
 
-def make_robust_env(args: argparse.Namespace):
+def make_domain_randomized_env(args: argparse.Namespace):
+    """Build the PPO training environment with episode-level randomization."""
     num_domains = resolve_train_domains_per_reset(args)
     base_env = make_fixed_env(
         args,
@@ -253,6 +257,11 @@ def make_robust_env(args: argparse.Namespace):
         seed=args.seed + 10_000,
         num_domains=num_domains,
     )
+
+
+def make_robust_env(args: argparse.Namespace):
+    """Compatibility alias for :func:`make_domain_randomized_env`."""
+    return make_domain_randomized_env(args)
 
 
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
@@ -429,26 +438,29 @@ def add_gap_columns(rows: list[dict]) -> None:
     }
     for row in rows:
         key = (row["sigma"], row["arrival_rate"], row["gas_cost"])
-        robust = by_key.get((*key, "robust_ppo"))
+        domain_randomized = by_key.get((*key, "domain_randomized_ppo"))
         nominal = by_key.get((*key, "nominal_ppo"))
         periodic_rebalance = by_key.get((*key, "periodic_rebalance"))
         cash = by_key.get((*key, "cash"))
-        row["robust_vs_nominal_mean_running_inventory_objective_gap"] = (
-            robust["mean_running_inventory_objective"]
+        row["domain_randomized_vs_nominal_mean_running_inventory_objective_gap"] = (
+            domain_randomized["mean_running_inventory_objective"]
             - nominal["mean_running_inventory_objective"]
-            if robust is not None and nominal is not None
+            if domain_randomized is not None and nominal is not None
             else ""
         )
-        row["robust_vs_periodic_rebalance_mean_running_inventory_objective_gap"] = (
-            robust["mean_running_inventory_objective"]
+        row[
+            "domain_randomized_vs_periodic_rebalance_"
+            "mean_running_inventory_objective_gap"
+        ] = (
+            domain_randomized["mean_running_inventory_objective"]
             - periodic_rebalance["mean_running_inventory_objective"]
-            if robust is not None and periodic_rebalance is not None
+            if domain_randomized is not None and periodic_rebalance is not None
             else ""
         )
-        row["robust_vs_cash_mean_running_inventory_objective_gap"] = (
-            robust["mean_running_inventory_objective"]
+        row["domain_randomized_vs_cash_mean_running_inventory_objective_gap"] = (
+            domain_randomized["mean_running_inventory_objective"]
             - cash["mean_running_inventory_objective"]
-            if robust is not None and cash is not None
+            if domain_randomized is not None and cash is not None
             else ""
         )
 
@@ -457,21 +469,21 @@ def summarize_rows(rows: list[dict]) -> dict:
     policies = sorted({row["policy"] for row in rows})
     return {
         policy: {
-            "mean_of_regime_mean_running_inventory_objective": float(
+            "mean_of_evaluation_grid_regime_mean_running_inventory_objective": float(
                 np.mean([
                     row["mean_running_inventory_objective"]
                     for row in rows
                     if row["policy"] == policy
                 ])
             ),
-            "worst_regime_mean_running_inventory_objective": float(
+            "minimum_evaluation_grid_regime_mean_running_inventory_objective": float(
                 np.min([
                     row["mean_running_inventory_objective"]
                     for row in rows
                     if row["policy"] == policy
                 ])
             ),
-            "best_regime_mean_running_inventory_objective": float(
+            "maximum_evaluation_grid_regime_mean_running_inventory_objective": float(
                 np.max([
                     row["mean_running_inventory_objective"]
                     for row in rows
@@ -523,9 +535,9 @@ def main() -> int:
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
     save_json(run_dir / "config.json", vars(args))
 
-    robust_env = make_robust_env(args)
-    robust_model, robust_vecnormalize = train_and_save(
-        "robust", robust_env, args, run_dir
+    domain_randomized_env = make_domain_randomized_env(args)
+    domain_randomized_model, domain_randomized_vecnormalize = train_and_save(
+        "domain_randomized", domain_randomized_env, args, run_dir
     )
 
     nominal_params = DomainParameters(
@@ -543,9 +555,9 @@ def main() -> int:
         regime_seed = args.seed + 100_000 + regime_idx * 1_000
         rows.append(
             evaluate_ppo(
-                "robust_ppo",
-                robust_model,
-                robust_vecnormalize,
+                "domain_randomized_ppo",
+                domain_randomized_model,
+                domain_randomized_vecnormalize,
                 params,
                 args,
                 regime_seed,
@@ -568,7 +580,7 @@ def main() -> int:
     save_csv(run_dir / "evaluation_grid.csv", rows)
     save_json(run_dir / "summary.json", summarize_rows(rows))
 
-    print(f"Saved robust RL run artifacts to: {run_dir}")
+    print(f"Saved domain-randomized PPO run artifacts to: {run_dir}")
     print(json.dumps(summarize_rows(rows), indent=2, sort_keys=True))
     return 0
 
