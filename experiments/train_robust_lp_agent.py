@@ -96,7 +96,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
-    parser.add_argument("--tau", type=int, default=500)
+    parser.add_argument("--tau", type=int, default=200)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.

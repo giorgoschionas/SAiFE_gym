@@ -43,9 +43,9 @@ cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
-The production launchers default to `INITIAL_WEALTH=5000.0` and `TAU=500`.
+The production launchers default to `INITIAL_WEALTH=5000.0` and `TAU=200`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
-it does not force every position to have width 500. Both values can still be
+it does not force every position to have width 200. Both values can still be
 overridden through exported environment variables.
 
 Override parameters at submission time when needed:
