@@ -60,6 +60,9 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
 from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 
 
+DEFAULT_EVALUATION_SEED = SEED + 100_000
+
+
 @dataclass(frozen=True)
 class EvaluationRegime:
     """A fixed evaluation domain and its diagnostic evaluation set."""
@@ -98,6 +101,15 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # exposure; see RunningInventoryPenalty's value-normalized formulation.
     parser.add_argument("--inventory-phi", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=SEED)
+    parser.add_argument(
+        "--evaluation-seed",
+        type=int,
+        default=DEFAULT_EVALUATION_SEED,
+        help=(
+            "Fixed seed for evaluation paths, independent of the PPO training "
+            "seed."
+        ),
+    )
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--periodic-rebalance-every", type=int, default=5)
@@ -245,6 +257,14 @@ def _parameters_within_training_support(
 
 def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     """Validate that diagnostic grids match their declared semantics."""
+    if isinstance(args.evaluation_seed, bool) or not isinstance(
+        args.evaluation_seed,
+        (int, np.integer),
+    ):
+        raise ValueError("evaluation_seed must be an integer")
+    if args.evaluation_seed < 0:
+        raise ValueError("evaluation_seed must be non-negative")
+
     config = UniformDomainRandomizationConfig(
         sigma_range=tuple(args.train_sigma_range),
         arrival_rate_range=tuple(args.train_arrival_rate_range),
@@ -297,6 +317,11 @@ def validate_evaluation_configuration(args: argparse.Namespace) -> None:
             "outside the training support; fully in-support regimes: "
             f"{in_support_stress_regimes}"
         )
+
+
+def evaluation_regime_seed(args: argparse.Namespace, regime_index: int) -> int:
+    """Return a deterministic regime seed independent of PPO training."""
+    return int(args.evaluation_seed + regime_index * 1_000)
 
 
 def make_fixed_env(
@@ -470,6 +495,8 @@ def evaluate_ppo(
         params,
         evaluation_set,
         np.concatenate(objective_values),
+        training_seed=args.seed,
+        evaluation_seed=args.evaluation_seed,
     )
 
 
@@ -505,6 +532,8 @@ def evaluate_periodic_rebalance(
         params,
         evaluation_set,
         np.concatenate(objective_values),
+        training_seed=args.seed,
+        evaluation_seed=args.evaluation_seed,
     )
 
 
@@ -525,6 +554,8 @@ def evaluate_cash(
         params,
         evaluation_set,
         objective_values,
+        training_seed=args.seed,
+        evaluation_seed=args.evaluation_seed,
     )
 
 
@@ -547,16 +578,22 @@ def summarize_running_inventory_objective(
     params: DomainParameters,
     evaluation_set: Literal["in_distribution", "stress"],
     objective_values: np.ndarray,
+    training_seed: int,
+    evaluation_seed: int,
 ) -> dict:
     return {
         "evaluation_set": evaluation_set,
+        "training_seed": training_seed,
+        "evaluation_seed": evaluation_seed,
         "policy": policy_name,
         "sigma": params.sigma,
         "arrival_rate": params.arrival_rate,
         "gas_cost": params.gas_cost,
         "mean_running_inventory_objective": float(np.mean(objective_values)),
-        "std_running_inventory_objective": float(np.std(objective_values)),
-        "n_samples": int(objective_values.shape[0]),
+        "evaluation_path_std_running_inventory_objective": float(
+            np.std(objective_values)
+        ),
+        "n_evaluation_paths": int(objective_values.shape[0]),
     }
 
 
@@ -653,6 +690,19 @@ def summarize_rows(rows: list[dict]) -> dict:
     }
 
 
+def summarize_single_training_seed(
+    rows: list[dict],
+    training_seed: int,
+    evaluation_seed: int,
+) -> dict:
+    return {
+        "summary_scope": "single_training_seed",
+        "training_seed": training_seed,
+        "evaluation_seed": evaluation_seed,
+        "policies": summarize_rows(rows),
+    }
+
+
 def _summarize_policy_evaluation_set(
     rows: list[dict],
     policy: str,
@@ -734,7 +784,7 @@ def main() -> int:
     rows = []
     for regime_idx, regime in enumerate(evaluation_regimes(args)):
         params = regime.parameters
-        regime_seed = args.seed + 100_000 + regime_idx * 1_000
+        regime_seed = evaluation_regime_seed(args, regime_idx)
         rows.append(
             evaluate_ppo(
                 "domain_randomized_ppo",
@@ -768,7 +818,11 @@ def main() -> int:
         rows.append(evaluate_cash(params, regime.evaluation_set, args))
 
     add_gap_columns(rows)
-    summary = summarize_rows(rows)
+    summary = summarize_single_training_seed(
+        rows,
+        training_seed=args.seed,
+        evaluation_seed=args.evaluation_seed,
+    )
     save_csv(run_dir / "evaluation_grid.csv", rows)
     save_json(run_dir / "summary.json", summary)
 

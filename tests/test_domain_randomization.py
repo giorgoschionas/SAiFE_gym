@@ -9,6 +9,7 @@ from experiments.train_robust_lp_agent import (
     add_gap_columns,
     apply_smoke_overrides,
     evaluate_cash,
+    evaluation_regime_seed,
     evaluation_regimes,
     make_domain_randomized_env,
     make_fixed_env,
@@ -17,6 +18,7 @@ from experiments.train_robust_lp_agent import (
     resolve_train_domains_per_reset,
     summarize_running_inventory_objective,
     summarize_rows,
+    summarize_single_training_seed,
     validate_evaluation_configuration,
 )
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
@@ -543,6 +545,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.n_steps == 1000
     assert args.alpha3 == 4000.0
     assert args.inventory_phi == 0.02
+    assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
     assert args.periodic_width == 2
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
@@ -556,6 +559,22 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.eval_stress_gas_cost_values == [0.0, 10.0, 40.0]
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
     validate_evaluation_configuration(args)
+
+
+def test_evaluation_seed_is_independent_of_training_seed():
+    first = parse_args(["--seed", "43"])
+    second = parse_args(["--seed", "52"])
+
+    assert first.evaluation_seed == second.evaluation_seed == 100042
+    assert evaluation_regime_seed(first, 3) == 103042
+    assert evaluation_regime_seed(first, 3) == evaluation_regime_seed(second, 3)
+
+    overridden = parse_args(["--seed", "52", "--evaluation-seed", "7"])
+    assert evaluation_regime_seed(overridden, 3) == 3007
+
+    invalid = parse_args(["--evaluation-seed", "-1"])
+    with pytest.raises(ValueError, match="non-negative"):
+        validate_evaluation_configuration(invalid)
 
 
 def test_evaluation_regimes_separate_interpolation_and_stress_grids():
@@ -666,11 +685,18 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
         params,
         "in_distribution",
         np.array([-2.0, 4.0]),
+        training_seed=43,
+        evaluation_seed=100042,
     )
 
     assert row["evaluation_set"] == "in_distribution"
+    assert row["training_seed"] == 43
+    assert row["evaluation_seed"] == 100042
     assert row["mean_running_inventory_objective"] == 1.0
-    assert row["std_running_inventory_objective"] == 3.0
+    assert row["evaluation_path_std_running_inventory_objective"] == 3.0
+    assert row["n_evaluation_paths"] == 2
+    assert "std_running_inventory_objective" not in row
+    assert "n_samples" not in row
     assert "mean_pnl" not in row
     assert "mean_final_wealth" not in row
 
@@ -680,48 +706,64 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
             params,
             "in_distribution",
             np.array([3.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "nominal_ppo",
             params,
             "in_distribution",
             np.array([1.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "periodic_rebalance",
             params,
             "in_distribution",
             np.array([-1.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "cash",
             params,
             "in_distribution",
             np.array([0.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "domain_randomized_ppo",
             params,
             "stress",
             np.array([-2.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "nominal_ppo",
             params,
             "stress",
             np.array([-3.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "periodic_rebalance",
             params,
             "stress",
             np.array([-4.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
         summarize_running_inventory_objective(
             "cash",
             params,
             "stress",
             np.array([0.0]),
+            training_seed=43,
+            evaluation_seed=100042,
         ),
     ]
     add_gap_columns(rows)
@@ -792,6 +834,8 @@ def test_summary_aggregates_each_evaluation_set_independently():
             params,
             evaluation_set,
             np.array([value]),
+            training_seed=43,
+            evaluation_seed=100042,
         )
         for evaluation_set, values in [
             ("in_distribution", [1.0, 5.0]),
@@ -815,6 +859,16 @@ def test_summary_aggregates_each_evaluation_set_independently():
         "maximum_regime_mean_running_inventory_objective": -2.0,
     }
 
+    wrapped = summarize_single_training_seed(
+        rows,
+        training_seed=43,
+        evaluation_seed=100042,
+    )
+    assert wrapped["summary_scope"] == "single_training_seed"
+    assert wrapped["training_seed"] == 43
+    assert wrapped["evaluation_seed"] == 100042
+    assert wrapped["policies"]["domain_randomized_ppo"] == summary
+
 
 def test_cash_baseline_is_zero_with_expected_sample_count():
     args = parse_args([])
@@ -827,8 +881,8 @@ def test_cash_baseline_is_zero_with_expected_sample_count():
     assert row["evaluation_set"] == "stress"
     assert row["policy"] == "cash"
     assert row["mean_running_inventory_objective"] == 0.0
-    assert row["std_running_inventory_objective"] == 0.0
-    assert row["n_samples"] == 12
+    assert row["evaluation_path_std_running_inventory_objective"] == 0.0
+    assert row["n_evaluation_paths"] == 12
 
 
 def test_ppo_smoke_learns_on_domain_randomized_env():

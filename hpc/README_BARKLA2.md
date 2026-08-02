@@ -73,14 +73,36 @@ support.
 
 ## Seed sweep
 
-Submit independent replicate runs:
+The default array trains ten independent PPO replicates (seeds 43 through 52)
+while evaluating every learned network on the same paths using
+`EVALUATION_SEED=100042`. Submit the sweep and its aggregation job with a Slurm
+dependency:
 
 ```bash
 cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
-sbatch hpc/sbatch_robust_lp_seed_sweep_cpu.sh
+SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_robust_lp_seed_sweep_cpu.sh)
+sbatch --dependency=afterok:$SWEEP_JOB_ID \
+  hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
 ```
 
-Edit the `SEEDS=(...)` array inside the script if you want more or fewer replicates.
+Edit both `SEEDS=(...)` and the Slurm array bounds in the sweep script if you
+want a different replicate count. The aggregation job runs only after every
+array task succeeds and rejects duplicate seeds, incomplete grids, legacy
+schemas, or incompatible configurations.
+
+Each individual `evaluation_grid.csv` reports
+`evaluation_path_std_running_inventory_objective`, which measures variation
+over evaluation paths for one learned network. The aggregate artifacts report
+`training_seed_std_running_inventory_objective`, standard errors, and
+percentile-bootstrap confidence intervals across independently trained
+networks. These are distinct uncertainty sources and should not be interpreted
+interchangeably.
+
+The aggregation job writes `training_seed_regime_summary.csv`,
+`training_seed_gap_summary.csv`, and `training_seed_summary.json` under the
+seed-sweep aggregate directory. Periodic-rebalance and cash results use the
+same fixed evaluation paths in every replicate, so their across-training-seed
+standard deviations should be zero.
 
 ## Monitoring
 

@@ -7,7 +7,7 @@
 #SBATCH -N 1
 #SBATCH -n 16
 #SBATCH -t 2-00:00:00
-#SBATCH --array=0-4
+#SBATCH --array=0-9
 #SBATCH -o logs/%x_%A_%a.out
 #SBATCH -e logs/%x_%A_%a.err
 #SBATCH --export=ALL
@@ -17,8 +17,9 @@ set -euo pipefail
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
 VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
 
-SEEDS=(43 44 45 46 47)
+SEEDS=(43 44 45 46 47 48 49 50 51 52)
 SEED=${SEEDS[$SLURM_ARRAY_TASK_ID]}
+EVALUATION_SEED=${EVALUATION_SEED:-100042}
 
 TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-1000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
@@ -79,6 +80,7 @@ echo "Python: $(which python)"
 echo "SLURM job id: $SLURM_JOB_ID array=$SLURM_ARRAY_JOB_ID task=$SLURM_ARRAY_TASK_ID"
 echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks=$SLURM_NTASKS"
 echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
+echo "Fixed evaluation seed: $EVALUATION_SEED"
 echo "Periodic baseline: rebalance_every=$PERIODIC_REBALANCE_EVERY width=$PERIODIC_WIDTH"
 echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX] domains_per_reset=$TRAIN_DOMAINS_PER_RESET"
 echo "In-distribution evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_IN_DISTRIBUTION_SIGMA_VALUES] arrival=[$EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES] gas=[$EVAL_IN_DISTRIBUTION_GAS_COST_VALUES]"
@@ -95,6 +97,7 @@ python -u experiments/train_robust_lp_agent.py \
   --initial-wealth "$INITIAL_WEALTH" \
   --inventory-phi "$INVENTORY_PHI" \
   --seed "$SEED" \
+  --evaluation-seed "$EVALUATION_SEED" \
   --n-eval-episodes "$N_EVAL_EPISODES" \
   --learning-rate "$LEARNING_RATE" \
   --periodic-rebalance-every "$PERIODIC_REBALANCE_EVERY" \
