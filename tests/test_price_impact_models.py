@@ -67,6 +67,14 @@ def _gross_input(curve_input, fee_multiplier):
     return curve_input * (1.0 + fee_multiplier)
 
 
+def _capacity_weighted_amounts(capacities, curve_input):
+    capacities = np.asarray(capacities, dtype=np.float64)
+    total = capacities.sum()
+    if total <= 0.0:
+        return np.full(capacities.shape, curve_input / capacities.size)
+    return curve_input * capacities / total
+
+
 def _fixed_sampler(values):
     values = np.asarray(values, dtype=np.float64)
 
@@ -462,13 +470,14 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         for key, value in before.items():
             np.testing.assert_array_equal(state[key], value)
 
-    def test_buy_moves_exact_integer_ticks_and_returns_single_arrival_fee_entry(self):
+    def test_buy_moves_exact_integer_ticks_and_returns_crossed_fee_entries(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
         idx = 105 - 100
-        average_depth = np.mean([
+        capacities = np.array([
             _buy_capacity(state, sqrt_grid, 0, idx),
             _buy_capacity(state, sqrt_grid, 0, idx + 1),
         ])
+        average_depth = np.mean(capacities)
         model = LiquidityDepthUniswapV3PriceImpact(
             trade_size_sampler=_fixed_sampler(2.0 * average_depth),
             depth_window=2,
@@ -487,19 +496,23 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert state[POOL_SQRT_PRICE_KEY][0] == sqrt_grid[7]
         assert result.fee_key == FEES1_KEY
         assert result.direction == 1
-        np.testing.assert_array_equal(result.trajectories, np.array([0]))
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx]))
-        np.testing.assert_allclose(result.amounts, np.array([2.0 * average_depth]))
+        np.testing.assert_array_equal(result.trajectories, np.array([0, 0]))
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
+        np.testing.assert_allclose(
+            result.amounts,
+            _capacity_weighted_amounts(capacities, 2.0 * average_depth),
+        )
         assert np.sum(state[FEES0_KEY]) == 0.0
         assert np.sum(state[FEES1_KEY]) == 0.0
 
-    def test_sell_moves_exact_integer_ticks_and_returns_single_arrival_fee_entry(self):
+    def test_sell_moves_exact_integer_ticks_and_returns_crossed_fee_entries(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
         idx = 105 - 100
-        average_depth = np.mean([
+        capacities = np.array([
             _sell_capacity(state, sqrt_grid, 0, idx - 1),
             _sell_capacity(state, sqrt_grid, 0, idx - 2),
         ])
+        average_depth = np.mean(capacities)
         model = LiquidityDepthUniswapV3PriceImpact(
             trade_size_sampler=_fixed_sampler(2.0 * average_depth),
             depth_window=2,
@@ -518,11 +531,74 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert state[POOL_SQRT_PRICE_KEY][0] == sqrt_grid[3]
         assert result.fee_key == FEES0_KEY
         assert result.direction == -1
-        np.testing.assert_array_equal(result.trajectories, np.array([0]))
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1]))
-        np.testing.assert_allclose(result.amounts, np.array([2.0 * average_depth]))
+        np.testing.assert_array_equal(result.trajectories, np.array([0, 0]))
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
+        np.testing.assert_allclose(
+            result.amounts,
+            _capacity_weighted_amounts(capacities, 2.0 * average_depth),
+        )
         assert np.sum(state[FEES0_KEY]) == 0.0
         assert np.sum(state[FEES1_KEY]) == 0.0
+
+    def test_buy_multi_tick_fee_allocation_is_capacity_weighted(self):
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        first_capacity = _buy_capacity(state, sqrt_grid, 0, idx)
+        state[POOL_LIQUIDITY_ARRAY_KEY][0, idx + 1] *= (
+            3.0 * first_capacity / _buy_capacity(state, sqrt_grid, 0, idx + 1)
+        )
+        capacities = np.array([
+            _buy_capacity(state, sqrt_grid, 0, idx),
+            _buy_capacity(state, sqrt_grid, 0, idx + 1),
+        ])
+        curve_input = capacities.sum()
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(curve_input),
+            depth_window=2,
+        )
+
+        result = model.process_swap(
+            state,
+            np.array([True]),
+            1,
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 107
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
+        np.testing.assert_allclose(result.amounts, np.array([0.25, 0.75]) * curve_input)
+
+    def test_sell_multi_tick_fee_allocation_is_capacity_weighted(self):
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        first_capacity = _sell_capacity(state, sqrt_grid, 0, idx - 1)
+        state[POOL_LIQUIDITY_ARRAY_KEY][0, idx - 2] *= (
+            3.0 * first_capacity / _sell_capacity(state, sqrt_grid, 0, idx - 2)
+        )
+        capacities = np.array([
+            _sell_capacity(state, sqrt_grid, 0, idx - 1),
+            _sell_capacity(state, sqrt_grid, 0, idx - 2),
+        ])
+        curve_input = capacities.sum()
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(curve_input),
+            depth_window=2,
+        )
+
+        result = model.process_swap(
+            state,
+            np.array([True]),
+            -1,
+            tick_lower_global=100,
+            sqrt_grid=sqrt_grid,
+            num_ticks=10,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 103
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
+        np.testing.assert_allclose(result.amounts, np.array([0.25, 0.75]) * curve_input)
 
     def test_fractional_eta_uses_seeded_stochastic_rounding(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
@@ -544,8 +620,15 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
 
         assert state[POOL_CURRENT_TICK_KEY][0] == 107
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx]))
-        np.testing.assert_allclose(result.amounts, np.array([1.999 * depth]))
+        capacities = np.array([
+            _buy_capacity(state, sqrt_grid, 0, idx),
+            _buy_capacity(state, sqrt_grid, 0, idx + 1),
+        ])
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
+        np.testing.assert_allclose(
+            result.amounts,
+            _capacity_weighted_amounts(capacities, 1.999 * depth),
+        )
 
     def test_multi_trajectory_active_mask_and_liquidity_depths_are_vectorized(self):
         state, sqrt_grid = _make_state(num_trajectories=3, tick_lower_global=100, current_tick=105)
@@ -569,14 +652,20 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
 
         np.testing.assert_array_equal(state[POOL_CURRENT_TICK_KEY], np.array([106, 105, 107]))
-        np.testing.assert_array_equal(result.trajectories, np.array([0, 2]))
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx]))
+        capacities2 = np.array([
+            _buy_capacity(state, sqrt_grid, 2, idx),
+            _buy_capacity(state, sqrt_grid, 2, idx + 1),
+        ])
+        np.testing.assert_array_equal(result.trajectories, np.array([0, 2, 2]))
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx, idx + 1]))
         np.testing.assert_allclose(
             result.amounts,
-            np.array([
-                depth0,
-                2.0 * depth2,
-            ]),
+            np.concatenate(
+                [
+                    np.array([depth0]),
+                    _capacity_weighted_amounts(capacities2, 2.0 * depth2),
+                ]
+            ),
         )
 
     def test_tick_move_is_clipped_at_array_boundary(self):
@@ -597,8 +686,15 @@ class TestLiquidityDepthUniswapV3PriceImpact:
 
         assert state[POOL_CURRENT_TICK_KEY][0] == 110
         assert state[POOL_SQRT_PRICE_KEY][0] == sqrt_grid[10]
-        np.testing.assert_array_equal(result.fee_indices, np.array([8]))
-        np.testing.assert_allclose(result.amounts, np.array([1e18]))
+        capacities = np.array([
+            _buy_capacity(state, sqrt_grid, 0, 8),
+            _buy_capacity(state, sqrt_grid, 0, 9),
+        ])
+        np.testing.assert_array_equal(result.fee_indices, np.array([8, 9]))
+        np.testing.assert_allclose(
+            result.amounts,
+            _capacity_weighted_amounts(capacities, 1e18),
+        )
 
     def test_zero_realized_move_returns_none_and_leaves_state_unchanged(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
@@ -751,15 +847,18 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
         UniswapV3FeeAccounting().apply_fees(state, result, fee_multiplier)
 
-        np.testing.assert_array_equal(result.trajectories, np.array([0, 1, 2]))
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx, idx]))
+        np.testing.assert_array_equal(result.trajectories, np.array([0, 1, 2, 2]))
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx, idx, idx + 1]))
         np.testing.assert_allclose(
-            result.amounts,
-            gross_inputs / (1.0 + fee_multiplier),
+            state[FEES1_KEY].sum(axis=1),
+            fee_tier * gross_inputs,
         )
         np.testing.assert_allclose(
-            state[FEES1_KEY][:, idx],
-            fee_tier * gross_inputs,
+            np.array([
+                result.amounts[result.trajectories == i].sum()
+                for i in range(3)
+            ]),
+            gross_inputs / (1.0 + fee_multiplier),
         )
         assert np.sum(state[FEES0_KEY]) == 0.0
 
@@ -873,6 +972,57 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         assert state[LP_UNCLAIMED_FEES1_KEY][0] == pytest.approx(fee_tier * gross_input)
         assert state[LP_COLLECTED_FEES1_KEY][0] == pytest.approx(fee_tier * gross_input)
 
+    def test_lp_active_only_in_later_crossed_interval_accrues_weighted_fee_share(self):
+        fee_tier = 0.003
+        fee_multiplier = fee_tier / (1.0 - fee_tier)
+        state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
+        idx = 105 - 100
+        lp_liquidity = state[POOL_LIQUIDITY_ARRAY_KEY][0, idx + 1]
+        capacities = np.array([
+            _buy_capacity(state, sqrt_grid, 0, idx),
+            _buy_capacity(state, sqrt_grid, 0, idx + 1),
+        ])
+        curve_input = capacities.sum()
+        gross_input = curve_input * (1.0 + fee_multiplier)
+        expected_later_fee = fee_multiplier * capacities[1]
+        state.update(
+            {
+                LP_LIQUIDITY_KEY: np.array([lp_liquidity], dtype=np.float64),
+                LP_TICK_LOWER_KEY: np.array([106], dtype=np.float64),
+                LP_TICK_UPPER_KEY: np.array([107], dtype=np.float64),
+                LP_COLLECTED_FEES0_KEY: np.zeros(1, dtype=np.float64),
+                LP_COLLECTED_FEES1_KEY: np.zeros(1, dtype=np.float64),
+                LP_UNCLAIMED_FEES0_KEY: np.zeros(1, dtype=np.float64),
+                LP_UNCLAIMED_FEES1_KEY: np.zeros(1, dtype=np.float64),
+                LP_FEE_SNAPSHOT0_KEY: np.zeros(1, dtype=np.float64),
+                LP_FEE_SNAPSHOT1_KEY: np.zeros(1, dtype=np.float64),
+                LP_EVER_DEPLOYED_KEY: np.array([True]),
+                INITIAL_WEALTH_KEY: np.array([0.0], dtype=np.float64),
+            }
+        )
+        model = UniswapV3ModelDynamics(
+            price_impact_model=LiquidityDepthUniswapV3PriceImpact(
+                trade_size_sampler=_fixed_sampler(gross_input),
+                depth_window=2,
+            ),
+            num_trajectories=1,
+            fee_tier=fee_tier,
+            tau=5,
+            num_ticks=10,
+        )
+        model.state = state
+        model.tick_lower_global = 100
+        model.sqrt_grid = sqrt_grid
+
+        model._process_swap(np.array([True]), 1)
+        model._accrue_lp_fees()
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 107
+        assert state[FEES1_KEY][0, idx] == pytest.approx(fee_multiplier * capacities[0])
+        assert state[FEES1_KEY][0, idx + 1] == pytest.approx(expected_later_fee)
+        assert state[LP_UNCLAIMED_FEES1_KEY][0] == pytest.approx(expected_later_fee)
+        assert state[LP_COLLECTED_FEES1_KEY][0] == pytest.approx(expected_later_fee)
+
     def test_invalid_direction_raises(self):
         state, sqrt_grid = _make_state()
         model = LiquidityDepthUniswapV3PriceImpact(
@@ -942,10 +1092,14 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
 
         assert state[POOL_CURRENT_TICK_KEY][0] == 103
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1]))
+        capacities = np.array([
+            _sell_capacity(state, sqrt_grid, 0, idx - 1),
+            _sell_capacity(state, sqrt_grid, 0, idx - 2),
+        ])
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
         np.testing.assert_allclose(
             result.amounts,
-            np.array([2.0 * average_token0_depth]),
+            _capacity_weighted_amounts(capacities, 2.0 * average_token0_depth),
         )
 
     def test_token1_notional_sell_requires_positive_external_midprice(self):
@@ -989,8 +1143,15 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
 
         assert state[POOL_CURRENT_TICK_KEY][0] == 107
-        np.testing.assert_array_equal(result.fee_indices, np.array([idx]))
-        np.testing.assert_allclose(result.amounts, np.array([2.0 * average_token1_depth]))
+        capacities = np.array([
+            _buy_capacity(state, sqrt_grid, 0, idx),
+            _buy_capacity(state, sqrt_grid, 0, idx + 1),
+        ])
+        np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
+        np.testing.assert_allclose(
+            result.amounts,
+            _capacity_weighted_amounts(capacities, 2.0 * average_token1_depth),
+        )
 
 
 class TestUniswapV3FeeAccounting:

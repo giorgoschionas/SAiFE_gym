@@ -219,7 +219,8 @@ The `update_state()` method in `UniswapV3ModelDynamics` advances the state by on
 - Sampled trade size is gross input; fee-adjusted curve input is divided by average local directional one-tick capacity over `depth_window`
 - Fractional expected tick movement is stochastically rounded to an integer move
 - Tick movement is capped by the available tick window
-- Fees are returned once per positive executable sampled arrival and allocated to the first executable interval
+- Zero-tick sampled arrivals allocate all fees to the first executable interval
+- Multi-tick sampled arrivals allocate the full curve input across realized crossed intervals using directional capacity weights
 - This model remains vectorized across trajectories; it uses array masks and scatter-style fee accounting
 
 **Crossing Behavior**:

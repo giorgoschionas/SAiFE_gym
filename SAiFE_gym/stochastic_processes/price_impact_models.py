@@ -407,9 +407,9 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
     The model samples an active gross trade size, converts it to the swap input
     token's units, deducts fees to get the curve input, maps that net amount to
     an expected tick impact using average directional one-tick capacity, then
-    stochastically rounds the result to an integer tick move. Fees are returned
-    as one entry per positive executable arrival, allocated to the first
-    executable interval.
+    stochastically rounds the result to an integer tick move. Zero-tick fees
+    are allocated to the first executable interval; multi-tick fees are
+    allocated across realized crossed intervals by directional capacity.
 
     ``trade_size_unit="input_token"`` keeps the sampled size in token0 units
     for sells and token1 units for buys. ``trade_size_unit="token1_notional"``
@@ -532,11 +532,68 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         if not np.any(executable):
             return None
 
+        exec_traj = traj[executable]
+        exec_idx = idx[executable]
+        exec_tick_move = tick_move[executable]
+        exec_curve_trade_size = curve_trade_size[executable]
+        entry_counts = np.maximum(exec_tick_move, 1)
+        max_entries = int(entry_counts.max())
+        fee_offsets = np.arange(max_entries, dtype=np.int64)
+        fee_mask = fee_offsets[None, :] < entry_counts[:, None]
+
+        if direction == -1:
+            fee_indices_matrix = exec_idx[:, None] - 1 - fee_offsets[None, :]
+        else:
+            fee_indices_matrix = exec_idx[:, None] + fee_offsets[None, :]
+
+        amounts_matrix = np.zeros_like(fee_indices_matrix, dtype=np.float64)
+        zero_move = exec_tick_move == 0
+        amounts_matrix[zero_move, 0] = exec_curve_trade_size[zero_move]
+
+        moving_rows = exec_tick_move > 0
+        if np.any(moving_rows):
+            moving_fee_indices = fee_indices_matrix[moving_rows]
+            moving_mask = fee_mask[moving_rows]
+            moving_traj = exec_traj[moving_rows]
+            moving_liquidity = (
+                liquidity_array[moving_traj[:, None], moving_fee_indices]
+                * moving_mask
+            )
+            moving_capacities = self._interval_capacity(
+                moving_liquidity,
+                moving_fee_indices,
+                sqrt_grid,
+                direction,
+            ) * moving_mask
+            capacity_sums = moving_capacities.sum(axis=1)
+            equal_weights = np.divide(
+                moving_mask,
+                exec_tick_move[moving_rows][:, None],
+                dtype=np.float64,
+            )
+            capacity_weights = np.divide(
+                moving_capacities,
+                capacity_sums[:, None],
+                out=np.zeros_like(moving_capacities, dtype=np.float64),
+                where=capacity_sums[:, None] > 0.0,
+            )
+            weights = np.where(
+                capacity_sums[:, None] > 0.0,
+                capacity_weights,
+                equal_weights,
+            )
+            amounts_matrix[moving_rows] = (
+                exec_curve_trade_size[moving_rows, None] * weights
+            )
+
         return SwapResult(
-            trajectories=traj[executable],
+            trajectories=np.broadcast_to(
+                exec_traj[:, None],
+                fee_indices_matrix.shape,
+            )[fee_mask],
             fee_key=fee_key,
-            fee_indices=first_fee_idx[executable],
-            amounts=curve_trade_size[executable],
+            fee_indices=fee_indices_matrix[fee_mask],
+            amounts=amounts_matrix[fee_mask],
             direction=direction,
         )
 
