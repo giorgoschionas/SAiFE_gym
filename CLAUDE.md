@@ -173,10 +173,10 @@ Swap handling is intentionally split into two independent responsibilities:
    - `PriceImpactModel` defines the interface for AMM price-impact rules.
    - `OneTickUniswapV3PriceImpact` is the default model for `UniswapV3ModelDynamics`.
    - `OneTickUniswapV3PriceImpact` moves each active swap exactly one tick in the swap direction. LP liquidity affects the implied swap amount and fees, but not the number of ticks crossed.
-   - `LiquidityDepthUniswapV3PriceImpact` samples trade sizes and maps them to tick movement using local directional liquidity depth. Deeper liquidity reduces impact for the same sampled trade size; thinner liquidity increases it.
-   - `LiquidityDepthUniswapV3PriceImpact` supports `trade_size_unit="input_token"` and `trade_size_unit="token1_notional"`. In token1-notional mode, sell-side notionals are converted to token0 using the external midprice (`ASSET_PRICE_KEY`).
+   - `LiquidityDepthUniswapV3PriceImpact` samples gross trade sizes, deducts fees before price impact, and maps the resulting curve input to tick movement using local directional liquidity depth. Deeper liquidity reduces impact for the same sampled trade size; thinner liquidity increases it.
+   - `LiquidityDepthUniswapV3PriceImpact` supports `trade_size_unit="input_token"` and `trade_size_unit="token1_notional"`. In token1-notional mode, sampled sizes are gross token1 notionals; sell-side notionals are converted to gross token0 using the external midprice (`ASSET_PRICE_KEY`) before fee deduction.
    - Price-impact models mutate only pool price state: `POOL_CURRENT_TICK_KEY` and `POOL_SQRT_PRICE_KEY`.
-   - Price-impact models return a vectorized `SwapResult` containing affected trajectories, fee array key, fee indices, swap amounts, and direction.
+   - Price-impact models return a vectorized `SwapResult` containing affected trajectories, fee array key, fee indices, curve/net input amounts used as the fee basis, and direction.
    - Price-impact models do not write to `FEES0_KEY` or `FEES1_KEY`.
 
 2. **Fee accounting** (`stochastic_processes/fee_accounting_models.py`)
@@ -216,10 +216,11 @@ The `update_state()` method in `UniswapV3ModelDynamics` advances the state by on
 - On crossing, `sqrt_price` is set from the tick lattice: `sqrt_grid[new_tick - tick_lower_global]`
 
 **Liquidity-Depth Principle**: With `LiquidityDepthUniswapV3PriceImpact`, each trade can cross zero, one, or many ticks.
-- Sampled trade size is divided by average local directional one-tick capacity over `depth_window`
+- Sampled trade size is gross input; fee-adjusted curve input is divided by average local directional one-tick capacity over `depth_window`
 - Fractional expected tick movement is stochastically rounded to an integer move
 - Tick movement is capped by the available tick window
-- Fees are returned for every crossed interval, preserving per-tick fee attribution
+- Zero-tick sampled arrivals allocate all fees to the first executable interval
+- Multi-tick sampled arrivals allocate the full curve input across realized crossed intervals using directional capacity weights
 - This model remains vectorized across trajectories; it uses array masks and scatter-style fee accounting
 
 **Crossing Behavior**:
@@ -283,5 +284,3 @@ When creating `UniswapV3ModelDynamics`:
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
-
-

@@ -193,6 +193,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             tick_lower_global=self.tick_lower_global,
             sqrt_grid=self.sqrt_grid,
             num_ticks=self.num_ticks,
+            fee_multiplier=self.fee_multiplier,
         )
         self.fee_accounting_model.apply_fees(
             self.state,
