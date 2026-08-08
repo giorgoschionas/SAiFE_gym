@@ -92,6 +92,16 @@ def create_sb3_env(
 # ---------------------------------------------------------------------------
 
 class TestReset:
+    def test_default_obs_keys_include_directional_offsets(self):
+        assert LP_LOWER_OFFSET_KEY in DEFAULT_OBS_KEYS
+        assert LP_UPPER_OFFSET_KEY in DEFAULT_OBS_KEYS
+        assert DEFAULT_OBS_KEYS.index(LP_LOWER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
+            BOUNDARY_PROXIMITY_KEY
+        )
+        assert DEFAULT_OBS_KEYS.index(LP_UPPER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
+            BOUNDARY_PROXIMITY_KEY
+        )
+
     def test_shape_single_trajectory(self):
         env = create_sb3_env(num_trajectories=1)
         obs = env.reset()
@@ -337,7 +347,12 @@ class TestObservationFeatures:
         pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
 
         assert set(features) == SB3_DERIVED_OBS_KEYS
-        np.testing.assert_allclose(features[MISPRICING_KEY], state[ASSET_PRICE_KEY] - pool_price)
+        expected_mispricing = (
+            (state[ASSET_PRICE_KEY] - pool_price)
+            / np.maximum(state[ASSET_PRICE_KEY], 1e-12)
+        )
+
+        np.testing.assert_allclose(features[MISPRICING_KEY], expected_mispricing)
         np.testing.assert_allclose(features[POOL_SQRT_PRICE_KEY], pool_price)
         np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
         np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
@@ -475,11 +490,15 @@ class TestRelativeObsKeys:
         return state, obs
 
     def test_mispricing_value(self):
-        """mispricing = asset_price - sqrt_price²"""
+        """mispricing = (asset_price - sqrt_price²) / asset_price"""
         env = create_sb3_env(num_trajectories=1)
         state, obs = self._get_state_and_obs(env)
 
-        expected = state[ASSET_PRICE_KEY] - state[POOL_SQRT_PRICE_KEY] ** 2
+        pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        expected = (
+            (state[ASSET_PRICE_KEY] - pool_price)
+            / np.maximum(state[ASSET_PRICE_KEY], 1e-12)
+        )
         obs_keys = env.obs_keys
         mispricing_col = obs_keys.index(MISPRICING_KEY)
         np.testing.assert_allclose(obs[:, mispricing_col], expected.astype(np.float32), rtol=1e-5)

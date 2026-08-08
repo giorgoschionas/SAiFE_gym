@@ -24,16 +24,16 @@ from SAiFE_gym.gym.observation_features import (
 
 DEFAULT_OBS_KEYS = [
     MISPRICING_KEY,            # adverse selection signal
+    LP_LOWER_OFFSET_KEY,       # distance from current tick to lower bound
+    LP_UPPER_OFFSET_KEY,       # distance from current tick to upper bound
     BOUNDARY_PROXIMITY_KEY,    # min(lower_offset, upper_offset) — distance to nearest boundary
     POSITION_WIDTH_KEY,        # lower_offset + upper_offset — position concentration
-    # LP_LOWER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
-    # LP_UPPER_OFFSET_KEY,     # replaced by boundary_proximity + position_width
     # LP_LIQUIDITY_KEY,        # not directly actionable for hold/rebalance
     # LP_COLLECTED_FEES0_KEY,  # cumulative, not actionable
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
     # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
     TIME_KEY,                  # episode clock
-]  # obs_dim = 4
+]  # obs_dim = 6
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 

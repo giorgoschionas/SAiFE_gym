@@ -29,9 +29,11 @@ def compute_sb3_observation_features(state_dict: dict) -> dict:
     lower_offset = state_dict[POOL_CURRENT_TICK_KEY] - state_dict[LP_TICK_LOWER_KEY]
     upper_offset = state_dict[LP_TICK_UPPER_KEY] - state_dict[POOL_CURRENT_TICK_KEY]
     pool_price = state_dict[POOL_SQRT_PRICE_KEY] ** 2
+    midprice = state_dict[ASSET_PRICE_KEY]
+    relative_mispricing = (midprice - pool_price) / np.maximum(midprice, 1e-12)
 
     return {
-        MISPRICING_KEY: state_dict[ASSET_PRICE_KEY] - pool_price,
+        MISPRICING_KEY: relative_mispricing,
         POOL_SQRT_PRICE_KEY: pool_price,
         LP_LOWER_OFFSET_KEY: lower_offset,
         LP_UPPER_OFFSET_KEY: upper_offset,
