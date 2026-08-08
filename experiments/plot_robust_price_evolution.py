@@ -69,13 +69,16 @@ def parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
 
 
 def collect_price_path(args: argparse.Namespace, seed: int) -> dict[str, np.ndarray]:
-    env_args = argparse.Namespace(**vars(args), num_trajectories=1)
+    env_args = argparse.Namespace(
+        **vars(args),
+        num_trajectories=1,
+        nominal_gas_cost=args.gas_cost,
+    )
     env = make_fixed_env(
         env_args,
         DomainParameters(
             sigma=args.sigma,
             arrival_rate=args.arrival_rate,
-            gas_cost=args.gas_cost,
         ),
         seed=seed,
     )

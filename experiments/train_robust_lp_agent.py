@@ -131,7 +131,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument(
         "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
     )
-    parser.add_argument("--train-gas-cost-range", nargs=2, type=float, default=(1.0, 6.0))
     parser.add_argument(
         "--train-domains-per-reset",
         type=int,
@@ -167,13 +166,6 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument(
-        "--eval-in-distribution-gas-cost-values",
-        nargs="+",
-        type=float,
-        default=[2.0, 3.5, 5.0],
-        help="Gas-cost values for the in-distribution Cartesian evaluation grid.",
-    )
-    parser.add_argument(
         "--eval-stress-sigma-values",
         nargs="+",
         type=float,
@@ -184,15 +176,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-stress-arrival-rate-values",
         nargs="+",
         type=float,
-        default=[25.0, 100.0, 300.0],
+        default=[25.0, 300.0],
         help="Arrival-rate values for the out-of-distribution stress grid.",
-    )
-    parser.add_argument(
-        "--eval-stress-gas-cost-values",
-        nargs="+",
-        type=float,
-        default=[0.0, 10.0, 40.0],
-        help="Gas-cost values for the out-of-distribution stress grid.",
     )
     parser.add_argument(
         "--smoke-test",
@@ -212,10 +197,8 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.n_eval_episodes = 1
     args.eval_in_distribution_sigma_values = [0.055]
     args.eval_in_distribution_arrival_rate_values = [125.0]
-    args.eval_in_distribution_gas_cost_values = [3.5]
     args.eval_stress_sigma_values = [0.10]
-    args.eval_stress_arrival_rate_values = [100.0]
-    args.eval_stress_gas_cost_values = [0.0]
+    args.eval_stress_arrival_rate_values = [300.0]
 
 
 def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
@@ -257,7 +240,6 @@ def _parameters_within_training_support(
         config.arrival_rate_range[0]
         <= params.arrival_rate
         <= config.arrival_rate_range[1],
-        config.gas_cost_range[0] <= params.gas_cost <= config.gas_cost_range[1],
     ])
 
 
@@ -274,7 +256,6 @@ def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     config = UniformDomainRandomizationConfig(
         sigma_range=tuple(args.train_sigma_range),
         arrival_rate_range=tuple(args.train_arrival_rate_range),
-        gas_cost_range=tuple(args.train_gas_cost_range),
     )
     dimensions = [
         (
@@ -288,12 +269,6 @@ def validate_evaluation_configuration(args: argparse.Namespace) -> None:
             config.arrival_rate_range,
             args.eval_in_distribution_arrival_rate_values,
             args.eval_stress_arrival_rate_values,
-        ),
-        (
-            "gas_cost",
-            config.gas_cost_range,
-            args.eval_in_distribution_gas_cost_values,
-            args.eval_stress_gas_cost_values,
         ),
     ]
 
@@ -377,7 +352,7 @@ def make_fixed_env(
         tau=args.tau,
         num_ticks=NUM_TICKS,
         exponential_value=1.0001,
-        gas_cost=params.gas_cost,
+        gas_cost=args.nominal_gas_cost,
         swap_fee_rate=0.0,
         seed=seed + 3,
     )
@@ -403,14 +378,12 @@ def make_domain_randomized_env(args: argparse.Namespace):
         DomainParameters(
             sigma=args.nominal_sigma,
             arrival_rate=args.nominal_arrival_rate,
-            gas_cost=args.nominal_gas_cost,
         ),
         seed=args.seed,
     )
     config = UniformDomainRandomizationConfig(
         sigma_range=tuple(args.train_sigma_range),
         arrival_rate_range=tuple(args.train_arrival_rate_range),
-        gas_cost_range=tuple(args.train_gas_cost_range),
     )
     return DomainRandomizedAMMEnvironment(
         base_env,
@@ -638,7 +611,6 @@ def summarize_running_inventory_objective(
         "policy": policy_name,
         "sigma": params.sigma,
         "arrival_rate": params.arrival_rate,
-        "gas_cost": params.gas_cost,
         "mean_running_inventory_objective": float(np.mean(objective_values)),
         "evaluation_path_std_running_inventory_objective": float(
             np.std(objective_values)
@@ -654,13 +626,11 @@ def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
             "in_distribution",
             args.eval_in_distribution_sigma_values,
             args.eval_in_distribution_arrival_rate_values,
-            args.eval_in_distribution_gas_cost_values,
         ),
         (
             "stress",
             args.eval_stress_sigma_values,
             args.eval_stress_arrival_rate_values,
-            args.eval_stress_gas_cost_values,
         ),
     ]
     return [
@@ -669,14 +639,12 @@ def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
             parameters=DomainParameters(
                 sigma=sigma,
                 arrival_rate=arrival_rate,
-                gas_cost=gas_cost,
             ),
         )
-        for evaluation_set, sigma_values, arrival_rate_values, gas_cost_values
+        for evaluation_set, sigma_values, arrival_rate_values
         in grid_definitions
         for sigma in sigma_values
         for arrival_rate in arrival_rate_values
-        for gas_cost in gas_cost_values
     ]
 
 
@@ -686,7 +654,6 @@ def add_gap_columns(rows: list[dict]) -> None:
             row["evaluation_set"],
             row["sigma"],
             row["arrival_rate"],
-            row["gas_cost"],
             row["policy"],
         ): row
         for row in rows
@@ -696,7 +663,6 @@ def add_gap_columns(rows: list[dict]) -> None:
             row["evaluation_set"],
             row["sigma"],
             row["arrival_rate"],
-            row["gas_cost"],
         )
         domain_randomized = by_key.get((*key, "domain_randomized_ppo"))
         nominal = by_key.get((*key, "nominal_ppo"))
@@ -837,7 +803,6 @@ def main() -> int:
     nominal_params = DomainParameters(
         sigma=args.nominal_sigma,
         arrival_rate=args.nominal_arrival_rate,
-        gas_cost=args.nominal_gas_cost,
     )
     nominal_env = make_fixed_env(args, nominal_params, seed=args.seed + 20_000)
     nominal_model, nominal_vecnormalize = train_and_save(

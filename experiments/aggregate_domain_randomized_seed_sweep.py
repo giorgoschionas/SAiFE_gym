@@ -34,13 +34,11 @@ REGIME_FIELDS = (
     "policy",
     "sigma",
     "arrival_rate",
-    "gas_cost",
 )
 DOMAIN_FIELDS = (
     "evaluation_set",
     "sigma",
     "arrival_rate",
-    "gas_cost",
 )
 REQUIRED_RESULT_COLUMNS = {
     *REGIME_FIELDS,
@@ -171,9 +169,6 @@ def _read_result_rows(result_path: Path) -> list[dict]:
                 "sigma": _parse_float(raw_row["sigma"], "sigma", result_path),
                 "arrival_rate": _parse_float(
                     raw_row["arrival_rate"], "arrival_rate", result_path
-                ),
-                "gas_cost": _parse_float(
-                    raw_row["gas_cost"], "gas_cost", result_path
                 ),
                 "mean_running_inventory_objective": _parse_float(
                     raw_row["mean_running_inventory_objective"],
@@ -471,7 +466,6 @@ def aggregate_gaps(
             "domain_randomized_ppo",
             domain_mapping["sigma"],
             domain_mapping["arrival_rate"],
-            domain_mapping["gas_cost"],
         )
         for comparison, gap_column in GAP_COLUMNS.items():
             values = np.array([

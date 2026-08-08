@@ -40,15 +40,11 @@ TRAIN_SIGMA_MIN=${TRAIN_SIGMA_MIN:-0.01}
 TRAIN_SIGMA_MAX=${TRAIN_SIGMA_MAX:-0.10}
 TRAIN_ARRIVAL_RATE_MIN=${TRAIN_ARRIVAL_RATE_MIN:-50.0}
 TRAIN_ARRIVAL_RATE_MAX=${TRAIN_ARRIVAL_RATE_MAX:-200.0}
-TRAIN_GAS_COST_MIN=${TRAIN_GAS_COST_MIN:-1.0}
-TRAIN_GAS_COST_MAX=${TRAIN_GAS_COST_MAX:-6.0}
 
 EVAL_IN_DISTRIBUTION_SIGMA_VALUES=${EVAL_IN_DISTRIBUTION_SIGMA_VALUES:-"0.025 0.055 0.085"}
 EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES=${EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES:-"75.0 125.0 175.0"}
-EVAL_IN_DISTRIBUTION_GAS_COST_VALUES=${EVAL_IN_DISTRIBUTION_GAS_COST_VALUES:-"2.0 3.5 5.0"}
 EVAL_STRESS_SIGMA_VALUES=${EVAL_STRESS_SIGMA_VALUES:-"0.025 0.10 0.30"}
-EVAL_STRESS_ARRIVAL_RATE_VALUES=${EVAL_STRESS_ARRIVAL_RATE_VALUES:-"25.0 100.0 300.0"}
-EVAL_STRESS_GAS_COST_VALUES=${EVAL_STRESS_GAS_COST_VALUES:-"0.0 10.0 40.0"}
+EVAL_STRESS_ARRIVAL_RATE_VALUES=${EVAL_STRESS_ARRIVAL_RATE_VALUES:-"25.0 300.0"}
 
 module purge
 module load miniforge3/25.3.0-python3.12.10
@@ -79,9 +75,10 @@ echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks
 echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
 echo "Fixed evaluation seed: $EVALUATION_SEED"
 echo "Periodic baseline: rebalance_every=$PERIODIC_REBALANCE_EVERY width=$PERIODIC_WIDTH"
-echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] gas=[$TRAIN_GAS_COST_MIN, $TRAIN_GAS_COST_MAX] domains_per_reset=$TRAIN_DOMAINS_PER_RESET"
-echo "In-distribution evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_IN_DISTRIBUTION_SIGMA_VALUES] arrival=[$EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES] gas=[$EVAL_IN_DISTRIBUTION_GAS_COST_VALUES]"
-echo "Stress evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_STRESS_SIGMA_VALUES] arrival=[$EVAL_STRESS_ARRIVAL_RATE_VALUES] gas=[$EVAL_STRESS_GAS_COST_VALUES]"
+echo "Fixed gas cost: $NOMINAL_GAS_COST"
+echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] domains_per_reset=$TRAIN_DOMAINS_PER_RESET"
+echo "In-distribution evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_IN_DISTRIBUTION_SIGMA_VALUES] arrival=[$EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES]"
+echo "Stress evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_STRESS_SIGMA_VALUES] arrival=[$EVAL_STRESS_ARRIVAL_RATE_VALUES]"
 echo "Output dir: $OUTPUT_DIR"
 
 python -u experiments/train_robust_lp_agent.py \
@@ -104,13 +101,10 @@ python -u experiments/train_robust_lp_agent.py \
   --nominal-gas-cost "$NOMINAL_GAS_COST" \
   --train-sigma-range "$TRAIN_SIGMA_MIN" "$TRAIN_SIGMA_MAX" \
   --train-arrival-rate-range "$TRAIN_ARRIVAL_RATE_MIN" "$TRAIN_ARRIVAL_RATE_MAX" \
-  --train-gas-cost-range "$TRAIN_GAS_COST_MIN" "$TRAIN_GAS_COST_MAX" \
   --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
   --eval-in-distribution-sigma-values $EVAL_IN_DISTRIBUTION_SIGMA_VALUES \
   --eval-in-distribution-arrival-rate-values $EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES \
-  --eval-in-distribution-gas-cost-values $EVAL_IN_DISTRIBUTION_GAS_COST_VALUES \
   --eval-stress-sigma-values $EVAL_STRESS_SIGMA_VALUES \
-  --eval-stress-arrival-rate-values $EVAL_STRESS_ARRIVAL_RATE_VALUES \
-  --eval-stress-gas-cost-values $EVAL_STRESS_GAS_COST_VALUES
+  --eval-stress-arrival-rate-values $EVAL_STRESS_ARRIVAL_RATE_VALUES
 
 echo "Job finished at: $(date)"

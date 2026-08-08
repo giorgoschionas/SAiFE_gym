@@ -110,7 +110,6 @@ def test_sampled_values_stay_within_ranges():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 4.0),
         arrival_rate_range=(50.0, 200.0),
-        gas_cost_range=(0.0, 20.0),
     )
     rng = np.random.default_rng(123)
 
@@ -118,7 +117,6 @@ def test_sampled_values_stay_within_ranges():
         params = config.sample(rng)
         assert 1.0 <= params.sigma <= 4.0
         assert 50.0 <= params.arrival_rate <= 200.0
-        assert 0.0 <= params.gas_cost <= 20.0
 
 
 def test_seeded_sampler_is_reproducible():
@@ -136,7 +134,6 @@ def test_batched_sampler_is_balanced_bounded_and_reproducible():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 4.0),
         arrival_rate_range=(50.0, 200.0),
-        gas_cost_range=(0.0, 20.0),
     )
 
     params_a = config.sample_batch(np.random.default_rng(123), 11, 4)
@@ -144,14 +141,12 @@ def test_batched_sampler_is_balanced_bounded_and_reproducible():
 
     assert params_a.sigma.shape == (11, 1)
     assert params_a.arrival_rate.shape == (11, 2)
-    assert params_a.gas_cost.shape == (11,)
     assert params_a.domain_id.shape == (11,)
     assert np.all((1.0 <= params_a.sigma) & (params_a.sigma <= 4.0))
     assert np.all(
         (50.0 <= params_a.arrival_rate)
         & (params_a.arrival_rate <= 200.0)
     )
-    assert np.all((0.0 <= params_a.gas_cost) & (params_a.gas_cost <= 20.0))
     np.testing.assert_array_equal(
         np.sort(np.unique(params_a.domain_id)),
         np.arange(4),
@@ -160,14 +155,12 @@ def test_batched_sampler_is_balanced_bounded_and_reproducible():
     assert counts.max() - counts.min() <= 1
     np.testing.assert_array_equal(params_a.sigma, params_b.sigma)
     np.testing.assert_array_equal(params_a.arrival_rate, params_b.arrival_rate)
-    np.testing.assert_array_equal(params_a.gas_cost, params_b.gas_cost)
     np.testing.assert_array_equal(params_a.domain_id, params_b.domain_id)
 
     for domain_id in range(4):
         mask = params_a.domain_id == domain_id
         assert np.unique(params_a.sigma[mask]).size == 1
         assert np.unique(params_a.arrival_rate[mask], axis=0).shape[0] == 1
-        assert np.unique(params_a.gas_cost[mask]).size == 1
 
 
 @pytest.mark.parametrize(
@@ -187,7 +180,6 @@ def test_reset_applies_domain_parameters_to_models_and_state():
     config = UniformDomainRandomizationConfig(
         sigma_range=(3.0, 3.0),
         arrival_rate_range=(123.0, 123.0),
-        gas_cost_range=(17.0, 17.0),
     )
     env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=1)
 
@@ -196,15 +188,14 @@ def test_reset_applies_domain_parameters_to_models_and_state():
     assert info["domain_parameters"] == {
         "sigma": 3.0,
         "arrival_rate": 123.0,
-        "gas_cost": 17.0,
     }
     assert env.model_dynamics.midprice_model.volatility == 3.0
     np.testing.assert_allclose(env.model_dynamics.arrival_model.alpha[1], [123.0, 123.0])
-    assert env.model_dynamics.gas_cost == 17.0
-    np.testing.assert_allclose(obs[GAS_COST_KEY], np.full(env.num_trajectories, 17.0))
+    assert env.model_dynamics.gas_cost == 0.0
+    np.testing.assert_allclose(obs[GAS_COST_KEY], np.zeros(env.num_trajectories))
     np.testing.assert_allclose(
         env.initial_state[GAS_COST_KEY],
-        np.full(env.num_trajectories, 17.0),
+        np.zeros(env.num_trajectories),
     )
 
 
@@ -212,7 +203,6 @@ def test_consecutive_resets_can_sample_different_regimes():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 4.0),
         arrival_rate_range=(50.0, 200.0),
-        gas_cost_range=(0.0, 20.0),
     )
     env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=3)
 
@@ -228,7 +218,6 @@ def test_batched_reset_applies_trajectory_parameters_for_whole_episode():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 4.0),
         arrival_rate_range=(50.0, 200.0),
-        gas_cost_range=(1.0, 20.0),
     )
     env = DomainRandomizedAMMEnvironment(
         create_test_amm_env(num_trajectories=6),
@@ -249,7 +238,7 @@ def test_batched_reset_applies_trajectory_parameters_for_whole_episode():
         env.model_dynamics.arrival_model.episode_baseline_intensity,
         params.arrival_rate,
     )
-    np.testing.assert_array_equal(obs[GAS_COST_KEY], params.gas_cost)
+    np.testing.assert_array_equal(obs[GAS_COST_KEY], np.zeros(env.num_trajectories))
     np.testing.assert_array_equal(info["domain_parameters"]["sigma"], params.sigma)
 
     # Batched randomization does not turn scalar configuration attributes into
@@ -263,7 +252,6 @@ def test_batched_reset_applies_trajectory_parameters_for_whole_episode():
 
     first_sigma = params.sigma.copy()
     first_arrival_rate = params.arrival_rate.copy()
-    first_gas_cost = params.gas_cost.copy()
     action = np.tile(np.array([-2.0, 2.0, 1.0]), (env.num_trajectories, 1))
     for _ in range(2):
         obs, _, _, _, _ = env.step(action)
@@ -275,7 +263,7 @@ def test_batched_reset_applies_trajectory_parameters_for_whole_episode():
             env.model_dynamics.arrival_model.episode_baseline_intensity,
             first_arrival_rate,
         )
-        np.testing.assert_array_equal(obs[GAS_COST_KEY], first_gas_cost)
+        np.testing.assert_array_equal(obs[GAS_COST_KEY], np.zeros(env.num_trajectories))
         assert env.model_dynamics.midprice_model.current_state.shape == (6, 1)
         assert env.model_dynamics.arrival_model.current_state.shape == (6, 2)
 
@@ -284,7 +272,6 @@ def test_batched_reset_applies_trajectory_parameters_for_whole_episode():
     assert isinstance(second, BatchedDomainParameters)
     assert not np.array_equal(first_sigma, second.sigma)
     assert not np.array_equal(first_arrival_rate, second.arrival_rate)
-    assert not np.array_equal(first_gas_cost, second.gas_cost)
 
 
 def test_batched_reset_metadata_arrays_are_copied():
@@ -306,8 +293,9 @@ def test_batched_reset_metadata_arrays_are_copied():
     )
 
 
-def test_trajectory_gas_cost_state_controls_rebalance_deductions():
+def test_domain_parameters_do_not_modify_fixed_gas_cost_state():
     base_env = create_test_amm_env(num_trajectories=3)
+    base_env.model_dynamics.gas_cost = 7.0
     env = DomainRandomizedAMMEnvironment(
         base_env,
         UniformDomainRandomizationConfig(),
@@ -317,24 +305,12 @@ def test_trajectory_gas_cost_state_controls_rebalance_deductions():
     params = BatchedDomainParameters(
         sigma=np.zeros((3, 1)),
         arrival_rate=np.zeros((3, 2)),
-        gas_cost=np.array([1.0, 7.0, 25.0]),
         domain_id=np.arange(3),
     )
+    base_env._initial_state[GAS_COST_KEY] = np.full(3, 7.0)
     env.apply_domain_parameters(params)
     obs, _ = base_env.reset()
-    np.testing.assert_array_equal(obs[GAS_COST_KEY], params.gas_cost)
-
-    action = np.tile(np.array([-2.0, 2.0, -1.0]), (3, 1))
-    no_arrivals = np.zeros((3, 2), dtype=bool)
-    base_env.model_dynamics.update_state(no_arrivals, action)
-    base_env.model_dynamics.update_state(no_arrivals, action)
-
-    np.testing.assert_allclose(
-        base_env.model_dynamics.compute_portfolio_value(),
-        base_env.initial_wealth - params.gas_cost,
-        rtol=1e-9,
-        atol=1e-6,
-    )
+    np.testing.assert_array_equal(obs[GAS_COST_KEY], np.full(3, 7.0))
 
 
 @pytest.mark.parametrize(
@@ -486,15 +462,18 @@ def test_nominal_environment_scalar_api_and_seeded_behavior_are_unchanged():
 def test_default_sb3_observation_hides_gas_cost():
     assert GAS_COST_KEY not in DEFAULT_OBS_KEYS
 
-    config = UniformDomainRandomizationConfig(gas_cost_range=(11.0, 11.0))
-    env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=4)
+    env = DomainRandomizedAMMEnvironment(
+        create_test_amm_env(),
+        UniformDomainRandomizationConfig(),
+        seed=4,
+    )
     sb3_env = StableBaselinesAMMEnvironment(env)
 
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
     assert obs.shape[1] == 4
-    assert env.state[GAS_COST_KEY][0] == 11.0
+    assert env.state[GAS_COST_KEY][0] == 0.0
 
 
 def test_domain_randomized_script_factory_uses_requested_market_components():
@@ -513,8 +492,9 @@ def test_domain_randomized_script_factory_uses_requested_market_components():
         trade_size_notional=12.0,
         price_impact_depth_window=4,
         price_impact_min_depth=1e-9,
+        nominal_gas_cost=6.0,
     )
-    params = DomainParameters(sigma=0.12, arrival_rate=80.0, gas_cost=6.0)
+    params = DomainParameters(sigma=0.12, arrival_rate=80.0)
 
     env = make_fixed_env(args, params, seed=123)
 
@@ -561,14 +541,12 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.periodic_rebalance_every == 5
     assert args.periodic_width == 2
     assert tuple(args.train_sigma_range) == (0.01, 0.10)
-    assert tuple(args.train_gas_cost_range) == (1.0, 6.0)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
+    assert args.nominal_gas_cost == 0.0
     assert args.eval_in_distribution_sigma_values == [0.025, 0.055, 0.085]
     assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
-    assert args.eval_in_distribution_gas_cost_values == [2.0, 3.5, 5.0]
     assert args.eval_stress_sigma_values == [0.025, 0.10, 0.30]
-    assert args.eval_stress_arrival_rate_values == [25.0, 100.0, 300.0]
-    assert args.eval_stress_gas_cost_values == [0.0, 10.0, 40.0]
+    assert args.eval_stress_arrival_rate_values == [25.0, 300.0]
 
 
 def test_domain_randomized_script_defaults_propagate_to_environment_and_action_space():
@@ -578,7 +556,6 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     params = DomainParameters(
         sigma=args.nominal_sigma,
         arrival_rate=args.nominal_arrival_rate,
-        gas_cost=args.nominal_gas_cost,
     )
 
     env = make_fixed_env(args, params, seed=123)
@@ -632,16 +609,16 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     ]
     stress = [regime for regime in regimes if regime.evaluation_set == "stress"]
 
-    assert len(in_distribution) == 27
-    assert len(stress) == 27
-    assert regimes[:27] == in_distribution
-    assert regimes[27:] == stress
-    assert len({regime.parameters for regime in regimes}) == 54
-    assert in_distribution[0].parameters == DomainParameters(0.025, 75.0, 2.0)
-    assert in_distribution[-1].parameters == DomainParameters(0.085, 175.0, 5.0)
-    assert stress[0].parameters == DomainParameters(0.025, 25.0, 0.0)
-    assert stress[-1].parameters == DomainParameters(0.30, 300.0, 40.0)
-    assert DomainParameters(0.10, 100.0, 0.0) in {
+    assert len(in_distribution) == 9
+    assert len(stress) == 6
+    assert regimes[:9] == in_distribution
+    assert regimes[9:] == stress
+    assert len({regime.parameters for regime in regimes}) == 15
+    assert in_distribution[0].parameters == DomainParameters(0.025, 75.0)
+    assert in_distribution[-1].parameters == DomainParameters(0.085, 175.0)
+    assert stress[0].parameters == DomainParameters(0.025, 25.0)
+    assert stress[-1].parameters == DomainParameters(0.30, 300.0)
+    assert DomainParameters(0.10, 300.0) in {
         regime.parameters for regime in stress
     }
 
@@ -656,20 +633,22 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
         (regime.evaluation_set, regime.parameters)
         for regime in evaluation_regimes(args)
     ] == [
-        ("in_distribution", DomainParameters(0.055, 125.0, 3.5)),
-        ("stress", DomainParameters(0.10, 100.0, 0.0)),
+        ("in_distribution", DomainParameters(0.055, 125.0)),
+        ("stress", DomainParameters(0.10, 300.0)),
     ]
 
 
 def test_removed_generic_evaluation_cli_flags_are_rejected():
     with pytest.raises(SystemExit):
         parse_args(["--eval-gas-cost-values", "0.0"])
+    with pytest.raises(SystemExit):
+        parse_args(["--eval-in-distribution-gas-cost-values", "0.0"])
 
 
 @pytest.mark.parametrize(
     ("attribute", "values", "error"),
     [
-        ("eval_in_distribution_gas_cost_values", [0.0], "training range"),
+        ("eval_in_distribution_arrival_rate_values", [25.0], "training range"),
         ("eval_in_distribution_sigma_values", [0.025, 0.025], "duplicate"),
         ("eval_stress_arrival_rate_values", [-1.0], "non-negative"),
         ("eval_stress_sigma_values", [np.inf], "finite"),
@@ -687,7 +666,6 @@ def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
     args = parse_args([])
     args.eval_stress_sigma_values = [0.055, 0.30]
     args.eval_stress_arrival_rate_values = [125.0, 300.0]
-    args.eval_stress_gas_cost_values = [3.5, 40.0]
 
     with pytest.raises(ValueError, match="every stress evaluation regime"):
         validate_evaluation_configuration(args)
@@ -724,7 +702,7 @@ def test_domain_randomized_domain_count_validation(num_domains):
 
 
 def test_domain_randomized_script_reports_unambiguous_objective_columns():
-    params = DomainParameters(sigma=0.01, arrival_rate=50.0, gas_cost=1.0)
+    params = DomainParameters(sigma=0.01, arrival_rate=50.0)
 
     row = summarize_running_inventory_objective(
         "domain_randomized_ppo",
@@ -738,6 +716,9 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
     assert row["evaluation_set"] == "in_distribution"
     assert row["training_seed"] == 43
     assert row["evaluation_seed"] == 100042
+    assert row["sigma"] == 0.01
+    assert row["arrival_rate"] == 50.0
+    assert "gas_cost" not in row
     assert row["mean_running_inventory_objective"] == 1.0
     assert row["evaluation_path_std_running_inventory_objective"] == 3.0
     assert row["n_evaluation_paths"] == 2
@@ -874,7 +855,7 @@ def test_domain_randomized_script_reports_unambiguous_objective_columns():
 
 
 def test_summary_aggregates_each_evaluation_set_independently():
-    params = DomainParameters(sigma=0.055, arrival_rate=125.0, gas_cost=3.5)
+    params = DomainParameters(sigma=0.055, arrival_rate=125.0)
     rows = [
         summarize_running_inventory_objective(
             "domain_randomized_ppo",
@@ -945,7 +926,7 @@ def test_cash_baseline_is_zero_with_expected_sample_count():
     args = parse_args([])
     args.n_eval_episodes = 3
     args.num_trajectories = 4
-    params = DomainParameters(sigma=0.3, arrival_rate=300.0, gas_cost=40.0)
+    params = DomainParameters(sigma=0.3, arrival_rate=300.0)
 
     row = evaluate_cash(params, "stress", args)
 
@@ -963,7 +944,7 @@ def test_cash_baseline_is_zero_with_expected_sample_count():
 
 
 def test_objective_summary_validates_behavior_reward_decomposition():
-    params = DomainParameters(sigma=0.055, arrival_rate=125.0, gas_cost=3.5)
+    params = DomainParameters(sigma=0.055, arrival_rate=125.0)
     diagnostics = zero_behavior_diagnostics()
     diagnostics["mean_pnl_per_path"] = 5.0
     diagnostics["mean_inventory_penalty_per_path"] = 2.0
@@ -996,7 +977,6 @@ def test_ppo_smoke_learns_on_domain_randomized_env():
     config = UniformDomainRandomizationConfig(
         sigma_range=(1.0, 1.5),
         arrival_rate_range=(50.0, 60.0),
-        gas_cost_range=(0.0, 1.0),
     )
     env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=5)
     sb3_env = StableBaselinesAMMEnvironment(env)

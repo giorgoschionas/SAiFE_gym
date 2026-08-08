@@ -80,8 +80,8 @@ def _make_rows(
 ) -> list[dict]:
     rows = []
     for evaluation_set, params in [
-        ("in_distribution", (0.055, 125.0, 3.5)),
-        ("stress", (0.10, 100.0, 0.0)),
+        ("in_distribution", (0.055, 125.0)),
+        ("stress", (0.10, 300.0)),
     ]:
         values = _policy_values(seed_index, evaluation_set)
         gaps = {
@@ -107,7 +107,6 @@ def _make_rows(
                 "policy": policy,
                 "sigma": params[0],
                 "arrival_rate": params[1],
-                "gas_cost": params[2],
                 "mean_running_inventory_objective": values[policy],
                 "evaluation_path_std_running_inventory_objective": (
                     0.0

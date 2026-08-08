@@ -4,16 +4,12 @@ from typing import Optional
 import numpy as np
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.index_names import GAS_COST_KEY
-
-
 @dataclass(frozen=True)
 class DomainParameters:
     """Episode-level market parameters used for domain randomization."""
 
     sigma: float
     arrival_rate: float
-    gas_cost: float
 
     def to_dict(self) -> dict:
         return asdict(self)
@@ -25,13 +21,11 @@ class BatchedDomainParameters:
 
     sigma: np.ndarray
     arrival_rate: np.ndarray
-    gas_cost: np.ndarray
     domain_id: np.ndarray
 
     def __post_init__(self) -> None:
         sigma = np.asarray(self.sigma, dtype=np.float64)
         arrival_rate = np.asarray(self.arrival_rate, dtype=np.float64)
-        gas_cost = np.asarray(self.gas_cost, dtype=np.float64)
         domain_id = np.asarray(self.domain_id)
 
         if sigma.ndim != 2 or sigma.shape[1] != 1 or sigma.shape[0] == 0:
@@ -42,12 +36,10 @@ class BatchedDomainParameters:
         num_trajectories = sigma.shape[0]
         expected_shapes = {
             "arrival_rate": (num_trajectories, 2),
-            "gas_cost": (num_trajectories,),
             "domain_id": (num_trajectories,),
         }
         for name, value in [
             ("arrival_rate", arrival_rate),
-            ("gas_cost", gas_cost),
             ("domain_id", domain_id),
         ]:
             if value.shape != expected_shapes[name]:
@@ -59,7 +51,6 @@ class BatchedDomainParameters:
         for name, value in [
             ("sigma", sigma),
             ("arrival_rate", arrival_rate),
-            ("gas_cost", gas_cost),
         ]:
             if not np.all(np.isfinite(value)):
                 raise ValueError(f"{name} must contain only finite values")
@@ -73,7 +64,6 @@ class BatchedDomainParameters:
 
         object.__setattr__(self, "sigma", sigma.copy())
         object.__setattr__(self, "arrival_rate", arrival_rate.copy())
-        object.__setattr__(self, "gas_cost", gas_cost.copy())
         object.__setattr__(self, "domain_id", domain_id.astype(np.int64, copy=True))
 
     @property
@@ -87,7 +77,6 @@ class BatchedDomainParameters:
         return {
             "sigma": self.sigma.copy(),
             "arrival_rate": self.arrival_rate.copy(),
-            "gas_cost": self.gas_cost.copy(),
             "domain_id": self.domain_id.copy(),
         }
 
@@ -98,13 +87,11 @@ class UniformDomainRandomizationConfig:
 
     sigma_range: tuple[float, float] = (1.0, 4.0)
     arrival_rate_range: tuple[float, float] = (50.0, 200.0)
-    gas_cost_range: tuple[float, float] = (0.0, 20.0)
 
     def __post_init__(self) -> None:
         for name, value_range in [
             ("sigma_range", self.sigma_range),
             ("arrival_rate_range", self.arrival_rate_range),
-            ("gas_cost_range", self.gas_cost_range),
         ]:
             _validate_nonnegative_range(name, value_range)
 
@@ -112,7 +99,6 @@ class UniformDomainRandomizationConfig:
         return DomainParameters(
             sigma=_sample_uniform(rng, self.sigma_range),
             arrival_rate=_sample_uniform(rng, self.arrival_rate_range),
-            gas_cost=_sample_uniform(rng, self.gas_cost_range),
         )
 
     def sample_batch(
@@ -136,15 +122,11 @@ class UniformDomainRandomizationConfig:
         domain_arrival_rate = _sample_uniform_array(
             rng, self.arrival_rate_range, num_domains
         )
-        domain_gas_cost = _sample_uniform_array(
-            rng, self.gas_cost_range, num_domains
-        )
 
         assigned_arrival_rate = domain_arrival_rate[domain_id]
         return BatchedDomainParameters(
             sigma=domain_sigma[domain_id, None],
             arrival_rate=np.repeat(assigned_arrival_rate[:, None], 2, axis=1),
-            gas_cost=domain_gas_cost[domain_id],
             domain_id=domain_id,
         )
 
@@ -189,8 +171,6 @@ class DomainRandomizedAMMEnvironment:
             )
         self.apply_domain_parameters(params)
         obs, info = self.env.reset(seed=seed, options=options)
-        gas_cost = self._gas_cost_array(params)
-        self._set_state_gas_cost(gas_cost)
 
         self.last_domain_parameters = (
             params if isinstance(params, DomainParameters) else params.copy()
@@ -226,7 +206,6 @@ class DomainRandomizedAMMEnvironment:
                 dtype=np.float64,
             )
             self._set_arrival_rate(float(params.arrival_rate))
-            md.gas_cost = float(params.gas_cost)
         else:
             if not hasattr(md.midprice_model, "set_episode_volatility"):
                 raise AttributeError(
@@ -243,9 +222,6 @@ class DomainRandomizedAMMEnvironment:
 
         if hasattr(md.midprice_model, "set_episode_volatility"):
             md.midprice_model.set_episode_volatility(episode_volatility)
-        gas_cost = self._gas_cost_array(params)
-        self._set_initial_state_gas_cost(gas_cost)
-        self._set_state_gas_cost(gas_cost)
 
     def _set_arrival_rate(self, arrival_rate: float) -> None:
         arrival_model = self.env.model_dynamics.arrival_model
@@ -282,27 +258,6 @@ class DomainRandomizedAMMEnvironment:
         arrival_model.current_state = (
             arrival_model.episode_baseline_intensity.copy()
         )
-
-    def _set_initial_state_gas_cost(self, gas_cost: np.ndarray) -> None:
-        if hasattr(self.env, "_initial_state") and GAS_COST_KEY in self.env._initial_state:
-            self.env._initial_state[GAS_COST_KEY] = gas_cost.copy()
-
-    def _set_state_gas_cost(self, gas_cost: np.ndarray) -> None:
-        state = getattr(self.env.model_dynamics, "state", None)
-        if state is not None and GAS_COST_KEY in state:
-            state[GAS_COST_KEY] = gas_cost.copy()
-
-    def _gas_cost_array(
-        self,
-        params: DomainParameters | BatchedDomainParameters,
-    ) -> np.ndarray:
-        if isinstance(params, DomainParameters):
-            return np.full(
-                self.env.num_trajectories,
-                params.gas_cost,
-                dtype=np.float64,
-            )
-        return params.gas_cost.copy()
 
     def __getattr__(self, name):
         return getattr(self.env, name)
