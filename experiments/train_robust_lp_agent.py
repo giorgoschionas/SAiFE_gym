@@ -123,11 +123,11 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 
-    parser.add_argument("--nominal-sigma", type=float, default=0.10)
+    parser.add_argument("--nominal-sigma", type=float, default=0.03)
     parser.add_argument("--nominal-arrival-rate", type=float, default=100.0)
     parser.add_argument("--nominal-gas-cost", type=float, default=0.0)
 
-    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.10))
+    parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.05))
     parser.add_argument(
         "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
     )
@@ -152,7 +152,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-in-distribution-sigma-values",
         nargs="+",
         type=float,
-        default=[0.025, 0.055, 0.085],
+        default=[0.015, 0.030, 0.045],
         help="Sigma values for the in-distribution Cartesian evaluation grid.",
     )
     parser.add_argument(
@@ -169,7 +169,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-stress-sigma-values",
         nargs="+",
         type=float,
-        default=[0.025, 0.10, 0.30],
+        default=[0.075, 0.10],
         help="Sigma values for the out-of-distribution stress grid.",
     )
     parser.add_argument(
@@ -195,7 +195,7 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.num_trajectories = 2
     args.n_steps = 5
     args.n_eval_episodes = 1
-    args.eval_in_distribution_sigma_values = [0.055]
+    args.eval_in_distribution_sigma_values = [0.030]
     args.eval_in_distribution_arrival_rate_values = [125.0]
     args.eval_stress_sigma_values = [0.10]
     args.eval_stress_arrival_rate_values = [300.0]

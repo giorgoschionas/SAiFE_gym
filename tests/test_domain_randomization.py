@@ -540,12 +540,13 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
     assert args.periodic_width == 2
-    assert tuple(args.train_sigma_range) == (0.01, 0.10)
+    assert args.nominal_sigma == 0.03
+    assert tuple(args.train_sigma_range) == (0.01, 0.05)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
     assert args.nominal_gas_cost == 0.0
-    assert args.eval_in_distribution_sigma_values == [0.025, 0.055, 0.085]
+    assert args.eval_in_distribution_sigma_values == [0.015, 0.030, 0.045]
     assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
-    assert args.eval_stress_sigma_values == [0.025, 0.10, 0.30]
+    assert args.eval_stress_sigma_values == [0.075, 0.10]
     assert args.eval_stress_arrival_rate_values == [25.0, 300.0]
 
 
@@ -610,14 +611,14 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     stress = [regime for regime in regimes if regime.evaluation_set == "stress"]
 
     assert len(in_distribution) == 9
-    assert len(stress) == 6
+    assert len(stress) == 4
     assert regimes[:9] == in_distribution
     assert regimes[9:] == stress
-    assert len({regime.parameters for regime in regimes}) == 15
-    assert in_distribution[0].parameters == DomainParameters(0.025, 75.0)
-    assert in_distribution[-1].parameters == DomainParameters(0.085, 175.0)
-    assert stress[0].parameters == DomainParameters(0.025, 25.0)
-    assert stress[-1].parameters == DomainParameters(0.30, 300.0)
+    assert len({regime.parameters for regime in regimes}) == 13
+    assert in_distribution[0].parameters == DomainParameters(0.015, 75.0)
+    assert in_distribution[-1].parameters == DomainParameters(0.045, 175.0)
+    assert stress[0].parameters == DomainParameters(0.075, 25.0)
+    assert stress[-1].parameters == DomainParameters(0.10, 300.0)
     assert DomainParameters(0.10, 300.0) in {
         regime.parameters for regime in stress
     }
@@ -633,7 +634,7 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
         (regime.evaluation_set, regime.parameters)
         for regime in evaluation_regimes(args)
     ] == [
-        ("in_distribution", DomainParameters(0.055, 125.0)),
+        ("in_distribution", DomainParameters(0.030, 125.0)),
         ("stress", DomainParameters(0.10, 300.0)),
     ]
 
@@ -664,7 +665,7 @@ def test_evaluation_grid_value_validation(attribute, values, error):
 
 def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
     args = parse_args([])
-    args.eval_stress_sigma_values = [0.055, 0.30]
+    args.eval_stress_sigma_values = [0.030, 0.30]
     args.eval_stress_arrival_rate_values = [125.0, 300.0]
 
     with pytest.raises(ValueError, match="every stress evaluation regime"):
