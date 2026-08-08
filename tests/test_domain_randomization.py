@@ -472,7 +472,7 @@ def test_default_sb3_observation_hides_gas_cost():
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
-    assert obs.shape[1] == 4
+    assert obs.shape[1] == 6
     assert env.state[GAS_COST_KEY][0] == 0.0
 
 
@@ -533,7 +533,8 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
 
     assert args.output_dir == "experiments/results/domain_randomized_ppo"
     assert args.n_steps == 1000
-    assert args.tau == 200
+    assert args.tau == 500
+    assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
     assert args.initial_wealth == 5_000.0
     assert args.inventory_phi == 0.02
@@ -564,14 +565,16 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     ppo_env = StructuredMultiDiscreteVecEnv(
         StableBaselinesAMMEnvironment(env),
         args.tau,
+        args.tick_stride,
     )
 
     assert env.initial_wealth == 5_000.0
     assert env.reward_function.reference_wealth == 5_000.0
-    assert env.model_dynamics.tau == 200
-    np.testing.assert_array_equal(env.action_space.low, [-200.0, -199.0, -1.0])
-    np.testing.assert_array_equal(env.action_space.high, [199.0, 200.0, 1.0])
-    np.testing.assert_array_equal(ppo_env.action_space.nvec, [401, 200, 2])
+    assert env.model_dynamics.tau == 500
+    assert args.tick_stride == 5
+    np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
+    np.testing.assert_array_equal(env.action_space.high, [499.0, 500.0, 1.0])
+    np.testing.assert_array_equal(ppo_env.action_space.nvec, [201, 100, 2])
     np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [5_000.0, 5_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],

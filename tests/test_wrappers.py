@@ -149,6 +149,15 @@ class TestStructuredMultiDiscreteVecEnv:
         assert isinstance(wrapped.action_space, gymnasium.spaces.MultiDiscrete)
         np.testing.assert_array_equal(wrapped.action_space.nvec, np.array([11, 5, 2]))
 
+    def test_tick_stride_exposes_coarser_center_width_space(self):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5, tick_stride=2)
+
+        np.testing.assert_array_equal(wrapped.center_offsets, np.array([-5, -3, -1, 1, 3, 5]))
+        np.testing.assert_array_equal(wrapped.half_widths, np.array([2, 4, 5]))
+        np.testing.assert_array_equal(wrapped.action_space.nvec, np.array([6, 3, 2]))
+
     def test_unscale_maps_center_width_hold_to_internal_action(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
         sb_env = StableBaselinesAMMEnvironment(amm_env)
@@ -164,6 +173,30 @@ class TestStructuredMultiDiscreteVecEnv:
             mapped,
             np.array([[-2.0, 2.0, -1.0], [0.0, 5.0, 1.0]], dtype=np.float32),
         )
+
+    def test_unscale_maps_strided_actions_to_internal_action(self):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5, tick_stride=2)
+
+        actions = np.array([
+            [2, 0, 0],  # center=-1, half_width=2, rebalance
+            [5, 2, 1],  # center=5, half_width=5, hold
+        ])
+        mapped = wrapped.unscale(actions)
+
+        np.testing.assert_array_equal(
+            mapped,
+            np.array([[-3.0, 1.0, -1.0], [0.0, 5.0, 1.0]], dtype=np.float32),
+        )
+
+    @pytest.mark.parametrize("tau,tick_stride", [(0, 1), (5, 0)])
+    def test_invalid_stride_arguments_raise(self, tau, tick_stride):
+        amm_env = create_test_amm_env(num_trajectories=2, tau=5)
+        sb_env = StableBaselinesAMMEnvironment(amm_env)
+
+        with pytest.raises(ValueError):
+            StructuredMultiDiscreteVecEnv(sb_env, tau=tau, tick_stride=tick_stride)
 
     def test_step_async_maps_structured_actions(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)

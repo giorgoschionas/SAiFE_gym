@@ -96,7 +96,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
-    parser.add_argument("--tau", type=int, default=200)
+    parser.add_argument("--tau", type=int, default=500)
+    parser.add_argument("--tick-stride", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.
@@ -401,7 +402,7 @@ def make_robust_env(args: argparse.Namespace):
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
-    ppo_env = StructuredMultiDiscreteVecEnv(vec_env, args.tau)
+    ppo_env = StructuredMultiDiscreteVecEnv(vec_env, args.tau, args.tick_stride)
     rollout_size = args.n_steps * args.num_trajectories
     batch_size = min(max(64, rollout_size // 16), rollout_size)
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
@@ -454,7 +455,11 @@ def evaluate_ppo(
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env)
-        action_wrapper = StructuredMultiDiscreteVecEnv(sb3_env, args.tau)
+        action_wrapper = StructuredMultiDiscreteVecEnv(
+            sb3_env,
+            args.tau,
+            args.tick_stride,
+        )
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
         behavior.begin_episode(env.num_trajectories)

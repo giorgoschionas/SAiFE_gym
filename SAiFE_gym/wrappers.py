@@ -23,6 +23,13 @@ def _offset_grid(tau: int, tick_stride: int) -> np.ndarray:
     return np.asarray(offsets, dtype=np.float32)
 
 
+def _half_width_grid(tau: int, tick_stride: int) -> np.ndarray:
+    widths = list(range(tick_stride, tau + 1, tick_stride))
+    if not widths or widths[-1] != tau:
+        widths.append(tau)
+    return np.asarray(widths, dtype=np.float32)
+
+
 def build_discrete_action_table(tau: int, tick_stride: int = 1) -> np.ndarray:
     """Map discrete action ids to internal ``[lower, upper, hold_flag]`` actions.
 
@@ -135,25 +142,29 @@ class DiscreteActionVecEnv(VecEnv):
 class StructuredMultiDiscreteVecEnv(VecEnv):
     """Expose decoupled ``center``, ``half_width``, and ``hold`` action heads.
 
-    The SB3-facing action space is ``MultiDiscrete([2*tau + 1, tau, 2])``:
-    center tick in ``[-tau, tau]``, half-width in ``[1, tau]``, and a binary
-    rebalance/hold choice. Actions are mapped to the wrapped env's internal
+    With the default ``tick_stride=1``, the SB3-facing action space is
+    ``MultiDiscrete([2*tau + 1, tau, 2])``. Larger strides expose a coarser
+    center/half-width grid while preserving the same internal
     ``[lower_offset, upper_offset, hold_flag]`` command format.
     """
 
-    def __init__(self, vec_env: VecEnv, tau: int):
+    def __init__(self, vec_env: VecEnv, tau: int, tick_stride: int = 1):
         self._wrapped = vec_env
-        self.tau = int(tau)
-        if self.tau < 1:
-            raise ValueError(f"tau must be >= 1, got {self.tau}")
-        action_space = gymnasium.spaces.MultiDiscrete([2 * self.tau + 1, self.tau, 2])
+        self.tau, self.tick_stride = _validate_action_table_args(tau, tick_stride)
+        self.center_offsets = _offset_grid(self.tau, self.tick_stride)
+        self.half_widths = _half_width_grid(self.tau, self.tick_stride)
+        action_space = gymnasium.spaces.MultiDiscrete([
+            len(self.center_offsets),
+            len(self.half_widths),
+            2,
+        ])
         super().__init__(vec_env.num_envs, vec_env.observation_space, action_space)
 
     def unscale(self, actions: np.ndarray) -> np.ndarray:
         """Map MultiDiscrete indices to ``[lower, upper, hold_flag]`` actions."""
         actions = np.asarray(actions, dtype=np.int64)
-        center = actions[..., 0] - self.tau
-        half_width = actions[..., 1] + 1
+        center = self.center_offsets[actions[..., 0]]
+        half_width = self.half_widths[actions[..., 1]]
         hold_flag = np.where(actions[..., 2] == 0, -1.0, 1.0).astype(np.float32)
 
         lower = np.clip(center - half_width, -self.tau, self.tau - 1).astype(np.float32)
