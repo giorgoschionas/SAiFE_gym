@@ -63,12 +63,13 @@ Evaluation is reported separately on an in-distribution interpolation grid and
 an out-of-distribution stress grid. Override their Cartesian axes independently
 with `EVAL_IN_DISTRIBUTION_SIGMA_VALUES`,
 `EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES`,
-`EVAL_IN_DISTRIBUTION_GAS_COST_VALUES`, `EVAL_STRESS_SIGMA_VALUES`,
-`EVAL_STRESS_ARRIVAL_RATE_VALUES`, and `EVAL_STRESS_GAS_COST_VALUES`. Each
-variable is a space-separated list, for example:
+`EVAL_STRESS_SIGMA_VALUES`, and `EVAL_STRESS_ARRIVAL_RATE_VALUES`. Each
+variable is a space-separated list. Gas cost is fixed for the run via
+`NOMINAL_GAS_COST`; the training script no longer supports gas-cost evaluation
+grids. For example:
 
 ```bash
-sbatch --export=ALL,EVAL_IN_DISTRIBUTION_GAS_COST_VALUES="2.0 3.5 5.0" \
+sbatch --export=ALL,EVAL_STRESS_SIGMA_VALUES="0.075 0.10 0.125",NOMINAL_GAS_COST=2.0 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
