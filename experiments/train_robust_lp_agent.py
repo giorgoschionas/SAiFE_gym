@@ -107,7 +107,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # 5e3 keeps the LP's capital scale closer to the modeled trading volume.
     parser.add_argument("--initial-wealth", type=float, default=5_000.0)
     # Risk charge on raw token0 inventory per unit time.
-    parser.add_argument("--inventory-phi", type=float, default=0.02)
+    parser.add_argument("--inventory-phi", type=float, default=0.4)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument(
         "--evaluation-seed",
@@ -127,7 +127,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     parser.add_argument("--nominal-sigma", type=float, default=0.03)
     parser.add_argument("--nominal-arrival-rate", type=float, default=100.0)
-    parser.add_argument("--nominal-gas-cost", type=float, default=0.0)
+    parser.add_argument("--nominal-gas-cost", type=float, default=2.0)
 
     parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.05))
     parser.add_argument(
@@ -146,7 +146,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--kernel-beta", type=float, default=0.5)
     parser.add_argument("--kernel-window", type=int, default=10)
     parser.add_argument("--liquidity-scale", type=float, default=1e6)
-    parser.add_argument("--trade-size-notional", type=float, default=40.0)
+    parser.add_argument("--trade-size-notional", type=float, default=250.0)
     parser.add_argument("--price-impact-depth-window", type=int, default=10)
     parser.add_argument("--price-impact-min-depth", type=float, default=1e-12)
 

@@ -597,14 +597,14 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
     assert args.initial_wealth == 5_000.0
-    assert args.inventory_phi == 0.02
+    assert args.inventory_phi == 0.4
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
     assert args.periodic_width == 2
     assert args.nominal_sigma == 0.03
     assert tuple(args.train_sigma_range) == (0.01, 0.05)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
-    assert args.nominal_gas_cost == 0.0
+    assert args.nominal_gas_cost == 2.0
     assert args.eval_in_distribution_sigma_values == [0.015, 0.030, 0.045]
     assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
     assert args.eval_stress_sigma_values == [0.075, 0.10]
