@@ -171,7 +171,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-stress-sigma-values",
         nargs="+",
         type=float,
-        default=[0.075, 0.10],
+        default=[0.065, 0.08],
         help="Sigma values for the out-of-distribution stress grid.",
     )
     parser.add_argument(
@@ -199,7 +199,7 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.n_eval_episodes = 1
     args.eval_in_distribution_sigma_values = [0.030]
     args.eval_in_distribution_arrival_rate_values = [125.0]
-    args.eval_stress_sigma_values = [0.10]
+    args.eval_stress_sigma_values = [0.08]
     args.eval_stress_arrival_rate_values = [300.0]
 
 

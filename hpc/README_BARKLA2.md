@@ -69,7 +69,7 @@ variable is a space-separated list. Gas cost is fixed for the run via
 grids. For example:
 
 ```bash
-sbatch --export=ALL,EVAL_STRESS_SIGMA_VALUES="0.075 0.10 0.125",NOMINAL_GAS_COST=2.0 \
+sbatch --export=ALL,EVAL_STRESS_SIGMA_VALUES="0.065 0.08",NOMINAL_GAS_COST=2.0 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 

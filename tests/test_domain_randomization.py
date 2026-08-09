@@ -607,7 +607,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.nominal_gas_cost == 2.0
     assert args.eval_in_distribution_sigma_values == [0.015, 0.030, 0.045]
     assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
-    assert args.eval_stress_sigma_values == [0.075, 0.10]
+    assert args.eval_stress_sigma_values == [0.065, 0.08]
     assert args.eval_stress_arrival_rate_values == [25.0, 300.0]
 
 
@@ -680,9 +680,9 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     assert len({regime.parameters for regime in regimes}) == 13
     assert in_distribution[0].parameters == DomainParameters(0.015, 75.0)
     assert in_distribution[-1].parameters == DomainParameters(0.045, 175.0)
-    assert stress[0].parameters == DomainParameters(0.075, 25.0)
-    assert stress[-1].parameters == DomainParameters(0.10, 300.0)
-    assert DomainParameters(0.10, 300.0) in {
+    assert stress[0].parameters == DomainParameters(0.065, 25.0)
+    assert stress[-1].parameters == DomainParameters(0.08, 300.0)
+    assert DomainParameters(0.08, 300.0) in {
         regime.parameters for regime in stress
     }
 
@@ -698,7 +698,7 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
         for regime in evaluation_regimes(args)
     ] == [
         ("in_distribution", DomainParameters(0.030, 125.0)),
-        ("stress", DomainParameters(0.10, 300.0)),
+        ("stress", DomainParameters(0.08, 300.0)),
     ]
 
 
