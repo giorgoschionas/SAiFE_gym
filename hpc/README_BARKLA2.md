@@ -43,8 +43,8 @@ cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
-The single-training launcher defaults to `INITIAL_WEALTH=1000.0` and
-`TAU=500`; the seed-sweep launcher defaults to `TAU=200`.
+Both the single-training and seed-sweep launchers default to
+`TOTAL_TIMESTEPS=6000000`, `INITIAL_WEALTH=1000.0`, and `TAU=500`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. Both values can still be
 overridden through exported environment variables.
@@ -52,9 +52,16 @@ overridden through exported environment variables.
 Override parameters at submission time when needed:
 
 ```bash
-sbatch --export=ALL,TOTAL_TIMESTEPS=2000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
+sbatch --export=ALL,TOTAL_TIMESTEPS=6000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
+
+The training job writes convergence traces during learning:
+`domain_randomized_convergence.csv` and `nominal_convergence.csv`. By default
+these evaluate the current deterministic policy every 10 PPO rollouts on the
+fixed nominal validation regime. Override with
+`CONVERGENCE_EVAL_EVERY_ROLLOUTS` and `CONVERGENCE_N_EVAL_EPISODES`, or set
+`CONVERGENCE_EVAL_EVERY_ROLLOUTS=0` to disable.
 
 Domain-randomized training uses one sampled domain per trajectory by default. Set
 `TRAIN_DOMAINS_PER_RESET=1` to restore a single shared domain, or choose any

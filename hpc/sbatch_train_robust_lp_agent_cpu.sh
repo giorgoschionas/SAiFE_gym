@@ -16,7 +16,7 @@ set -euo pipefail
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
 VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
 
-TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-1000000}
+TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-6000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
 TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-$NUM_TRAJECTORIES}
 N_STEPS=${N_STEPS:-1000}
@@ -27,6 +27,8 @@ INVENTORY_PHI=${INVENTORY_PHI:-0.4}
 SEED=${SEED:-42}
 EVALUATION_SEED=${EVALUATION_SEED:-100042}
 N_EVAL_EPISODES=${N_EVAL_EPISODES:-10}
+CONVERGENCE_EVAL_EVERY_ROLLOUTS=${CONVERGENCE_EVAL_EVERY_ROLLOUTS:-10}
+CONVERGENCE_N_EVAL_EPISODES=${CONVERGENCE_N_EVAL_EPISODES:-1}
 LEARNING_RATE=${LEARNING_RATE:-3e-4}
 PERIODIC_REBALANCE_EVERY=${PERIODIC_REBALANCE_EVERY:-5}
 PERIODIC_WIDTH=${PERIODIC_WIDTH:-125}
@@ -79,6 +81,7 @@ echo "Fixed gas cost: $NOMINAL_GAS_COST"
 echo "Training domain: sigma=[$TRAIN_SIGMA_MIN, $TRAIN_SIGMA_MAX] arrival=[$TRAIN_ARRIVAL_RATE_MIN, $TRAIN_ARRIVAL_RATE_MAX] domains_per_reset=$TRAIN_DOMAINS_PER_RESET"
 echo "In-distribution evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_IN_DISTRIBUTION_SIGMA_VALUES] arrival=[$EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES]"
 echo "Stress evaluation: episodes=$N_EVAL_EPISODES sigma=[$EVAL_STRESS_SIGMA_VALUES] arrival=[$EVAL_STRESS_ARRIVAL_RATE_VALUES]"
+echo "Convergence evaluation: every_rollouts=$CONVERGENCE_EVAL_EVERY_ROLLOUTS episodes=$CONVERGENCE_N_EVAL_EPISODES"
 echo "Output dir: $OUTPUT_DIR"
 
 python -u experiments/train_robust_lp_agent.py \
@@ -93,6 +96,8 @@ python -u experiments/train_robust_lp_agent.py \
   --seed "$SEED" \
   --evaluation-seed "$EVALUATION_SEED" \
   --n-eval-episodes "$N_EVAL_EPISODES" \
+  --convergence-eval-every-rollouts "$CONVERGENCE_EVAL_EVERY_ROLLOUTS" \
+  --convergence-n-eval-episodes "$CONVERGENCE_N_EVAL_EPISODES" \
   --learning-rate "$LEARNING_RATE" \
   --periodic-rebalance-every "$PERIODIC_REBALANCE_EVERY" \
   --periodic-width "$PERIODIC_WIDTH" \

@@ -21,6 +21,7 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import numpy as np
 from stable_baselines3 import PPO
+from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecNormalize
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -94,7 +95,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--output-dir",
         default="experiments/results/domain_randomized_ppo",
     )
-    parser.add_argument("--total-timesteps", type=int, default=1_000_000)
+    parser.add_argument("--total-timesteps", type=int, default=6_000_000)
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
@@ -119,6 +120,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--n-eval-episodes", type=int, default=10)
+    parser.add_argument(
+        "--convergence-eval-every-rollouts",
+        type=int,
+        default=10,
+        help=(
+            "Evaluate the current deterministic policy every N PPO rollouts "
+            "on a fixed nominal validation regime; set to 0 to disable."
+        ),
+    )
+    parser.add_argument(
+        "--convergence-n-eval-episodes",
+        type=int,
+        default=1,
+        help="Number of vectorized episodes per convergence-check evaluation.",
+    )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--periodic-rebalance-every", type=int, default=5)
     parser.add_argument("--periodic-width", type=int, default=125)
@@ -424,6 +440,113 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
     return model, ppo_env, vec_normalize
 
 
+class ConvergenceEvaluationCallback(BaseCallback):
+    """Append fixed-regime policy evaluations during PPO training."""
+
+    def __init__(
+        self,
+        policy_name: str,
+        vec_normalize: Optional[VecNormalize],
+        args: argparse.Namespace,
+        output_path: Path,
+    ):
+        super().__init__(verbose=0)
+        if args.convergence_eval_every_rollouts < 0:
+            raise ValueError("convergence_eval_every_rollouts must be non-negative")
+        if args.convergence_n_eval_episodes < 1:
+            raise ValueError("convergence_n_eval_episodes must be positive")
+        self.policy_name = policy_name
+        self.vec_normalize = vec_normalize
+        self.args = args
+        self.output_path = output_path
+        self.rollouts_completed = 0
+        self._fieldnames: Optional[list[str]] = None
+
+    def _on_training_start(self) -> None:
+        self.output_path.parent.mkdir(parents=True, exist_ok=True)
+        self._fieldnames = None
+
+    def _on_step(self) -> bool:
+        return True
+
+    def _on_rollout_end(self) -> None:
+        frequency = self.args.convergence_eval_every_rollouts
+        if frequency == 0:
+            return
+
+        self.rollouts_completed += 1
+        if self.rollouts_completed % frequency != 0:
+            return
+
+        eval_args = argparse.Namespace(**vars(self.args))
+        eval_args.n_eval_episodes = self.args.convergence_n_eval_episodes
+        params = DomainParameters(
+            sigma=self.args.nominal_sigma,
+            arrival_rate=self.args.nominal_arrival_rate,
+        )
+        row = evaluate_ppo(
+            self.policy_name,
+            self.model,
+            self.vec_normalize,
+            params,
+            "convergence_validation",
+            eval_args,
+            regime_seed=self.args.evaluation_seed,
+        )
+        row = {
+            "num_timesteps": int(self.num_timesteps),
+            "rollouts_completed": int(self.rollouts_completed),
+            **row,
+        }
+        self._append_row(row)
+
+    def _append_row(self, row: dict) -> None:
+        if self._fieldnames is None:
+            self._fieldnames = list(row.keys())
+            write_header = not self.output_path.exists()
+        else:
+            write_header = False
+
+        with self.output_path.open("a", newline="") as f:
+            writer = csv.DictWriter(f, fieldnames=self._fieldnames)
+            if write_header:
+                writer.writeheader()
+            writer.writerow(row)
+
+
+def append_final_convergence_evaluation(
+    callback: ConvergenceEvaluationCallback,
+    model: PPO,
+    vec_normalize: Optional[VecNormalize],
+    args: argparse.Namespace,
+) -> None:
+    """Append a validation row for the final post-update policy."""
+    if args.convergence_eval_every_rollouts == 0:
+        return
+
+    eval_args = argparse.Namespace(**vars(args))
+    eval_args.n_eval_episodes = args.convergence_n_eval_episodes
+    params = DomainParameters(
+        sigma=args.nominal_sigma,
+        arrival_rate=args.nominal_arrival_rate,
+    )
+    row = evaluate_ppo(
+        callback.policy_name,
+        model,
+        vec_normalize,
+        params,
+        "convergence_validation_final",
+        eval_args,
+        regime_seed=args.evaluation_seed,
+    )
+    row = {
+        "num_timesteps": int(model.num_timesteps),
+        "rollouts_completed": int(callback.rollouts_completed),
+        **row,
+    }
+    callback._append_row(row)
+
+
 def train_and_save(
     label: str,
     env,
@@ -431,7 +554,14 @@ def train_and_save(
     run_dir: Path,
 ) -> tuple[PPO, Optional[VecNormalize]]:
     model, _, vec_normalize = build_ppo(env, args)
-    model.learn(total_timesteps=args.total_timesteps)
+    callback = ConvergenceEvaluationCallback(
+        f"{label}_ppo",
+        vec_normalize,
+        args,
+        run_dir / f"{label}_convergence.csv",
+    )
+    model.learn(total_timesteps=args.total_timesteps, callback=callback)
+    append_final_convergence_evaluation(callback, model, vec_normalize, args)
 
     model.save(str(run_dir / f"{label}_ppo"))
     if vec_normalize is not None:

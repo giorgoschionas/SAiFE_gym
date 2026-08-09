@@ -46,6 +46,7 @@ echo "Training domains per reset: $TRAIN_DOMAINS_PER_RESET"
 
 python -u experiments/train_robust_lp_agent.py \
   --smoke-test \
+  --convergence-eval-every-rollouts 1 \
   --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
   --output-dir experiments/results/domain_randomized_ppo/barkla2_smoke
 
