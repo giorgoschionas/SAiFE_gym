@@ -43,7 +43,7 @@ cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
-The single-training launcher defaults to `INITIAL_WEALTH=5000.0` and
+The single-training launcher defaults to `INITIAL_WEALTH=1000.0` and
 `TAU=500`; the seed-sweep launcher defaults to `TAU=200`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. Both values can still be

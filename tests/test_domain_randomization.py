@@ -596,19 +596,19 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.tau == 500
     assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
-    assert args.initial_wealth == 5_000.0
+    assert args.initial_wealth == 1_000.0
     assert args.inventory_phi == 0.4
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
     assert args.periodic_width == 125
     assert args.nominal_sigma == 0.03
     assert tuple(args.train_sigma_range) == (0.01, 0.05)
-    assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
+    assert tuple(args.train_arrival_rate_range) == (200.0, 400.0)
     assert args.nominal_gas_cost == 2.0
     assert args.eval_in_distribution_sigma_values == [0.015, 0.030, 0.045]
-    assert args.eval_in_distribution_arrival_rate_values == [75.0, 125.0, 175.0]
+    assert args.eval_in_distribution_arrival_rate_values == [250.0, 300.0, 350.0]
     assert args.eval_stress_sigma_values == [0.065, 0.08]
-    assert args.eval_stress_arrival_rate_values == [25.0, 300.0]
+    assert args.eval_stress_arrival_rate_values == [150.0, 450.0]
 
 
 def test_domain_randomized_script_defaults_propagate_to_environment_and_action_space():
@@ -628,14 +628,14 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
         args.tick_stride,
     )
 
-    assert env.initial_wealth == 5_000.0
+    assert env.initial_wealth == 1_000.0
     assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
     assert env.model_dynamics.tau == 500
     assert args.tick_stride == 5
     np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
     np.testing.assert_array_equal(env.action_space.high, [499.0, 500.0, 1.0])
     np.testing.assert_array_equal(ppo_env.action_space.nvec, [201, 100, 2])
-    np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [5_000.0, 5_000.0])
+    np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [1_000.0, 1_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],
         state[POOL_CURRENT_TICK_KEY] - args.tau,
@@ -678,11 +678,11 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     assert regimes[:9] == in_distribution
     assert regimes[9:] == stress
     assert len({regime.parameters for regime in regimes}) == 13
-    assert in_distribution[0].parameters == DomainParameters(0.015, 75.0)
-    assert in_distribution[-1].parameters == DomainParameters(0.045, 175.0)
-    assert stress[0].parameters == DomainParameters(0.065, 25.0)
-    assert stress[-1].parameters == DomainParameters(0.08, 300.0)
-    assert DomainParameters(0.08, 300.0) in {
+    assert in_distribution[0].parameters == DomainParameters(0.015, 250.0)
+    assert in_distribution[-1].parameters == DomainParameters(0.045, 350.0)
+    assert stress[0].parameters == DomainParameters(0.065, 150.0)
+    assert stress[-1].parameters == DomainParameters(0.08, 450.0)
+    assert DomainParameters(0.08, 450.0) in {
         regime.parameters for regime in stress
     }
 
@@ -697,8 +697,8 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
         (regime.evaluation_set, regime.parameters)
         for regime in evaluation_regimes(args)
     ] == [
-        ("in_distribution", DomainParameters(0.030, 125.0)),
-        ("stress", DomainParameters(0.08, 300.0)),
+        ("in_distribution", DomainParameters(0.030, 300.0)),
+        ("stress", DomainParameters(0.08, 450.0)),
     ]
 
 
@@ -712,7 +712,7 @@ def test_removed_generic_evaluation_cli_flags_are_rejected():
 @pytest.mark.parametrize(
     ("attribute", "values", "error"),
     [
-        ("eval_in_distribution_arrival_rate_values", [25.0], "training range"),
+        ("eval_in_distribution_arrival_rate_values", [150.0], "training range"),
         ("eval_in_distribution_sigma_values", [0.025, 0.025], "duplicate"),
         ("eval_stress_arrival_rate_values", [-1.0], "non-negative"),
         ("eval_stress_sigma_values", [np.inf], "finite"),
@@ -729,7 +729,7 @@ def test_evaluation_grid_value_validation(attribute, values, error):
 def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
     args = parse_args([])
     args.eval_stress_sigma_values = [0.030, 0.30]
-    args.eval_stress_arrival_rate_values = [125.0, 300.0]
+    args.eval_stress_arrival_rate_values = [300.0, 450.0]
 
     with pytest.raises(ValueError, match="every stress evaluation regime"):
         validate_evaluation_configuration(args)

@@ -104,8 +104,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.
     # The previous 1e6 default made fee income negligible relative to PnL;
-    # 5e3 keeps the LP's capital scale closer to the modeled trading volume.
-    parser.add_argument("--initial-wealth", type=float, default=5_000.0)
+    # 1e3 keeps the LP's capital scale close to the modeled trading volume.
+    parser.add_argument("--initial-wealth", type=float, default=1_000.0)
     # Risk charge on raw token0 inventory per unit time.
     parser.add_argument("--inventory-phi", type=float, default=0.4)
     parser.add_argument("--seed", type=int, default=SEED)
@@ -131,7 +131,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
 
     parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.05))
     parser.add_argument(
-        "--train-arrival-rate-range", nargs=2, type=float, default=(50.0, 200.0)
+        "--train-arrival-rate-range", nargs=2, type=float, default=(200.0, 400.0)
     )
     parser.add_argument(
         "--train-domains-per-reset",
@@ -161,7 +161,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-in-distribution-arrival-rate-values",
         nargs="+",
         type=float,
-        default=[75.0, 125.0, 175.0],
+        default=[250.0, 300.0, 350.0],
         help=(
             "Arrival-rate values for the in-distribution Cartesian "
             "evaluation grid."
@@ -178,7 +178,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--eval-stress-arrival-rate-values",
         nargs="+",
         type=float,
-        default=[25.0, 300.0],
+        default=[150.0, 450.0],
         help="Arrival-rate values for the out-of-distribution stress grid.",
     )
     parser.add_argument(
@@ -198,9 +198,9 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.n_steps = 5
     args.n_eval_episodes = 1
     args.eval_in_distribution_sigma_values = [0.030]
-    args.eval_in_distribution_arrival_rate_values = [125.0]
+    args.eval_in_distribution_arrival_rate_values = [300.0]
     args.eval_stress_sigma_values = [0.08]
-    args.eval_stress_arrival_rate_values = [300.0]
+    args.eval_stress_arrival_rate_values = [450.0]
 
 
 def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
