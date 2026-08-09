@@ -68,6 +68,7 @@ from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
+DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET = 10_000
 
 
 @dataclass(frozen=True)
@@ -388,8 +389,9 @@ def make_domain_randomized_env(args: argparse.Namespace):
     return DomainRandomizedAMMEnvironment(
         base_env,
         config,
-        seed=args.seed + 10_000,
+        seed=args.seed,
         num_domains=num_domains,
+        domain_seed_offset=DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     )
 
 

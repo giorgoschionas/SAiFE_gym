@@ -146,12 +146,16 @@ class DomainRandomizedAMMEnvironment:
         config: UniformDomainRandomizationConfig,
         seed: Optional[int] = None,
         num_domains: int = 1,
+        domain_seed_offset: int = 0,
     ):
         _validate_batch_sizes(env.num_trajectories, num_domains)
         self.env = env
         self.config = config
-        self.rng = np.random.default_rng(seed)
+        self.domain_seed_offset = _validate_domain_seed_offset(domain_seed_offset)
+        domain_seed = self._domain_seed(seed)
+        self.rng = np.random.default_rng(domain_seed)
         self.seed_ = seed
+        self.domain_seed_ = domain_seed
         self.num_domains = int(num_domains)
         self.last_domain_parameters: Optional[
             DomainParameters | BatchedDomainParameters
@@ -183,9 +187,16 @@ class DomainRandomizedAMMEnvironment:
         return self.env.step(action)
 
     def seed(self, seed: int = None):
-        self.rng = np.random.default_rng(seed)
+        domain_seed = self._domain_seed(seed)
+        self.rng = np.random.default_rng(domain_seed)
         self.seed_ = seed
+        self.domain_seed_ = domain_seed
         return self.env.seed(seed)
+
+    def _domain_seed(self, seed: Optional[int]) -> Optional[int]:
+        if seed is None:
+            return None
+        return int(seed) + self.domain_seed_offset
 
     def apply_domain_parameters(
         self,
@@ -297,6 +308,15 @@ def _validate_batch_sizes(num_trajectories: int, num_domains: int) -> None:
         raise ValueError(
             "num_domains must satisfy 1 <= num_domains <= num_trajectories"
         )
+
+
+def _validate_domain_seed_offset(domain_seed_offset: int) -> int:
+    if isinstance(domain_seed_offset, bool) or not isinstance(
+        domain_seed_offset,
+        (int, np.integer),
+    ):
+        raise ValueError("domain_seed_offset must be an integer")
+    return int(domain_seed_offset)
 
 
 def _validate_nonnegative_range(

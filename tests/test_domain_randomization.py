@@ -10,6 +10,7 @@ from experiments.policy_behavior_diagnostics import (
     zero_behavior_diagnostics,
 )
 from experiments.train_robust_lp_agent import (
+    DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     add_gap_columns,
     apply_smoke_overrides,
     evaluate_cash,
@@ -457,6 +458,67 @@ def test_nominal_environment_scalar_api_and_seeded_behavior_are_unchanged():
     )
     assert poisson_model.intensity.shape == (2,)
     np.testing.assert_array_equal(poisson_model.intensity, [12.0, 13.0])
+
+
+def test_amm_environment_seed_resets_model_dynamics_and_price_impact_rngs():
+    env = create_test_amm_env(num_trajectories=3, seed=77)
+
+    env.seed(123)
+    first_model_draw = env.model_dynamics.rng.integers(0, 1_000_000, size=5)
+    first_price_impact_draw = env.model_dynamics.price_impact_model.rng.uniform(
+        size=5
+    )
+
+    env.seed(123)
+    second_model_draw = env.model_dynamics.rng.integers(0, 1_000_000, size=5)
+    second_price_impact_draw = env.model_dynamics.price_impact_model.rng.uniform(
+        size=5
+    )
+
+    np.testing.assert_array_equal(first_model_draw, second_model_draw)
+    np.testing.assert_array_equal(
+        first_price_impact_draw,
+        second_price_impact_draw,
+    )
+
+
+def test_script_domain_randomization_seed_offset_survives_external_seed_calls():
+    args = parse_args([
+        "--num-trajectories",
+        "4",
+        "--n-steps",
+        "5",
+        "--seed",
+        "11",
+        "--train-domains-per-reset",
+        "2",
+    ])
+    env = make_domain_randomized_env(args)
+
+    env.seed(args.seed)
+    env.reset()
+
+    expected = UniformDomainRandomizationConfig(
+        sigma_range=tuple(args.train_sigma_range),
+        arrival_rate_range=tuple(args.train_arrival_rate_range),
+    ).sample_batch(
+        np.random.default_rng(args.seed + DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET),
+        args.num_trajectories,
+        args.train_domains_per_reset,
+    )
+
+    assert env.seed_ == args.seed
+    assert env.domain_seed_ == args.seed + DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET
+    assert isinstance(env.last_domain_parameters, BatchedDomainParameters)
+    np.testing.assert_array_equal(env.last_domain_parameters.sigma, expected.sigma)
+    np.testing.assert_array_equal(
+        env.last_domain_parameters.arrival_rate,
+        expected.arrival_rate,
+    )
+    np.testing.assert_array_equal(
+        env.last_domain_parameters.domain_id,
+        expected.domain_id,
+    )
 
 
 def test_default_sb3_observation_hides_gas_cost():
