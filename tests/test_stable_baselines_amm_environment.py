@@ -26,7 +26,6 @@ from SAiFE_gym.gym.index_names import (
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
     POSITION_WIDTH_KEY,
-    RECENT_REALIZED_VOLATILITY_KEY,
     TIME_KEY,
 )
 from SAiFE_gym.gym.observation_features import (
@@ -41,12 +40,7 @@ from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpric
 # Helpers
 # ---------------------------------------------------------------------------
 
-def create_test_amm_env(
-    num_trajectories: int = 1,
-    n_steps: int = 5,
-    tau: int = 5,
-    realized_vol_window: int = 50,
-) -> AMMEnvironment:
+def create_test_amm_env(num_trajectories: int = 1, n_steps: int = 5, tau: int = 5) -> AMMEnvironment:
     step_size = 1.0 / n_steps
     midprice_model = BrownianMotionMidpriceModel(
         drift=0.0,
@@ -75,7 +69,6 @@ def create_test_amm_env(
         n_steps=n_steps,
         model_dynamics=model_dynamics,
         num_trajectories=num_trajectories,
-        realized_vol_window=realized_vol_window,
         seed=42,
     )
 
@@ -85,13 +78,8 @@ def create_sb3_env(
     n_steps: int = 5,
     obs_keys=None,
     store_terminal_observation_info: bool = True,
-    realized_vol_window: int = 50,
 ) -> StableBaselinesAMMEnvironment:
-    amm_env = create_test_amm_env(
-        num_trajectories=num_trajectories,
-        n_steps=n_steps,
-        realized_vol_window=realized_vol_window,
-    )
+    amm_env = create_test_amm_env(num_trajectories=num_trajectories, n_steps=n_steps)
     return StableBaselinesAMMEnvironment(
         amm_env,
         obs_keys=obs_keys,
@@ -107,10 +95,6 @@ class TestReset:
     def test_default_obs_keys_include_directional_offsets(self):
         assert LP_LOWER_OFFSET_KEY in DEFAULT_OBS_KEYS
         assert LP_UPPER_OFFSET_KEY in DEFAULT_OBS_KEYS
-        assert RECENT_REALIZED_VOLATILITY_KEY in DEFAULT_OBS_KEYS
-        assert DEFAULT_OBS_KEYS.index(RECENT_REALIZED_VOLATILITY_KEY) < DEFAULT_OBS_KEYS.index(
-            LP_LOWER_OFFSET_KEY
-        )
         assert DEFAULT_OBS_KEYS.index(LP_LOWER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
             BOUNDARY_PROXIMITY_KEY
         )
@@ -377,76 +361,6 @@ class TestObservationFeatures:
             np.minimum(lower_offset, upper_offset),
         )
         np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
-
-
-# ---------------------------------------------------------------------------
-# TestRecentRealizedVolatility
-# ---------------------------------------------------------------------------
-
-class TestRecentRealizedVolatility:
-    def test_reset_and_first_return_are_zero(self):
-        env = create_test_amm_env(
-            num_trajectories=2,
-            n_steps=4,
-            realized_vol_window=2,
-        )
-        state, _ = env.reset()
-
-        np.testing.assert_array_equal(
-            state[RECENT_REALIZED_VOLATILITY_KEY],
-            np.zeros(2),
-        )
-
-        env.state[ASSET_PRICE_KEY] = np.array([101.0, 102.0])
-        env._update_realized_volatility()
-
-        np.testing.assert_array_equal(
-            env.state[RECENT_REALIZED_VOLATILITY_KEY],
-            np.zeros(2),
-        )
-
-    def test_expanding_and_rolling_unit_horizon_volatility(self):
-        env = create_test_amm_env(
-            num_trajectories=2,
-            n_steps=4,
-            realized_vol_window=2,
-        )
-        env.reset()
-        step_size = env.step_size
-
-        prices = [
-            np.array([101.0, 102.0]),
-            np.array([103.0, 101.0]),
-            np.array([104.0, 105.0]),
-        ]
-        returns = []
-        previous = np.array([100.0, 100.0])
-
-        for price in prices:
-            env.state[ASSET_PRICE_KEY] = price
-            env._update_realized_volatility()
-            returns.append(np.log(price / previous))
-            previous = price
-
-        expected = (
-            np.std(np.asarray(returns[-2:]), axis=0, ddof=1)
-            / np.sqrt(step_size)
-        )
-        np.testing.assert_allclose(
-            env.state[RECENT_REALIZED_VOLATILITY_KEY],
-            expected,
-        )
-
-    def test_flatten_obs_includes_recent_realized_volatility(self):
-        env = create_sb3_env(num_trajectories=2)
-        env.reset()
-        state = env.env.state
-        state[RECENT_REALIZED_VOLATILITY_KEY] = np.array([0.03, 0.05])
-
-        obs = env._flatten_obs(state)
-
-        col = env.obs_keys.index(RECENT_REALIZED_VOLATILITY_KEY)
-        np.testing.assert_allclose(obs[:, col], np.array([0.03, 0.05], dtype=np.float32))
 
 
 # ---------------------------------------------------------------------------

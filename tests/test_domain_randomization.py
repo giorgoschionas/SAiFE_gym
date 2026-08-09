@@ -472,7 +472,7 @@ def test_default_sb3_observation_hides_gas_cost():
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
-    assert obs.shape[1] == 7
+    assert obs.shape[1] == 6
     assert env.state[GAS_COST_KEY][0] == 0.0
 
 
@@ -493,7 +493,6 @@ def test_domain_randomized_script_factory_uses_requested_market_components():
         price_impact_depth_window=4,
         price_impact_min_depth=1e-9,
         nominal_gas_cost=6.0,
-        realized_vol_window=50,
     )
     params = DomainParameters(sigma=0.12, arrival_rate=80.0)
 
@@ -536,7 +535,6 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.n_steps == 1000
     assert args.tau == 500
     assert args.tick_stride == 5
-    assert args.realized_vol_window == 50
     assert args.alpha3 == 4000.0
     assert args.initial_wealth == 5_000.0
     assert args.inventory_phi == 0.02
@@ -574,18 +572,17 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     assert env.reward_function.reference_wealth == 5_000.0
     assert env.model_dynamics.tau == 500
     assert args.tick_stride == 5
-    assert env.realized_vol_window == 50
     np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
     np.testing.assert_array_equal(env.action_space.high, [499.0, 500.0, 1.0])
     np.testing.assert_array_equal(ppo_env.action_space.nvec, [201, 100, 2])
     np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [5_000.0, 5_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],
-        state[POOL_CURRENT_TICK_KEY] - 500,
+        state[POOL_CURRENT_TICK_KEY] - 200,
     )
     np.testing.assert_array_equal(
         state[LP_TICK_UPPER_KEY],
-        state[POOL_CURRENT_TICK_KEY] + 500,
+        state[POOL_CURRENT_TICK_KEY] + 200,
     )
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
     validate_evaluation_configuration(args)

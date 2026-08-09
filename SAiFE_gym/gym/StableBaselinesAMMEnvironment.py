@@ -15,7 +15,6 @@ from SAiFE_gym.gym.index_names import (
     MISPRICING_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     POSITION_WIDTH_KEY,
-    RECENT_REALIZED_VOLATILITY_KEY,
     TIME_KEY,
 )
 from SAiFE_gym.gym.observation_features import (
@@ -25,7 +24,6 @@ from SAiFE_gym.gym.observation_features import (
 
 DEFAULT_OBS_KEYS = [
     MISPRICING_KEY,            # adverse selection signal
-    RECENT_REALIZED_VOLATILITY_KEY,  # rolling unit-horizon volatility estimate
     LP_LOWER_OFFSET_KEY,       # distance from current tick to lower bound
     LP_UPPER_OFFSET_KEY,       # distance from current tick to upper bound
     BOUNDARY_PROXIMITY_KEY,    # min(lower_offset, upper_offset) — distance to nearest boundary
@@ -35,7 +33,7 @@ DEFAULT_OBS_KEYS = [
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
     # ASSET_PRICE_KEY,         # nearly constant at low volatility; captured by mispricing
     TIME_KEY,                  # episode clock
-]  # obs_dim = 7
+]  # obs_dim = 6
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 
