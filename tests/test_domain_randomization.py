@@ -523,8 +523,6 @@ def test_domain_randomized_script_factory_uses_requested_market_components():
     assert env.reward_function.per_step_inventory_aversion == 20.0
     assert env.reward_function.terminal_inventory_aversion == 0.0
     assert env.reward_function.inventory_exponent == 2.0
-    # Penalty is value-normalized, so phi is a fraction of wealth per unit time
-    assert env.reward_function.reference_wealth == INITIAL_WEALTH
     assert env.model_dynamics.gas_cost == 6.0
 
 
@@ -569,7 +567,7 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     )
 
     assert env.initial_wealth == 5_000.0
-    assert env.reward_function.reference_wealth == 5_000.0
+    assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
     assert env.model_dynamics.tau == 500
     assert args.tick_stride == 5
     np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
@@ -578,11 +576,11 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [5_000.0, 5_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],
-        state[POOL_CURRENT_TICK_KEY] - 200,
+        state[POOL_CURRENT_TICK_KEY] - args.tau,
     )
     np.testing.assert_array_equal(
         state[LP_TICK_UPPER_KEY],
-        state[POOL_CURRENT_TICK_KEY] + 200,
+        state[POOL_CURRENT_TICK_KEY] + args.tau,
     )
     assert resolve_train_domains_per_reset(args) == args.num_trajectories
     validate_evaluation_configuration(args)

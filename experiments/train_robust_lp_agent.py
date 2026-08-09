@@ -105,8 +105,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # The previous 1e6 default made fee income negligible relative to PnL;
     # 5e3 keeps the LP's capital scale closer to the modeled trading volume.
     parser.add_argument("--initial-wealth", type=float, default=5_000.0)
-    # Risk charge as a fraction of --initial-wealth per unit time at full token0
-    # exposure; see RunningInventoryPenalty's value-normalized formulation.
+    # Risk charge on raw token0 inventory per unit time.
     parser.add_argument("--inventory-phi", type=float, default=0.02)
     parser.add_argument("--seed", type=int, default=SEED)
     parser.add_argument(
@@ -364,7 +363,6 @@ def make_fixed_env(
         model_dynamics=model_dynamics,
         reward_function=RunningInventoryPenalty(
             per_step_inventory_aversion=args.inventory_phi,
-            reference_wealth=args.initial_wealth,
         ),
         initial_wealth=args.initial_wealth,
         num_trajectories=args.num_trajectories,
