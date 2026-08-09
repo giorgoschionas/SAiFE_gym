@@ -126,7 +126,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.set_defaults(normalise_obs=True)
 
     parser.add_argument("--nominal-sigma", type=float, default=0.03)
-    parser.add_argument("--nominal-arrival-rate", type=float, default=100.0)
+    parser.add_argument("--nominal-arrival-rate", type=float, default=250.0)
     parser.add_argument("--nominal-gas-cost", type=float, default=2.0)
 
     parser.add_argument("--train-sigma-range", nargs=2, type=float, default=(0.01, 0.05))
