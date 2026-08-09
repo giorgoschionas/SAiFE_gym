@@ -121,7 +121,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--n-eval-episodes", type=int, default=10)
     parser.add_argument("--learning-rate", type=float, default=3e-4)
     parser.add_argument("--periodic-rebalance-every", type=int, default=5)
-    parser.add_argument("--periodic-width", type=int, default=2)
+    parser.add_argument("--periodic-width", type=int, default=125)
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 

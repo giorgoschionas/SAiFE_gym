@@ -600,7 +600,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.inventory_phi == 0.4
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 5
-    assert args.periodic_width == 2
+    assert args.periodic_width == 125
     assert args.nominal_sigma == 0.03
     assert tuple(args.train_sigma_range) == (0.01, 0.05)
     assert tuple(args.train_arrival_rate_range) == (50.0, 200.0)
