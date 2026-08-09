@@ -70,33 +70,16 @@ class ExponentialUtility(RewardFunction):
 class RunningInventoryPenalty(RewardFunction):
     """PnL with running penalty on LP's risky asset exposure.
 
+    reward = PnL_t - phi * dt * x_t^p  -  alpha * 1_{terminal} * x_t^p
+
+    where x_t is the LP's token0 amount (risky asset "inventory"),
+    phi is per_step_inventory_aversion, and alpha is terminal_inventory_aversion.
+
     The LP's token0 holdings are the direct analog of market maker inventory:
       - As price drops, the LP accumulates more token0 (buys the depreciating asset)
       - As price rises, the LP sheds token0 (sells the appreciating asset)
-    Penalizing exposure encourages ranges that reduce directional risk,
+    Penalizing x_t^p encourages ranges that reduce directional exposure,
     e.g. wider ranges or ranges shifted above current price.
-
-    Two penalty scales are available.
-
-    **Raw token0 units** (`reference_wealth=None`)::
-
-        reward = PnL_t - phi * dt * x_t^p  -  alpha * 1_{terminal} * x_t^p
-
-    where x_t is the LP's token0 amount. phi then carries units of
-    currency / (token0^p * time), so a usable phi depends on the price level
-    and on how much capital the LP deploys. At INITIAL_WEALTH=1e6 and price
-    100 the LP holds x ~ 5e3, so x^2 ~ 2.5e7 and phi must be O(1e-4) for the
-    penalty to stay commensurate with PnL.
-
-    **Value-normalized** (`reference_wealth=W0`)::
-
-        f_t    = x_t * P_t / W0
-        reward = PnL_t - phi * dt * W0 * f_t^p  -  alpha * 1_{terminal} * W0 * f_t^p
-
-    f_t is the dimensionless fraction of W0 held in the risky asset, so phi is
-    a risk charge expressed as a fraction of W0 per unit time at full (f=1)
-    exposure. This keeps phi comparable across price levels and capital
-    scales. A full-range position sits near f ~ 0.5.
     """
 
     def __init__(
@@ -104,34 +87,18 @@ class RunningInventoryPenalty(RewardFunction):
         per_step_inventory_aversion: float = 0.01,
         terminal_inventory_aversion: float = 0.0,
         inventory_exponent: float = 2.0,
-        reference_wealth: Optional[float] = None,
     ):
-        if reference_wealth is not None and reference_wealth <= 0:
-            raise ValueError(
-                f"reference_wealth must be positive, got {reference_wealth}"
-            )
         self.per_step_inventory_aversion = per_step_inventory_aversion
         self.terminal_inventory_aversion = terminal_inventory_aversion
         self.inventory_exponent = inventory_exponent
-        self.reference_wealth = reference_wealth
-
-    def _inventory_penalty(self, next_state: dict) -> np.ndarray:
-        """Penalty base, in currency units when reference_wealth is set."""
-        inventory = next_state[LP_TOKEN0_AMOUNT_KEY]
-        if self.reference_wealth is None:
-            return inventory ** self.inventory_exponent
-
-        exposure_fraction = (
-            inventory * next_state[ASSET_PRICE_KEY] / self.reference_wealth
-        )
-        return self.reference_wealth * exposure_fraction ** self.inventory_exponent
 
     def calculate(
         self, current_state: dict, action: np.ndarray,
         next_state: dict, is_terminal_step: bool = False
     ) -> np.ndarray:
         dt = next_state[TIME_KEY] - current_state[TIME_KEY]
-        inventory_penalty = self._inventory_penalty(next_state)
+        inventory = next_state[LP_TOKEN0_AMOUNT_KEY]
+        inventory_penalty = inventory ** self.inventory_exponent
 
         pnl_reward = next_state[PORTFOLIO_VALUE_KEY] - current_state[PORTFOLIO_VALUE_KEY]
         running_penalty = self.per_step_inventory_aversion * dt * inventory_penalty
