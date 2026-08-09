@@ -198,8 +198,8 @@ def get_ppo_learner_and_callback(
                   Scales roughly as O(obs_dim * log(obs_dim)) with state
                   dimension.  Practical guideline for this environment:
                     obs_dim=2  (mbt reduced)  →   500k –   2M
-                    obs_dim=6  (SAiFE)        →    2M  –   5M   (with VecNormalize)
-                    obs_dim=6  (no normalise) →    5M  –  20M
+                    obs_dim=7  (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=7  (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(total_timesteps=...) to train.
@@ -520,6 +520,7 @@ def create_policy_behavior_plot(
     n_points: int = 101,
     mispricing_range: tuple = (-0.05, 0.05),
     fixed_lp_liquidity: float = 2e8,
+    fixed_realized_volatility: float = 0.03,
     fixed_time: float = 0.5,
     gas_cost: float = 0.0,
     title: str = "Policy behavior vs mispricing",
@@ -539,16 +540,18 @@ def create_policy_behavior_plot(
 
     Obs column order (DEFAULT_OBS_KEYS):
         0: MISPRICING_KEY       ← swept
-        1: LP_LOWER_OFFSET_KEY
-        2: LP_UPPER_OFFSET_KEY
-        3: BOUNDARY_PROXIMITY_KEY
-        4: POSITION_WIDTH_KEY
-        5: TIME_KEY
+        1: RECENT_REALIZED_VOLATILITY_KEY
+        2: LP_LOWER_OFFSET_KEY
+        3: LP_UPPER_OFFSET_KEY
+        4: BOUNDARY_PROXIMITY_KEY
+        5: POSITION_WIDTH_KEY
+        6: TIME_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
     raw_obs = np.column_stack([
         mispricings,
+        np.full(n_points, fixed_realized_volatility),
         np.full(n_points, float(tau)),
         np.full(n_points, float(tau)),
         np.full(n_points, float(tau)),
@@ -599,6 +602,7 @@ def create_time_behavior_plot(
     mispricing_levels: list = None,
     n_time_points: int = 101,
     fixed_lp_liquidity: float = 2e8,
+    fixed_realized_volatility: float = 0.03,
     gas_cost: float = 0.0,
     title: str = "Policy behavior vs time",
     save_figure: bool = False,
@@ -620,6 +624,7 @@ def create_time_behavior_plot(
     time_tiled     = np.tile(time_vals, n_levels).astype(np.float32)
     raw_obs = np.column_stack([
         mispricing_rep,
+        np.full(n_total, fixed_realized_volatility),
         np.full(n_total, float(tau)),
         np.full(n_total, float(tau)),
         np.full(n_total, float(tau)),

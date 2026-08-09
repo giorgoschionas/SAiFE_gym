@@ -98,6 +98,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--n-steps", type=int, default=1000)
     parser.add_argument("--tau", type=int, default=500)
     parser.add_argument("--tick-stride", type=int, default=5)
+    parser.add_argument("--realized-vol-window", type=int, default=50)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.
@@ -367,6 +368,7 @@ def make_fixed_env(
         ),
         initial_wealth=args.initial_wealth,
         num_trajectories=args.num_trajectories,
+        realized_vol_window=args.realized_vol_window,
         seed=seed,
     )
 

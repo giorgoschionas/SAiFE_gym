@@ -24,6 +24,7 @@ from SAiFE_gym.gym.index_names import (
     POOL_LIQUIDITY_ARRAY_KEY,
     POOL_SQRT_PRICE_KEY,
     PORTFOLIO_VALUE_KEY,
+    RECENT_REALIZED_VOLATILITY_KEY,
     TIME_KEY,
 )
 
@@ -100,6 +101,9 @@ def create_uniswap_v3_initial_state(
         ),
         LP_ALPHA_KEY: np.zeros(num_trajectories, dtype=np.float64),
         LP_TOKEN0_AMOUNT_KEY: np.zeros(num_trajectories, dtype=np.float64),
+        RECENT_REALIZED_VOLATILITY_KEY: np.zeros(
+            num_trajectories, dtype=np.float64
+        ),
     }
 
 

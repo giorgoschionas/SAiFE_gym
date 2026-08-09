@@ -13,6 +13,7 @@ from SAiFE_gym.gym.index_names import (
     LP_EVER_DEPLOYED_KEY,
     ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
     PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
+    RECENT_REALIZED_VOLATILITY_KEY,
 )
 from SAiFE_gym.gym.simulation_core import (
     advance_market_state,
@@ -35,6 +36,7 @@ class AMMEnvironment(gymnasium.Env):
         initial_wealth: float = 1e6,
         num_trajectories: int = 1,
         initial_pool_price: float = None,
+        realized_vol_window: int = 50,
         seed: int = None):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
@@ -42,7 +44,18 @@ class AMMEnvironment(gymnasium.Env):
         self.initial_wealth = initial_wealth
         self.num_trajectories = num_trajectories
         self.initial_pool_price = initial_pool_price
+        if isinstance(realized_vol_window, bool) or int(realized_vol_window) < 2:
+            raise ValueError("realized_vol_window must be an integer >= 2")
+        self.realized_vol_window = int(realized_vol_window)
         self._step_size = self.terminal_time / self.n_steps
+        self._realized_vol_eps = 1e-12
+        self._log_return_buffer = np.zeros(
+            (self.realized_vol_window, self.num_trajectories),
+            dtype=np.float64,
+        )
+        self._log_return_cursor = 0
+        self._log_return_count = 0
+        self._previous_midprice = np.zeros(self.num_trajectories, dtype=np.float64)
 
         # Create model dynamics if not provided
         self.model_dynamics = model_dynamics or UniswapV3ModelDynamics(
@@ -67,6 +80,7 @@ class AMMEnvironment(gymnasium.Env):
         # Initialize state based on model dynamics type
         self._initial_state = self._initial_v3_state()
         self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
+        self._reset_realized_volatility()
 
         # Initialize random number generator
         if seed:
@@ -186,6 +200,11 @@ class AMMEnvironment(gymnasium.Env):
                 shape=(self.num_trajectories,),
                 dtype=np.float32
             ),
+            RECENT_REALIZED_VOLATILITY_KEY: gymnasium.spaces.Box(
+                low=0.0, high=np.inf,
+                shape=(self.num_trajectories,),
+                dtype=np.float32
+            ),
         })
 
     def _initial_v3_state(self) -> dict:
@@ -234,6 +253,7 @@ class AMMEnvironment(gymnasium.Env):
             self._initial_state,
             self.num_trajectories,
         )
+        self._reset_realized_volatility()
 
         # Reset reward function
         self.reward_function.reset(self.model_dynamics.state)
@@ -280,6 +300,7 @@ class AMMEnvironment(gymnasium.Env):
 
         # Step 3: Advance all stochastic processes
         self._update_market_state(arrivals, action)
+        self._update_realized_volatility()
         self.model_dynamics.state[TIME_KEY] += self.step_size
 
         # Step 4: Update derived observation features
@@ -295,6 +316,52 @@ class AMMEnvironment(gymnasium.Env):
         after they are generated, not before.
         """
         advance_market_state(self.model_dynamics, arrivals, action)
+
+    def _reset_realized_volatility(self) -> None:
+        """Reset vectorized rolling log-return state for realized volatility."""
+        self._log_return_buffer.fill(0.0)
+        self._log_return_cursor = 0
+        self._log_return_count = 0
+        self._previous_midprice = np.asarray(
+            self.model_dynamics.state[ASSET_PRICE_KEY],
+            dtype=np.float64,
+        ).copy()
+        self.model_dynamics.state[RECENT_REALIZED_VOLATILITY_KEY] = np.zeros(
+            self.num_trajectories,
+            dtype=np.float64,
+        )
+
+    def _update_realized_volatility(self) -> None:
+        """Update rolling unit-horizon volatility from vectorized log returns."""
+        current_midprice = np.asarray(
+            self.model_dynamics.state[ASSET_PRICE_KEY],
+            dtype=np.float64,
+        )
+        safe_current = np.maximum(current_midprice, self._realized_vol_eps)
+        safe_previous = np.maximum(self._previous_midprice, self._realized_vol_eps)
+        log_return = np.log(safe_current / safe_previous)
+
+        self._log_return_buffer[self._log_return_cursor] = log_return
+        self._log_return_cursor = (
+            self._log_return_cursor + 1
+        ) % self.realized_vol_window
+        self._log_return_count = min(
+            self._log_return_count + 1,
+            self.realized_vol_window,
+        )
+        self._previous_midprice = current_midprice.copy()
+
+        if self._log_return_count < 2:
+            realized_volatility = np.zeros(self.num_trajectories, dtype=np.float64)
+        else:
+            valid_returns = self._log_return_buffer[: self._log_return_count]
+            realized_volatility = (
+                np.std(valid_returns, axis=0, ddof=1) / np.sqrt(self.step_size)
+            )
+
+        self.model_dynamics.state[RECENT_REALIZED_VOLATILITY_KEY] = (
+            realized_volatility
+        )
 
     def _get_terminated(self):
         """Return terminated flags: True when the trading horizon has elapsed."""
