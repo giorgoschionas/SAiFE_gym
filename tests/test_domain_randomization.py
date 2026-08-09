@@ -675,13 +675,18 @@ def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
         validate_evaluation_configuration(args)
 
 
-def test_domain_randomized_factory_defaults_to_one_domain_per_trajectory():
+def test_domain_randomized_factory_default_domains_are_capped_by_trajectory_count():
     args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
 
-    env = make_domain_randomized_env(args)
-
-    assert env.num_domains == 3
+    assert resolve_train_domains_per_reset(args) == 3
     assert args.train_domains_per_reset == 3
+
+
+def test_domain_randomized_factory_default_uses_ten_domains_for_standard_batch():
+    args = parse_args(["--num-trajectories", "100", "--n-steps", "5"])
+
+    assert resolve_train_domains_per_reset(args) == 10
+    assert args.train_domains_per_reset == 10
 
 
 def test_robust_factory_alias_preserves_existing_imports():

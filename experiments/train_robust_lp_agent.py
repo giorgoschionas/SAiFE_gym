@@ -67,6 +67,7 @@ from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
+DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
 
 
 @dataclass(frozen=True)
@@ -138,7 +139,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         default=None,
         help=(
             "Number of balanced episode domains assigned across training "
-            "trajectories (default: one domain per trajectory)."
+            "trajectories (default: 10, capped at num-trajectories)."
         ),
     )
     parser.add_argument("--arrival-alpha2", type=float, default=0.0)
@@ -206,7 +207,7 @@ def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
     """Resolve and validate the randomized environment's domain batch size."""
     num_domains = getattr(args, "train_domains_per_reset", None)
     if num_domains is None:
-        num_domains = args.num_trajectories
+        num_domains = min(DEFAULT_TRAIN_DOMAINS_PER_RESET, args.num_trajectories)
     if isinstance(num_domains, bool) or not isinstance(
         num_domains, (int, np.integer)
     ):
