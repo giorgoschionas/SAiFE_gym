@@ -1,140 +1,123 @@
-# SAiFE Gym
+# Concentrated Liquidity Provision: a Reinforcement Learning Perspective
 
-A Gymnasium-compatible Reinforcement Learning environment for training liquidity provision (LP) agents in Uniswap V3 Automated Market Makers (AMMs) with concentrated liquidity.
+This is the anonymised code repository that accompanies the ICAIF submission
+*"Concentrated Liquidity Provision: a Reinforcement Learning Perspective"*.
 
-## Overview
+It contains `amm_sim`, a simulator of a Uniswapv3 style concentrated-liquidity pool, together with the reinforcement-learning agents, the closed-form and heuristic benchmarks, and the full analysis pipeline used to produce the results reported in the paper.
 
-SAiFE_gym simulates a Uniswap V3 pool with stochastic order flow and price dynamics. The environment is **fully vectorized** — it runs multiple parallel trajectories in a single step call, making it efficient for RL training with algorithms like PPO.
+The liquidity provider chooses, at each decision point, a tick range
+`[lower_offset, upper_offset]` relative to the current pool price, or holds its
+existing position.
 
-The LP agent controls its position range at each step by choosing tick offsets `[lower_offset, upper_offset]` relative to the current price. The reward is mark-to-market PnL of the LP portfolio, with optional risk adjustments.
+## Requirements
 
-## Features
-
-- **Uniswap V3 concentrated liquidity** — tick-based liquidity array, fee accumulation, and geometric midpoint price snapping on tick crossings
-- **Vectorized simulation** — all operations batched over `num_trajectories` for fast parallel rollouts
-- **Stochastic processes** — Brownian Motion midprice model; Poisson and linear arrival models for order flow (with toxicity/arbitrage coefficient α₃)
-- **Reward functions** — `PnL`, `ExponentialUtility` (CARA), `RunningInventoryPenalty` (Cartea–Jaimungal-style)
-- **Stable-Baselines3 integration** — `StableBaselinesAMMEnvironment` flattens the dict observation for SB3; `VecNormalize` wrapper included
-- **Baseline agents** — `UniformAllocationAgent` (full-range LP) and `RandomAgent`
-
-## Installation
+Python 3.11 or newer. Install the pinned dependencies with:
 
 ```bash
-git clone <repository-url>
-cd SAiFE_gym
-python -m venv venv
-source venv/bin/activate  # On Windows: venv\Scripts\activate
 pip install -r requirements.txt
 ```
 
-## Quick Start
+The main dependencies are `gymnasium`, `stable-baselines3`, `torch`, `numpy`,
+`pandas`, `scipy` and `matplotlib`.
 
-```python
-import numpy as np
-from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
-from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
+## Replicating the experimental results
 
-# Build environment using the experiment helper
-from experiments.helpers import get_amm_env
+The pipeline runs in four stages: configure, train, evaluate, analyse. Each
+stage writes artefacts that the next stage consumes, so the stages can be run
+independently and re-entered without repeating earlier work.
 
-env = get_amm_env(num_trajectories=10, tau=5, volatility=2.0, arrival_rate=100.0)
+### 1. Configuration
 
-# Run one episode with the uniform baseline agent
-agent = UniformAllocationAgent(env)
-obs, _ = env.reset()
+Every parameter of an experiment is declared in `experiment_config.py`. Each
+variable there is a *list* of values, and the Cartesian product of all lists
+defines the experiment grid: market parameters (volatility, drift, initial
+price, fee tier, tick width `tau`), order-flow coefficients, the reward
+function, the decision stride, and the PPO hyperparameters. Freezing a variable
+means wrapping a single value in a one-element list.
 
-for _ in range(env.n_steps):
-    action = agent.get_action(obs)
-    obs, rewards, terminated, truncated, info = env.step(action)
+Which agents take part in a run is controlled by the `ENABLE_AGENTS` dictionary
+in the same file. The configuration used for the reported results enables two
+learned agents — `PPO`, and `PPO_narrow`, a restricted variant whose position
+half-width is fixed — against four benchmarks: `DeployNarrow`, `DeployWide`,
+`ArrivalRebalance`, and `CDM`, the closed-form Cartea–Drissi–Monga policy.
 
-print("Final rewards:", rewards)  # shape: (num_trajectories,)
+### 2. Training
+
+The main training and in-run evaluation of the RL algorithms happens in
+`agent_comparison.py`. It reads one grid point from `experiment_config.py`,
+trains every enabled learned agent on it, evaluates all agents, and writes the
+resulting figures and logs:
+
+```bash
+python agent_comparison.py --config-idx 0
 ```
 
-## Training with PPO (Stable-Baselines3)
+Each run produces a self-contained output directory holding the trained model
+weights, the observation-normalisation statistics, a verbatim dump of the exact
+configuration used, and a log of all printed tables. Because the configuration
+is written alongside the weights, every run is reproducible from its own output
+directory without reference to the state of `experiment_config.py` at the time.
 
-```python
-from experiments.helpers import get_amm_env, get_ppo_learner_and_callback
+For a full sweep, `submit.sh` expands the configuration grid and submits one
+array task per combination on a SLURM cluster. On a single machine, loop over
+`--config-idx` from `0` to `count - 1` instead.
 
-env = get_amm_env(num_trajectories=50, tau=5, volatility=2.0, alpha3=0.5)
-model, callback = get_ppo_learner_and_callback(env, normalise_obs=True)
-model.learn(total_timesteps=2_000_000, callback=callback)
+### 3. Evaluation on common seeds
+
+Training runs each evaluate on a seed derived from their own training seed,
+which confounds *policy* differences with *market-path* differences. To separate
+the two, all saved models are re-evaluated on the **same** evaluation seeds in
+`reevaluate_saved_models.py`. It reloads every persisted policy together with
+its normalisation statistics, rebuilds the exact environment each was trained
+against, and replays all of them over one identical set of trajectories:
+
+```bash
+python reevaluate_saved_models.py --root <results-root> \
+    --out-csv reevaluated.csv --dump-trajectories traj_dumps
 ```
 
-## Architecture
+The evaluation seed is fixed (`--eval-seed`, default `1005`) and deliberately
+disjoint from the set of training seeds, so no policy is ever scored on the
+random stream its own training environment used. With every policy facing
+identical market paths, the remaining spread across training seeds is
+attributable to training variance alone, and agent-versus-agent comparisons
+become properly paired.
 
-```
-SAiFE_gym/
-├── SAiFE_gym/
-│   ├── agents/
-│   │   ├── Agent.py                    # Abstract base class
-│   │   ├── BaselineAgents.py           # RandomAgent, UniformAllocationAgent
-│   │   └── SbAgent.py                  # Wrapper for SB3 models
-│   ├── gym/
-│   │   ├── AMMEnvironment.py           # Main Gymnasium environment
-│   │   ├── ModelDynamics.py            # UniswapV3ModelDynamics (core AMM logic)
-│   │   ├── StableBaselinesAMMEnvironment.py  # SB3-compatible flat obs wrapper
-│   │   ├── index_names.py              # State dictionary key constants
-│   │   └── helpers/
-│   │       └── AMM_utils.py            # Tick/price conversion, position value
-│   ├── rewards/
-│   │   └── RewardFunctions.py          # PnL, ExponentialUtility, RunningInventoryPenalty
-│   └── stochastic_processes/
-│       ├── StochasticProcessModel.py   # Abstract base classes
-│       ├── midprice_models.py          # BrownianMotionMidpriceModel
-│       └── arrival_models.py           # PoissonArrivalModel, PoissonLinearArrivalModel
-├── experiments/
-│   ├── helpers.py                      # Environment factory, PPO setup, plotting utilities
-│   └── *.py                            # Experiment scripts
-├── tests/                              # pytest test suite
-├── notebooks/                          # Exploration and validation notebooks
-└── docs/                               # Extended documentation
+`--dump-trajectories` additionally writes the per-trajectory profit-and-loss and
+its attribution into fees, impermanent loss, gas and the buy-and-hold reference,
+which is what the statistical tests consume.
+
+### 4. Statistical tests, tables and figures
+
+`paired_tests.py` consumes the per-trajectory dumps and tests, for each cell of
+the grid, whether the RL agent's advantage over the strongest benchmark is
+distinguishable from noise. It reports paired tests on mean profit-and-loss and
+on the conditional value at risk of the tail, bootstrapped and corrected for
+multiple comparisons across cells:
+
+```bash
+python paired_tests.py --dumps traj_dumps --out-csv paired_tests.csv
 ```
 
-### State Dictionary
+`parse_results.py` and `parse_results_with_seeds.py` scrape the logged
+evaluation and attribution tables out of completed runs; `results_to_dataframe.py`
+collects them into a single tidy frame, which `plot_results.py` turns into the
+faceted comparison figures.
 
-| Key | Shape | Description |
-|-----|-------|-------------|
-| `pool_sqrt_price` | `(num_trajectories,)` | Current pool √price |
-| `pool_current_tick` | `(num_trajectories,)` | Current tick index |
-| `pool_liquidity_array` | `(num_trajectories, num_ticks)` | Liquidity per tick |
-| `fees_0` / `fees_1` | `(num_trajectories, num_ticks)` | Accumulated fees per tick |
-| `lp_liquidity` | `(num_trajectories,)` | LP position liquidity |
-| `lp_tick_lower` / `lp_tick_upper` | `(num_trajectories,)` | LP position bounds |
-| `asset_price` | `(num_trajectories,)` | External market midprice |
-| `time` | `(num_trajectories,)` | Current simulation time |
+`probe_policy.py` evaluates a trained policy on a synthetic grid of states and
+plots the learned quoting rule as a function of mispricing and inventory,
+producing the policy-behaviour figures. `mispricing_response.py` plots the
+policy's reaction to the mispricing signal alone.
 
-### Action Space
+```bash
+python probe_policy.py --run-dir <run-directory> --agent ppo
+```
 
-`Box(low=[-tau, -tau+1], high=[tau-1, tau], shape=(2,))` — tick offsets relative to current price.
+## Determinism
 
-## Key Parameters
+Every stochastic component — the price process, the arrival process, the pool
+dynamics and the policy — is seeded explicitly from the configuration, so a
+given `--config-idx` reproduces bit-identical results on the same software
+stack. Reported comparisons use the common evaluation seeds described in
+stage 3 rather than each run's own training seed.
 
-| Parameter | Default | Description |
-|-----------|---------|-------------|
-| `tau` | 5 | LP position half-width in ticks |
-| `num_trajectories` | 1 | Parallel simulation paths |
-| `n_steps` | 200 | Steps per episode |
-| `terminal_time` | 1.0 | Episode length |
-| `volatility` | 2.0 | Brownian motion volatility |
-| `arrival_rate` | 100.0 | Baseline Poisson order rate |
-| `alpha3` | 0.0 | Arbitrage/toxicity coefficient |
-| `fee_tier` | 0.003 | Uniswap V3 pool fee (0.3%) |
-| `num_ticks` | 5000 | Size of liquidity array |
-
-## Dependencies
-
-- `gymnasium` — RL environment framework
-- `numpy` — vectorized numerical computations
-- `matplotlib` — visualization
-- `stable-baselines3` — PPO and other RL algorithms
-- `torch` — neural network backend (via SB3)
-- `pytest` — test suite
-
-See `requirements.txt` for the full pinned dependency list.
-
-## License
-
-[Add your license information here]

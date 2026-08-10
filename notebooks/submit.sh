@@ -8,7 +8,7 @@
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-CONFIG_PY="$SCRIPT_DIR/SAiFE_gym/notebooks/experiment_config.py"
+CONFIG_PY="$SCRIPT_DIR/amm_sim/notebooks/experiment_config.py"
 RUNNER="$SCRIPT_DIR/run_1-1_cpu.sh"
 
 if [ ! -f "$CONFIG_PY" ]; then
@@ -23,7 +23,7 @@ fi
 # Load the conda env so numpy is available to experiment_config.py.
 module load anaconda3/2022.10-gcc-13.2.0
 source "$(conda info --base)/etc/profile.d/conda.sh"
-conda activate SAiFE
+conda activate your_env
 
 N=$(python "$CONFIG_PY" count)
 if ! [[ "$N" =~ ^[0-9]+$ ]] || [ "$N" -lt 1 ]; then

@@ -1,6 +1,6 @@
 """
 Holistic comparison of LP agents:
-  Uniform, DeployOnce, CarteaDrissiMonga, REINFORCE (PolicyGradient), PPO, SAC, DQN.
+  Uniform, DeployOnce, CarteaDrissiMonga, PPO, SAC, DQN.
 
 Phases:
   1. Train enabled RL agents
@@ -22,25 +22,23 @@ import numpy as np
 from scipy import stats
 import matplotlib.pyplot as plt
 import torch
-import torch.nn as nn
 from stable_baselines3 import DQN, PPO, SAC
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 
-from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
-from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, OrnsteinUhlenbeckMidpriceModel, GeometricBrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
-from SAiFE_gym.agents.BaselineAgents import (
+from amm_sim.env.AMMEnvironment import AMMEnvironment
+from amm_sim.env.ModelDynamics import UniswapV3ModelDynamics
+from amm_sim.env.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
+from amm_sim.stochastic_processes.midprice_models import BrownianMotionMidpriceModel, GeometricBrownianMotionMidpriceModel
+from amm_sim.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
+from amm_sim.agents.BaselineAgents import (
     UniformAllocationAgent, DeployOnceAgent, CarteaPLAgent, ArrivalRebalanceAgent,
     DoNothingAgent,
 )
-from SAiFE_gym.agents.PolicyGradientAgent import PolicyGradientAgent
-from SAiFE_gym.agents.SbAgent import SbAgent
-from SAiFE_gym.rewards.RewardFunctions import PnL, RunningInventoryPenalty, ExponentialUtility
-from SAiFE_gym.gym.index_names import (
+from amm_sim.agents.SbAgent import SbAgent
+from amm_sim.rewards.RewardFunctions import PnL, RunningInventoryPenalty, ExponentialUtility
+from amm_sim.env.index_names import (
     POOL_SQRT_PRICE_KEY, POOL_CURRENT_TICK_KEY, ASSET_PRICE_KEY, TIME_KEY,
     LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
     MISPRICING_KEY, LP_LOWER_OFFSET_KEY, LP_UPPER_OFFSET_KEY, GAS_COST_KEY,
@@ -70,7 +68,7 @@ _combo = get_combination(CONFIG_IDX)
 globals().update(_combo)
 
 # Derived from the loaded combo.
-SB3_TOTAL_TIMESTEPS = REINFORCE_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS // DECISION_STRIDE
+SB3_TOTAL_TIMESTEPS = TRAIN_EPOCHS * NUM_TRAJECTORIES_TRAIN * N_STEPS // DECISION_STRIDE
 
 # Observation features for SB3 agents (PPO/SAC/DQN). Uses raw asymmetric position
 # offsets instead of the default symmetric (boundary, width) encoding so the
@@ -105,7 +103,6 @@ AGENT_COLORS = {
     'DeployWide': '#9467bd',
     'ArrivalRebalance': "#ff7dd8",
     'CDM': '#ff7f0e',
-    'REINFORCE':  "#000000",
     'PPO':        "#fb4545",
     'PPO_narrow': "#62f848",
     'SAC':        '#17becf',
@@ -152,16 +149,6 @@ def create_environment(num_trajectories: int, seed: int = None):
     )
 
 
-    #midprice_model = OrnsteinUhlenbeckMidpriceModel(                                                     
-    #    mean_reversion=0.0000000000000000001,           # κ — pull strength toward θ                                       
-    #    long_term_mean=INITIAL_PRICE, # θ — defaults to INITIAL_PRICE if omitted                                                                                               
-    #    volatility=VOLATILITY,
-    #    num_trajectories=num_trajectories, seed=seed,
-    #    initial_price=INITIAL_PRICE,
-    #    terminal_time=TERMINAL_TIME, step_size=step_size
-    #)
-
-    
     arrival_model = LiquidityKernelArrivalModel(
         alpha=alpha, beta=0.001, K=100, liquidity_scale=LIQUIDITY_SCALE,
         step_size=step_size, num_trajectories=num_trajectories,
@@ -263,7 +250,7 @@ class DiscreteActionVecEnv(VecEnv):
 
 
 class DecisionStrideEnv:
-    """Decision-stride wrapper for ``AMMEnvironment`` (REINFORCE / eval path).
+    """Decision-stride wrapper for ``AMMEnvironment`` (eval path).
 
     Each outer ``step`` runs ``stride`` underlying env steps. The agent's action
     is applied on the first; the remaining ``stride-1`` steps run with a forced
@@ -569,50 +556,6 @@ class NarrowMultiDiscreteVecEnv(VecEnv):
         return self._wrapped.get_images()
 
 # ============================================================================
-# REINFORCE Policy Network
-# ============================================================================
-
-class SimpleStraddlePolicy(nn.Module):
-    """Squashed Gaussian policy for REINFORCE.
-
-    forward() returns raw unbounded means (3 dims).  Noise is added in this
-    raw space by the agent, then transform() squashes samples into valid
-    [lower_offset, upper_offset, hold_flag] actions via center/half_width
-    parameterization.  log_prob_correction() provides the Jacobian term so
-    the policy gradient accounts for the squashing.
-    """
-    def __init__(self, input_size: int, hidden_size: int = 64, tau: int = TAU):
-        super().__init__()
-        self.tau = tau
-        self.net = nn.Sequential(
-            nn.Linear(input_size, hidden_size), nn.ReLU(),
-            nn.Linear(hidden_size, hidden_size), nn.ReLU(),
-            nn.Linear(hidden_size, 3),
-        )
-
-    def forward(self, x):
-        return self.net(x)  # raw unbounded means
-
-    def transform(self, raw):
-        """Map raw unbounded samples → valid [lower, upper, hold_flag]."""
-        center = self.tau * torch.tanh(raw[:, 0])
-        half_width = 1.0 + (self.tau - 1.0) * torch.sigmoid(raw[:, 1])
-        lower = torch.clamp(center - half_width, min=-self.tau)
-        upper = torch.clamp(center + half_width, max=self.tau)
-        hold_flag = torch.tanh(raw[:, 2])
-        return torch.stack([lower, upper, hold_flag], dim=1)
-
-    def log_prob_correction(self, raw):
-        """Log |det Jacobian| of the squashing (up to additive constants)."""
-        # tanh corrections for center (dim 0) and hold_flag (dim 2)
-        log_jac_0 = torch.log(1 - torch.tanh(raw[:, 0]) ** 2 + 1e-6)
-        log_jac_2 = torch.log(1 - torch.tanh(raw[:, 2]) ** 2 + 1e-6)
-        # sigmoid correction for half_width (dim 1)
-        s = torch.sigmoid(raw[:, 1])
-        log_jac_1 = torch.log(s * (1 - s) + 1e-6)
-        return log_jac_0 + log_jac_1 + log_jac_2
-
-# ============================================================================
 # SB3 Reward Loggers
 # ============================================================================
 
@@ -622,7 +565,6 @@ class EpisodeRewardCallback(BaseCallback):
     Works for both on-policy (PPO) and off-policy (SAC) algorithms.
     Accumulates mean-across-trajectories reward at each step, then logs the
     average per-step reward when the episode ends (all dones True).
-    This matches REINFORCE's ``np.mean(rewards)`` metric for fair comparison.
     """
     def __init__(self):
         super().__init__()
@@ -1211,7 +1153,7 @@ def plot_pnl_distribution(pnl_results):
     ax2.set_ylabel('Density', fontsize=16)
     ax2.tick_params(axis='both', labelsize=14)
     #ax2.set_title('PnL Histogram')
-    ax2.legend(fontsize=16, loc='upper left')
+    ax2.legend(fontsize=12, loc='upper right')
     ax2.grid(True, alpha=0.3)
     plt.tight_layout()
     path2 = os.path.join(FIGURES_DIR, f'pnl_histogram.png')
@@ -1352,7 +1294,7 @@ def plot_price_evolution(single_data):
     #print(f"  Saved: {path}")
 
     # Save standalone figure per trained RL agent (all sims overlaid)
-    rl_agents = [n for n in agents if n in ('REINFORCE', 'PPO', 'PPO_narrow', 'SAC', 'DQN')]
+    rl_agents = [n for n in agents if n in ('PPO', 'PPO_narrow', 'SAC', 'DQN')]
     for name in rl_agents:
         fig_rl, ax_rl = plt.subplots(figsize=(8, 5))
         color = AGENT_COLORS[name]
@@ -1401,7 +1343,8 @@ def plot_price_evolution(single_data):
     # Save individual per-simulation plots
     if n_sims > 1:
         for si in range(n_sims):
-            fig_i, axes_i = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows))
+            fig_i, axes_i = plt.subplots(nrows, ncols, figsize=(7 * ncols, 5 * nrows),
+                                         sharey='row')
             axes_i = np.atleast_2d(axes_i)
             #fig_i.suptitle(
             #    f'Price Evolution with LP Position Ranges — Simulation {si + 1}',
@@ -1410,7 +1353,7 @@ def plot_price_evolution(single_data):
             for ax in axes_i.flat[n_agents:]:
                 ax.set_visible(False)
 
-            for ax, name in zip(axes_i.flat, agents):
+            for idx, (ax, name) in enumerate(zip(axes_i.flat, agents)):
                 if si >= len(single_data[name]):
                     continue
                 d = single_data[name][si]
@@ -1438,11 +1381,13 @@ def plot_price_evolution(single_data):
                                    linewidth=0.5, label='Rebalance')
 
                 ax.set_xlabel('Time', fontsize=16)
-                ax.set_ylabel('Price', fontsize=16)
+                # Shared y-axis per row → only the left column carries the label.
+                if idx % ncols == 0:
+                    ax.set_ylabel('Price', fontsize=16)
                 ax.tick_params(axis='both', labelsize=14)
                 ax.ticklabel_format(axis='y', useOffset=False, style='plain')
                 #ax.set_title(name)
-                ax.legend(fontsize=16, loc='lower right')
+                ax.legend(fontsize=16, loc='lower left')
                 ax.grid(True, alpha=0.3)
 
                 # Final PnL for this sim/agent, top-right of the panel.
@@ -1797,8 +1742,6 @@ def main():
     print(f"  Stdout logged to:  {results_path}")
 
     # Containers for trained RL models / agents
-    reinforce_agent = None
-    reinforce_rewards = []
     ppo_model = None
     ppo_action_wrapper = None
     ppo_reward_cb = EpisodeRewardCallback()
@@ -1818,39 +1761,9 @@ def main():
     # Phase 1: Train RL agents
     # ==================================================================
 
-    if ENABLE_AGENTS.get('REINFORCE'):
-        print("=" * 60)
-        print("Phase 1a: Training REINFORCE agent")
-        print("=" * 60)
-
-        reinforce_env = DecisionStrideEnv(
-            create_environment(NUM_TRAJECTORIES_TRAIN, SEED), stride=DECISION_STRIDE,
-        )
-
-        # Determine input size via dummy forward pass
-        dummy_policy = nn.Linear(7, 2)
-        temp_agent = PolicyGradientAgent(dummy_policy, reinforce_env)
-        input_size = temp_agent.input_size
-
-        reinforce_policy = SimpleStraddlePolicy(input_size)
-        action_std_decay = lambda t: max(0.3, ACTION_STD_INIT * (0.998 ** (t * REINFORCE_EPOCHS)))
-        optimizer = torch.optim.Adam(reinforce_policy.parameters(), lr=REINFORCE_LR)
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=200, gamma=0.9)
-
-        reinforce_agent = PolicyGradientAgent(
-            policy=reinforce_policy, env=reinforce_env,
-            action_std=action_std_decay, optimizer=optimizer,
-            lr_scheduler=scheduler, max_grad_norm=1.0,
-        )
-        t0 = time.time()
-        _, reinforce_rewards = reinforce_agent.train(
-            num_epochs=REINFORCE_EPOCHS, reporting_freq=50,
-        )
-        print(f"  REINFORCE training time: {time.time() - t0:.1f}s")
-
     if ENABLE_AGENTS.get('PPO'):
-        print("\n" + "=" * 60)
-        print("Phase 1b: Training PPO agent")
+        print("=" * 60)
+        print("Phase 1a: Training PPO agent")
         print("=" * 60)
 
         ppo_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
@@ -1904,7 +1817,7 @@ def main():
 
     if ENABLE_AGENTS.get('PPO_narrow'):
         print("\n" + "=" * 60)
-        print("Phase 1b': Training PPO_narrow agent (half_width fixed to 1)")
+        print("Phase 1b: Training PPO_narrow agent (half_width fixed to 1)")
         print("=" * 60)
 
         ppo_narrow_env = create_environment(NUM_TRAJECTORIES_TRAIN, SEED)
@@ -2063,14 +1976,6 @@ def main():
                 rebalance_tolerance=REBALANCE_TOLERANCE_CARTEA,
                 seed=SEED,
             ).get_action,
-        )
-
-    if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
-        env = DecisionStrideEnv(
-            create_environment(NUM_TRAJECTORIES_EVAL, EVAL_SEED), stride=DECISION_STRIDE,
-        )
-        attribution_results['REINFORCE'] = evaluate_on_trajectories_with_attribution(
-            env, lambda s: reinforce_agent.get_action(s, deterministic=True),
         )
 
     if ENABLE_AGENTS.get('PPO') and ppo_model is not None:
@@ -2270,11 +2175,6 @@ def main():
                     max_trades=MAX_TRADES_DEBUG,
                 ))
 
-        if ENABLE_AGENTS.get('REINFORCE') and reinforce_agent is not None:
-            env = create_environment(1, sim_seed)
-            single_data.setdefault('REINFORCE', []).append(
-                collect_single_trajectory(env, lambda s: reinforce_agent.get_action(s, deterministic=True), max_trades=MAX_TRADES_DEBUG, decision_stride=DECISION_STRIDE))
-
         if ENABLE_AGENTS.get('PPO') and ppo_model is not None:
             env = create_environment(1, sim_seed)
             sb_single = StableBaselinesAMMEnvironment(env, obs_keys=SB3_OBS_KEYS)
@@ -2354,8 +2254,6 @@ def main():
 
     # Gather training reward series for enabled RL agents
     rl_training_rewards = {}
-    if reinforce_rewards:
-        rl_training_rewards['REINFORCE'] = reinforce_rewards
     if ppo_reward_cb.epoch_rewards:
         rl_training_rewards['PPO'] = ppo_reward_cb.epoch_rewards
     if ppo_narrow_reward_cb.epoch_rewards:

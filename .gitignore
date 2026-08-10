@@ -1,11 +1,11 @@
 # Environments
 .env
 .venv
-env/
 venv/
 ENV/
 env.bak/
 venv.bak/
+
 
 # Update notebooks manually, if necessary
 TMP_NOTEBOOKS
@@ -18,12 +18,21 @@ __pycache__/
 
 prompts/
 
-.claude/settings.local.json
+.claude/
 .trees/
 
 # Generated artifacts (plots, experiment outputs)
 #figures/
 notebooks/results/
+notebooks/arrival_dumps/
+notebooks/cdm_dumps/
+notebooks/cdm_stride_dumps/
+notebooks/cdm_stride_nogas_dumps/
+notebooks/traj_dumps/
+notebooks/figures/
+notebooks/results_newest/
+notebooks/results_with_seeds/
+
 
 
 .DS_Store

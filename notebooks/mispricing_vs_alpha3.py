@@ -48,13 +48,13 @@ import numpy as np
 import matplotlib.pyplot as plt
 import matplotlib.ticker as mticker
 
-from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
-from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
-from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
-from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
-from SAiFE_gym.rewards.RewardFunctions import PnL
-from SAiFE_gym.gym.index_names import ASSET_PRICE_KEY, POOL_SQRT_PRICE_KEY
+from amm_sim.env.AMMEnvironment import AMMEnvironment
+from amm_sim.env.ModelDynamics import UniswapV3ModelDynamics
+from amm_sim.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from amm_sim.stochastic_processes.arrival_models import PoissonLinearArrivalModel
+from amm_sim.agents.BaselineAgents import UniformAllocationAgent
+from amm_sim.rewards.RewardFunctions import PnL
+from amm_sim.env.index_names import ASSET_PRICE_KEY, POOL_SQRT_PRICE_KEY
 
 # ============================================================================
 # Parameters

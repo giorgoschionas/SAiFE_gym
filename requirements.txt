@@ -3,6 +3,7 @@ gymnasium==1.2.3
 
 # Numerics and plotting
 numpy==1.26.4
+scipy==1.17.1
 matplotlib==3.10.1
 pandas==2.2.3
 
