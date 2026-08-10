@@ -110,21 +110,21 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--output-dir",
         default="experiments/results/domain_randomized_ppo",
     )
-    parser.add_argument("--total-timesteps", type=int, default=5_500_000)
+    parser.add_argument("--total-timesteps", type=int, default=8_000_000)
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
     parser.add_argument(
         "--decision-stride",
         type=int,
-        default=20,
+        default=100,
         help=(
             "Number of simulator steps per PPO decision. The agent acts on "
             "the first simulator step and forced hold is used for the "
             "remaining steps in the decision window."
         ),
     )
-    parser.add_argument("--tau", type=int, default=250)
+    parser.add_argument("--tau", type=int, default=50)
     parser.add_argument("--tick-stride", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
@@ -161,8 +161,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Number of vectorized episodes per convergence-check evaluation.",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--periodic-rebalance-every", type=int, default=20)
-    parser.add_argument("--periodic-width", type=int, default=250)
+    parser.add_argument("--periodic-rebalance-every", type=int, default=100)
+    parser.add_argument("--periodic-width", type=int, default=50)
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 

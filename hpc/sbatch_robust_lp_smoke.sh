@@ -16,8 +16,8 @@ set -euo pipefail
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
 VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
 TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-2}
-DECISION_STRIDE=${DECISION_STRIDE:-20}
-TAU=${TAU:-250}
+DECISION_STRIDE=${DECISION_STRIDE:-100}
+TAU=${TAU:-50}
 
 module purge
 module load miniforge3/25.3.0-python3.12.10
