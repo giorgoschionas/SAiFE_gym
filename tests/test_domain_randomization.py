@@ -595,7 +595,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.output_dir == "experiments/results/domain_randomized_ppo"
     assert args.n_steps == 1000
     assert args.decision_stride == 20
-    assert args.tau == 500
+    assert args.tau == 250
     assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
     assert args.initial_wealth == 1_000.0
@@ -658,11 +658,11 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
 
     assert env.initial_wealth == 1_000.0
     assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
-    assert env.model_dynamics.tau == 500
+    assert env.model_dynamics.tau == 250
     assert args.tick_stride == 5
-    np.testing.assert_array_equal(env.action_space.low, [-500.0, -499.0, -1.0])
-    np.testing.assert_array_equal(env.action_space.high, [499.0, 500.0, 1.0])
-    np.testing.assert_array_equal(ppo_env.action_space.nvec, [201, 100, 2])
+    np.testing.assert_array_equal(env.action_space.low, [-250.0, -249.0, -1.0])
+    np.testing.assert_array_equal(env.action_space.high, [249.0, 250.0, 1.0])
+    np.testing.assert_array_equal(ppo_env.action_space.nvec, [101, 50, 2])
     np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [1_000.0, 1_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],

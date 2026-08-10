@@ -124,7 +124,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "remaining steps in the decision window."
         ),
     )
-    parser.add_argument("--tau", type=int, default=500)
+    parser.add_argument("--tau", type=int, default=250)
     parser.add_argument("--tick-stride", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
