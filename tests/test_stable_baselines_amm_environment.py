@@ -18,15 +18,23 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
+    HAS_POSITION_KEY,
+    INITIAL_WEALTH_KEY,
+    LP_LIQUIDITY_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
+    LP_UNCLAIMED_FEES0_KEY,
+    LP_UNCLAIMED_FEES1_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
+    PORTFOLIO_VALUE_KEY,
+    PORTFOLIO_VALUE_RATIO_KEY,
     POSITION_WIDTH_KEY,
     TIME_KEY,
+    UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
 from SAiFE_gym.gym.observation_features import (
     SB3_DERIVED_OBS_KEYS,
@@ -345,6 +353,11 @@ class TestObservationFeatures:
         lower_offset = state[POOL_CURRENT_TICK_KEY] - state[LP_TICK_LOWER_KEY]
         upper_offset = state[LP_TICK_UPPER_KEY] - state[POOL_CURRENT_TICK_KEY]
         pool_price = state[POOL_SQRT_PRICE_KEY] ** 2
+        initial_wealth = np.maximum(state[INITIAL_WEALTH_KEY], 1e-12)
+        unclaimed_fee_value = (
+            state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY]
+            + state[LP_UNCLAIMED_FEES1_KEY]
+        )
 
         assert set(features) == SB3_DERIVED_OBS_KEYS
         expected_mispricing = (
@@ -361,6 +374,18 @@ class TestObservationFeatures:
             np.minimum(lower_offset, upper_offset),
         )
         np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
+        np.testing.assert_allclose(
+            features[HAS_POSITION_KEY],
+            (state[LP_LIQUIDITY_KEY] > 0.0).astype(np.float64),
+        )
+        np.testing.assert_allclose(
+            features[PORTFOLIO_VALUE_RATIO_KEY],
+            state[PORTFOLIO_VALUE_KEY] / initial_wealth,
+        )
+        np.testing.assert_allclose(
+            features[UNCLAIMED_FEE_VALUE_RATIO_KEY],
+            unclaimed_fee_value / initial_wealth,
+        )
 
 
 # ---------------------------------------------------------------------------

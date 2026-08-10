@@ -198,8 +198,8 @@ def get_ppo_learner_and_callback(
                   Scales roughly as O(obs_dim * log(obs_dim)) with state
                   dimension.  Practical guideline for this environment:
                     obs_dim=2  (mbt reduced)  →   500k –   2M
-                    obs_dim=6  (SAiFE)        →    2M  –   5M   (with VecNormalize)
-                    obs_dim=6  (no normalise) →    5M  –  20M
+                    obs_dim=9  (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=9  (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(total_timesteps=...) to train.
@@ -544,6 +544,9 @@ def create_policy_behavior_plot(
         3: BOUNDARY_PROXIMITY_KEY
         4: POSITION_WIDTH_KEY
         5: TIME_KEY
+        6: HAS_POSITION_KEY
+        7: PORTFOLIO_VALUE_RATIO_KEY
+        8: UNCLAIMED_FEE_VALUE_RATIO_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -554,6 +557,9 @@ def create_policy_behavior_plot(
         np.full(n_points, float(tau)),
         np.full(n_points, float(2 * tau)),
         np.full(n_points, fixed_time),
+        np.ones(n_points),
+        np.ones(n_points),
+        np.zeros(n_points),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -625,6 +631,9 @@ def create_time_behavior_plot(
         np.full(n_total, float(tau)),
         np.full(n_total, float(2 * tau)),
         time_tiled,
+        np.ones(n_total),
+        np.ones(n_total),
+        np.zeros(n_total),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training

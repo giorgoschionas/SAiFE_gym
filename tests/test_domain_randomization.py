@@ -41,10 +41,13 @@ from SAiFE_gym.gym.domain_randomization import (
 )
 from SAiFE_gym.gym.index_names import (
     GAS_COST_KEY,
+    HAS_POSITION_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
     POOL_CURRENT_TICK_KEY,
+    PORTFOLIO_VALUE_RATIO_KEY,
     PORTFOLIO_VALUE_KEY,
+    UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
 from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty
 from SAiFE_gym.stochastic_processes.arrival_models import (
@@ -535,7 +538,19 @@ def test_default_sb3_observation_hides_gas_cost():
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
-    assert obs.shape[1] == 6
+    assert obs.shape[1] == 9
+    np.testing.assert_array_equal(
+        obs[:, DEFAULT_OBS_KEYS.index(HAS_POSITION_KEY)],
+        np.zeros(env.num_trajectories),
+    )
+    np.testing.assert_array_equal(
+        obs[:, DEFAULT_OBS_KEYS.index(PORTFOLIO_VALUE_RATIO_KEY)],
+        np.ones(env.num_trajectories),
+    )
+    np.testing.assert_array_equal(
+        obs[:, DEFAULT_OBS_KEYS.index(UNCLAIMED_FEE_VALUE_RATIO_KEY)],
+        np.zeros(env.num_trajectories),
+    )
     assert env.state[GAS_COST_KEY][0] == 0.0
 
 
