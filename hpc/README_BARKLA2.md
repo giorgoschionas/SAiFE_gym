@@ -44,7 +44,7 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
 Both the single-training and seed-sweep launchers default to
-`TOTAL_TIMESTEPS=6000000`, `DECISION_STRIDE=20`, `INITIAL_WEALTH=1000.0`,
+`TOTAL_TIMESTEPS=5500000`, `DECISION_STRIDE=20`, `INITIAL_WEALTH=1000.0`,
 and `TAU=250`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. These values can still be
@@ -62,7 +62,7 @@ With the default `TAU=250` and `tick_stride=5`, the PPO action space is
 Override parameters at submission time when needed:
 
 ```bash
-sbatch --export=ALL,TOTAL_TIMESTEPS=6000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
+sbatch --export=ALL,TOTAL_TIMESTEPS=5500000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
