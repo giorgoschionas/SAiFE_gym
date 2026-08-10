@@ -25,6 +25,7 @@ TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-6000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
 TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-$NUM_TRAJECTORIES}
 N_STEPS=${N_STEPS:-1000}
+DECISION_STRIDE=${DECISION_STRIDE:-20}
 TAU=${TAU:-500}
 ALPHA3=${ALPHA3:-4000.0}
 INITIAL_WEALTH=${INITIAL_WEALTH:-1000.0}
@@ -77,7 +78,7 @@ echo "Working directory: $(pwd)"
 echo "Python: $(which python)"
 echo "SLURM job id: $SLURM_JOB_ID array=$SLURM_ARRAY_JOB_ID task=$SLURM_ARRAY_TASK_ID"
 echo "Resources: partition=$SLURM_JOB_PARTITION nodes=$SLURM_JOB_NUM_NODES tasks=$SLURM_NTASKS"
-echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
+echo "Training: timesteps=$TOTAL_TIMESTEPS trajectories=$NUM_TRAJECTORIES n_steps=$N_STEPS decision_stride=$DECISION_STRIDE tau=$TAU alpha3=$ALPHA3 initial_wealth=$INITIAL_WEALTH inventory_phi=$INVENTORY_PHI seed=$SEED"
 echo "Fixed evaluation seed: $EVALUATION_SEED"
 echo "Periodic baseline: rebalance_every=$PERIODIC_REBALANCE_EVERY width=$PERIODIC_WIDTH"
 echo "Fixed gas cost: $NOMINAL_GAS_COST"
@@ -92,6 +93,7 @@ python -u experiments/train_robust_lp_agent.py \
   --total-timesteps "$TOTAL_TIMESTEPS" \
   --num-trajectories "$NUM_TRAJECTORIES" \
   --n-steps "$N_STEPS" \
+  --decision-stride "$DECISION_STRIDE" \
   --tau "$TAU" \
   --alpha3 "$ALPHA3" \
   --initial-wealth "$INITIAL_WEALTH" \

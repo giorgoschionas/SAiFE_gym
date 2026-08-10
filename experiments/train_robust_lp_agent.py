@@ -22,7 +22,12 @@ os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 import numpy as np
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
-from stable_baselines3.common.vec_env import VecNormalize
+from stable_baselines3.common.vec_env import VecEnv, VecNormalize
+from stable_baselines3.common.vec_env.base_vec_env import (
+    VecEnvIndices,
+    VecEnvObs,
+    VecEnvStepReturn,
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
@@ -54,6 +59,7 @@ from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
+from SAiFE_gym.gym.index_names import LP_LIQUIDITY_KEY  # noqa: E402
 from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty  # noqa: E402
 from SAiFE_gym.stochastic_processes.arrival_models import (  # noqa: E402
     LiquidityKernelArrivalModel,
@@ -70,6 +76,15 @@ from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
 DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET = 10_000
+FORCED_HOLD_ACTION = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+AGENT_DECISION_DIAGNOSTIC_COLUMNS = (
+    "agent_decision_stride",
+    "agent_decisions_per_episode",
+    "agent_hold_decision_fraction",
+    "agent_rebalance_decision_fraction",
+    "mean_agent_rebalances_after_deployment_per_path",
+    "mean_agent_selected_range_width_ticks",
+)
 
 
 @dataclass(frozen=True)
@@ -99,6 +114,16 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
+    parser.add_argument(
+        "--decision-stride",
+        type=int,
+        default=20,
+        help=(
+            "Number of simulator steps per PPO decision. The agent acts on "
+            "the first simulator step and forced hold is used for the "
+            "remaining steps in the decision window."
+        ),
+    )
     parser.add_argument("--tau", type=int, default=500)
     parser.add_argument("--tick-stride", type=int, default=5)
     parser.add_argument("--alpha3", type=float, default=4000.0)
@@ -209,14 +234,69 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     if not args.smoke_test:
         return
 
-    args.total_timesteps = 20
+    args.total_timesteps = 2 * args.decision_stride
     args.num_trajectories = 2
-    args.n_steps = 5
+    args.n_steps = args.decision_stride
     args.n_eval_episodes = 1
     args.eval_in_distribution_sigma_values = [0.030]
     args.eval_in_distribution_arrival_rate_values = [300.0]
     args.eval_stress_sigma_values = [0.08]
     args.eval_stress_arrival_rate_values = [450.0]
+
+
+def validate_and_derive_decision_timing(args: argparse.Namespace) -> None:
+    """Validate decision-stride timing and store PPO-derived step counts."""
+    if isinstance(args.decision_stride, bool) or not isinstance(
+        args.decision_stride,
+        (int, np.integer),
+    ):
+        raise ValueError("decision_stride must be an integer")
+    if args.decision_stride < 1:
+        raise ValueError("decision_stride must be positive")
+    if args.n_steps < 1:
+        raise ValueError("n_steps must be positive")
+    if args.total_timesteps < 1:
+        raise ValueError("total_timesteps must be positive")
+    if args.n_steps % args.decision_stride != 0:
+        raise ValueError(
+            "n_steps must be divisible by decision_stride, got "
+            f"n_steps={args.n_steps}, decision_stride={args.decision_stride}"
+        )
+    if args.total_timesteps % args.decision_stride != 0:
+        raise ValueError(
+            "total_timesteps must be divisible by decision_stride so it can "
+            "remain a simulator-step budget, got "
+            f"total_timesteps={args.total_timesteps}, "
+            f"decision_stride={args.decision_stride}"
+        )
+
+    args.max_agent_decisions_per_episode = int(args.n_steps // args.decision_stride)
+    args.ppo_n_steps = int(args.max_agent_decisions_per_episode)
+    args.ppo_total_timesteps = int(args.total_timesteps // args.decision_stride)
+
+
+def max_agent_decisions_per_episode(args: argparse.Namespace) -> int:
+    return int(
+        getattr(
+            args,
+            "max_agent_decisions_per_episode",
+            args.n_steps // args.decision_stride,
+        )
+    )
+
+
+def ppo_rollout_steps(args: argparse.Namespace) -> int:
+    return int(getattr(args, "ppo_n_steps", max_agent_decisions_per_episode(args)))
+
+
+def ppo_total_timesteps(args: argparse.Namespace) -> int:
+    return int(
+        getattr(
+            args,
+            "ppo_total_timesteps",
+            args.total_timesteps // args.decision_stride,
+        )
+    )
 
 
 def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
@@ -416,11 +496,198 @@ def make_robust_env(args: argparse.Namespace):
     return make_domain_randomized_env(args)
 
 
+class DecisionStrideVecEnv(VecEnv):
+    """Expose one PPO step per fixed simulator decision window."""
+
+    def __init__(self, vec_env: VecEnv, stride: int):
+        if stride < 1:
+            raise ValueError(f"stride must be >= 1, got {stride}")
+        self._wrapped = vec_env
+        self.stride = int(stride)
+        self._hold = np.tile(FORCED_HOLD_ACTION, (vec_env.num_envs, 1))
+        self._pending_action: Optional[np.ndarray] = None
+        super().__init__(
+            vec_env.num_envs,
+            vec_env.observation_space,
+            vec_env.action_space,
+        )
+
+    def reset(self) -> VecEnvObs:
+        return self._wrapped.reset()
+
+    def step_async(self, actions: np.ndarray) -> None:
+        self._pending_action = np.asarray(actions, dtype=np.float32)
+
+    def step_wait(self) -> VecEnvStepReturn:
+        if self._pending_action is None:
+            raise RuntimeError("step_async must be called before step_wait")
+
+        action = self._pending_action
+        self._pending_action = None
+        if self.stride == 1:
+            self._wrapped.step_async(action)
+            return self._wrapped.step_wait()
+
+        reward_sum = np.zeros(self.num_envs, dtype=np.float32)
+        obs = None
+        dones = np.zeros(self.num_envs, dtype=bool)
+        infos = [{} for _ in range(self.num_envs)]
+        for inner_step in range(self.stride):
+            inner_action = action if inner_step == 0 else self._hold
+            self._wrapped.step_async(inner_action)
+            obs, rewards, dones, infos = self._wrapped.step_wait()
+            reward_sum += rewards.astype(np.float32)
+            if np.all(dones):
+                break
+
+        if obs is None:
+            raise RuntimeError("decision stride did not execute any simulator steps")
+        return obs, reward_sum, dones, infos
+
+    def close(self) -> None:
+        self._wrapped.close()
+
+    def get_attr(self, attr_name: str, indices: VecEnvIndices = None) -> list:
+        return self._wrapped.get_attr(attr_name, indices)
+
+    def set_attr(
+        self,
+        attr_name: str,
+        value,
+        indices: VecEnvIndices = None,
+    ) -> None:
+        self._wrapped.set_attr(attr_name, value, indices)
+
+    def env_method(
+        self,
+        method_name: str,
+        *method_args,
+        indices: VecEnvIndices = None,
+        **method_kwargs,
+    ) -> list:
+        return self._wrapped.env_method(
+            method_name,
+            *method_args,
+            indices=indices,
+            **method_kwargs,
+        )
+
+    def env_is_wrapped(
+        self,
+        wrapper_class: type,
+        indices: VecEnvIndices = None,
+    ) -> list[bool]:
+        return self._wrapped.env_is_wrapped(wrapper_class, indices)
+
+    def seed(self, seed: Optional[int] = None) -> list[Optional[int]]:
+        return self._wrapped.seed(seed)
+
+    def get_images(self) -> Sequence[np.ndarray]:
+        return self._wrapped.get_images()
+
+
+class AgentDecisionAccumulator:
+    """Track PPO decision-level hold/rebalance diagnostics."""
+
+    def __init__(self, stride: int, decisions_per_episode: int) -> None:
+        self.stride = int(stride)
+        self.decisions_per_episode = int(decisions_per_episode)
+        self.num_paths = 0
+        self.action_decisions = 0
+        self.hold_actions = 0
+        self.rebalance_actions = 0
+        self.rebalances_after_deployment = 0
+        self.selected_range_width_total = 0.0
+        self.selected_range_count = 0
+        self._active_num_trajectories: Optional[int] = None
+
+    def begin_episode(self, num_trajectories: int) -> None:
+        if self._active_num_trajectories is not None:
+            raise RuntimeError("finish the current episode before beginning another")
+        if num_trajectories < 1:
+            raise ValueError("num_trajectories must be positive")
+        self._active_num_trajectories = int(num_trajectories)
+
+    def record_decision(self, state: dict, action: np.ndarray) -> None:
+        num_trajectories = self._require_active_episode()
+        action = np.asarray(action)
+        if action.shape != (num_trajectories, 3):
+            raise ValueError(
+                f"action must have shape ({num_trajectories}, 3), got {action.shape}"
+            )
+
+        has_position = np.asarray(state[LP_LIQUIDITY_KEY]) > 0.0
+        rebalance = action[:, 2] <= 0.0
+        hold = ~rebalance
+        self.action_decisions += num_trajectories
+        self.hold_actions += int(np.count_nonzero(hold))
+        self.rebalance_actions += int(np.count_nonzero(rebalance))
+        self.rebalances_after_deployment += int(
+            np.count_nonzero(rebalance & has_position)
+        )
+
+        selected_widths = action[rebalance, 1] - action[rebalance, 0]
+        if selected_widths.size:
+            self.selected_range_width_total += float(np.sum(selected_widths))
+            self.selected_range_count += int(selected_widths.size)
+
+    def finish_episode(self) -> None:
+        num_trajectories = self._require_active_episode()
+        self.num_paths += num_trajectories
+        self._active_num_trajectories = None
+
+    def summarize(self) -> dict[str, float]:
+        if self._active_num_trajectories is not None:
+            raise RuntimeError("finish the active episode before summarizing")
+        if self.num_paths < 1:
+            raise RuntimeError("at least one completed episode is required")
+        return {
+            "agent_decision_stride": float(self.stride),
+            "agent_decisions_per_episode": float(self.decisions_per_episode),
+            "agent_hold_decision_fraction": self._safe_ratio(
+                self.hold_actions,
+                self.action_decisions,
+            ),
+            "agent_rebalance_decision_fraction": self._safe_ratio(
+                self.rebalance_actions,
+                self.action_decisions,
+            ),
+            "mean_agent_rebalances_after_deployment_per_path": (
+                self.rebalances_after_deployment / self.num_paths
+            ),
+            "mean_agent_selected_range_width_ticks": self._safe_ratio(
+                self.selected_range_width_total,
+                self.selected_range_count,
+            ),
+        }
+
+    def _require_active_episode(self) -> int:
+        if self._active_num_trajectories is None:
+            raise RuntimeError("begin_episode must be called first")
+        return self._active_num_trajectories
+
+    @staticmethod
+    def _safe_ratio(numerator: float, denominator: int) -> float:
+        return float(numerator / denominator) if denominator else 0.0
+
+
+def zero_agent_decision_diagnostics(args: argparse.Namespace) -> dict[str, float | str]:
+    return {
+        "agent_decision_stride": float(args.decision_stride),
+        "agent_decisions_per_episode": float(max_agent_decisions_per_episode(args)),
+        "agent_hold_decision_fraction": "",
+        "agent_rebalance_decision_fraction": "",
+        "mean_agent_rebalances_after_deployment_per_path": "",
+        "mean_agent_selected_range_width_ticks": "",
+    }
+
+
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
-    ppo_env = StructuredMultiDiscreteVecEnv(vec_env, args.tau, args.tick_stride)
-    rollout_size = args.n_steps * args.num_trajectories
+    decision_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
+    ppo_env = StructuredMultiDiscreteVecEnv(decision_env, args.tau, args.tick_stride)
+    rollout_size = ppo_rollout_steps(args) * args.num_trajectories
     batch_size = min(max(64, rollout_size // 16), rollout_size)
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     model = PPO(
@@ -432,7 +699,7 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         n_epochs=10,
         batch_size=batch_size,
         normalize_advantage=True,
-        n_steps=args.n_steps,
+        n_steps=ppo_rollout_steps(args),
         gae_lambda=0.95,
         gamma=1.0,
         seed=args.seed,
@@ -494,7 +761,8 @@ class ConvergenceEvaluationCallback(BaseCallback):
             regime_seed=self.args.evaluation_seed,
         )
         row = {
-            "num_timesteps": int(self.num_timesteps),
+            "num_timesteps": int(self.num_timesteps * self.args.decision_stride),
+            "num_decision_timesteps": int(self.num_timesteps),
             "rollouts_completed": int(self.rollouts_completed),
             **row,
         }
@@ -540,7 +808,8 @@ def append_final_convergence_evaluation(
         regime_seed=args.evaluation_seed,
     )
     row = {
-        "num_timesteps": int(model.num_timesteps),
+        "num_timesteps": int(model.num_timesteps * args.decision_stride),
+        "num_decision_timesteps": int(model.num_timesteps),
         "rollouts_completed": int(callback.rollouts_completed),
         **row,
     }
@@ -560,7 +829,7 @@ def train_and_save(
         args,
         run_dir / f"{label}_convergence.csv",
     )
-    model.learn(total_timesteps=args.total_timesteps, callback=callback)
+    model.learn(total_timesteps=ppo_total_timesteps(args), callback=callback)
     append_final_convergence_evaluation(callback, model, vec_normalize, args)
 
     model.save(str(run_dir / f"{label}_ppo"))
@@ -582,6 +851,10 @@ def evaluate_ppo(
 ) -> dict:
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
+    decision_behavior = AgentDecisionAccumulator(
+        args.decision_stride,
+        max_agent_decisions_per_episode(args),
+    )
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = make_fixed_env(args, params, seed=episode_seed)
@@ -594,12 +867,18 @@ def evaluate_ppo(
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
         behavior.begin_episode(env.num_trajectories)
+        decision_behavior.begin_episode(env.num_trajectories)
+        hold_action = np.tile(FORCED_HOLD_ACTION, (env.num_trajectories, 1))
 
-        for _ in range(env.n_steps):
-            flat_obs = sb3_env._flatten_obs(obs)
-            model_obs = normalize_obs(flat_obs, vec_normalize)
-            structured_action, _ = model.predict(model_obs, deterministic=True)
-            action = action_wrapper.unscale(structured_action)
+        for step_idx in range(env.n_steps):
+            if step_idx % args.decision_stride == 0:
+                flat_obs = sb3_env._flatten_obs(obs)
+                model_obs = normalize_obs(flat_obs, vec_normalize)
+                structured_action, _ = model.predict(model_obs, deterministic=True)
+                action = action_wrapper.unscale(structured_action)
+                decision_behavior.record_decision(obs, action)
+            else:
+                action = hold_action
             behavior_snapshot = behavior.before_step(obs, action)
             obs, rewards, terminated, truncated, _ = env.step(action)
             behavior.after_step(behavior_snapshot, obs, rewards)
@@ -608,9 +887,10 @@ def evaluate_ppo(
                 break
 
         behavior.finish_episode(obs)
+        decision_behavior.finish_episode()
         objective_values.append(cumulative_reward)
 
-    return summarize_running_inventory_objective(
+    row = summarize_running_inventory_objective(
         policy_name,
         params,
         evaluation_set,
@@ -619,6 +899,8 @@ def evaluate_ppo(
         evaluation_seed=args.evaluation_seed,
         behavior_diagnostics=behavior.summarize(),
     )
+    row.update(decision_behavior.summarize())
+    return row
 
 
 def evaluate_periodic_rebalance(
@@ -653,7 +935,7 @@ def evaluate_periodic_rebalance(
         behavior.finish_episode(obs)
         objective_values.append(cumulative_reward)
 
-    return summarize_running_inventory_objective(
+    row = summarize_running_inventory_objective(
         "periodic_rebalance",
         params,
         evaluation_set,
@@ -662,6 +944,8 @@ def evaluate_periodic_rebalance(
         evaluation_seed=args.evaluation_seed,
         behavior_diagnostics=behavior.summarize(),
     )
+    row.update(zero_agent_decision_diagnostics(args))
+    return row
 
 
 def evaluate_cash(
@@ -676,7 +960,7 @@ def evaluate_cash(
     running inventory penalty are exactly zero under the current objective.
     """
     objective_values = np.zeros(args.n_eval_episodes * args.num_trajectories)
-    return summarize_running_inventory_objective(
+    row = summarize_running_inventory_objective(
         "cash",
         params,
         evaluation_set,
@@ -685,6 +969,8 @@ def evaluate_cash(
         evaluation_seed=args.evaluation_seed,
         behavior_diagnostics=cash_behavior_diagnostics(),
     )
+    row.update(zero_agent_decision_diagnostics(args))
+    return row
 
 
 def normalize_obs(
@@ -923,6 +1209,7 @@ def make_run_dir(output_dir: str, smoke_test: bool) -> Path:
 def main() -> int:
     args = parse_args()
     apply_smoke_overrides(args)
+    validate_and_derive_decision_timing(args)
     resolve_train_domains_per_reset(args)
     validate_evaluation_configuration(args)
     args.behavior_diagnostics_schema_version = (

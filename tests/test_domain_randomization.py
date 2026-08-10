@@ -25,6 +25,7 @@ from experiments.train_robust_lp_agent import (
     summarize_rows,
     summarize_single_training_seed,
     validate_evaluation_configuration,
+    validate_and_derive_decision_timing,
 )
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -593,6 +594,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
 
     assert args.output_dir == "experiments/results/domain_randomized_ppo"
     assert args.n_steps == 1000
+    assert args.decision_stride == 20
     assert args.tau == 500
     assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
@@ -610,6 +612,31 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.eval_in_distribution_arrival_rate_values == [250.0, 300.0, 350.0]
     assert args.eval_stress_sigma_values == [0.065, 0.08]
     assert args.eval_stress_arrival_rate_values == [150.0, 450.0]
+
+
+def test_decision_stride_defaults_derive_ppo_training_budget():
+    args = parse_args([])
+
+    validate_and_derive_decision_timing(args)
+
+    assert args.max_agent_decisions_per_episode == 50
+    assert args.ppo_n_steps == 50
+    assert args.ppo_total_timesteps == 300_000
+
+
+@pytest.mark.parametrize(
+    ("argv", "error"),
+    [
+        (["--decision-stride", "0"], "positive"),
+        (["--n-steps", "1000", "--decision-stride", "30"], "n_steps"),
+        (["--total-timesteps", "1001", "--decision-stride", "20"], "total_timesteps"),
+    ],
+)
+def test_decision_stride_validation_rejects_invalid_timing(argv, error):
+    args = parse_args(argv)
+
+    with pytest.raises(ValueError, match=error):
+        validate_and_derive_decision_timing(args)
 
 
 def test_domain_randomized_script_defaults_propagate_to_environment_and_action_space():

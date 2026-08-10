@@ -44,10 +44,17 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
 Both the single-training and seed-sweep launchers default to
-`TOTAL_TIMESTEPS=6000000`, `INITIAL_WEALTH=1000.0`, and `TAU=500`.
+`TOTAL_TIMESTEPS=6000000`, `DECISION_STRIDE=20`, `INITIAL_WEALTH=1000.0`,
+and `TAU=500`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
-it does not force every position to have width 200. Both values can still be
+it does not force every position to have width 200. These values can still be
 overridden through exported environment variables.
+
+`TOTAL_TIMESTEPS` is a simulator-equivalent budget. With the default
+`DECISION_STRIDE=20`, PPO acts once every 20 simulator steps, so the default
+run trains on 300,000 PPO decision timesteps and each 1,000-step episode exposes
+at most 50 agent decisions. The simulator uses forced hold actions between
+agent decisions.
 
 Override parameters at submission time when needed:
 
@@ -140,6 +147,12 @@ Every per-seed `evaluation_grid.csv` also reports policy behavior diagnostics:
   penalty.
 - `mean_in_range_fraction_among_deployed_paths` averages each deployed path's
   fraction of deployed steps spent in range; never-deployed paths are excluded.
+- `agent_decision_stride`, `agent_decisions_per_episode`,
+  `agent_hold_decision_fraction`, `agent_rebalance_decision_fraction`,
+  `mean_agent_rebalances_after_deployment_per_path`, and
+  `mean_agent_selected_range_width_ticks` report PPO decision-level activity
+  separately from the simulator-step diagnostics. These are populated for PPO
+  rows; baseline rows leave the decision fractions blank.
 
 ## Monitoring
 

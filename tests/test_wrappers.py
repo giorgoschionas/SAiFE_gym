@@ -1,7 +1,9 @@
 import gymnasium
 import numpy as np
 import pytest
+from stable_baselines3.common.vec_env import VecEnv
 
+from experiments.train_robust_lp_agent import DecisionStrideVecEnv
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
@@ -16,6 +18,68 @@ from SAiFE_gym.wrappers import (
     StructuredMultiDiscreteVecEnv,
     build_discrete_action_table,
 )
+
+
+class RecordingVecEnv(VecEnv):
+    def __init__(self, num_envs: int = 2):
+        self.recorded_actions = []
+        self._pending_action = None
+        self.step_count = 0
+        observation_space = gymnasium.spaces.Box(
+            low=-np.inf,
+            high=np.inf,
+            shape=(1,),
+            dtype=np.float32,
+        )
+        action_space = gymnasium.spaces.Box(
+            low=np.array([-5.0, -4.0, -1.0], dtype=np.float32),
+            high=np.array([4.0, 5.0, 1.0], dtype=np.float32),
+            shape=(3,),
+            dtype=np.float32,
+        )
+        super().__init__(num_envs, observation_space, action_space)
+
+    def reset(self):
+        return np.zeros((self.num_envs, 1), dtype=np.float32)
+
+    def step_async(self, actions):
+        self._pending_action = np.asarray(actions, dtype=np.float32)
+
+    def step_wait(self):
+        if self._pending_action is None:
+            raise RuntimeError("step_async must be called before step_wait")
+        self.recorded_actions.append(self._pending_action.copy())
+        self._pending_action = None
+        self.step_count += 1
+        obs = np.full((self.num_envs, 1), self.step_count, dtype=np.float32)
+        rewards = np.full(self.num_envs, self.step_count, dtype=np.float32)
+        dones = np.zeros(self.num_envs, dtype=bool)
+        infos = [{} for _ in range(self.num_envs)]
+        return obs, rewards, dones, infos
+
+    def close(self):
+        pass
+
+    def get_attr(self, attr_name, indices=None):
+        return [getattr(self, attr_name)] * self.num_envs
+
+    def set_attr(self, attr_name, value, indices=None):
+        setattr(self, attr_name, value)
+
+    def env_method(self, method_name, *method_args, indices=None, **method_kwargs):
+        return [
+            getattr(self, method_name)(*method_args, **method_kwargs)
+            for _ in range(self.num_envs)
+        ]
+
+    def env_is_wrapped(self, wrapper_class, indices=None):
+        return [False] * self.num_envs
+
+    def seed(self, seed=None):
+        return [seed] * self.num_envs
+
+    def get_images(self):
+        return []
 
 
 def create_test_amm_env(
@@ -138,6 +202,39 @@ class TestDiscreteActionVecEnv:
         assert rewards.shape == (2,)
         assert dones.shape == (2,)
         assert len(infos) == 2
+
+
+class TestDecisionStrideVecEnv:
+    def test_applies_agent_action_then_forced_hold_and_sums_rewards(self):
+        base_env = RecordingVecEnv(num_envs=2)
+        wrapped = DecisionStrideVecEnv(base_env, stride=3)
+        action = np.array([
+            [-2.0, 2.0, -1.0],
+            [-1.0, 1.0, -1.0],
+        ], dtype=np.float32)
+
+        wrapped.reset()
+        wrapped.step_async(action)
+        obs, rewards, dones, infos = wrapped.step_wait()
+
+        assert len(base_env.recorded_actions) == 3
+        np.testing.assert_array_equal(base_env.recorded_actions[0], action)
+        np.testing.assert_array_equal(
+            base_env.recorded_actions[1],
+            np.array([[0.0, 1.0, 1.0], [0.0, 1.0, 1.0]], dtype=np.float32),
+        )
+        np.testing.assert_array_equal(
+            base_env.recorded_actions[2],
+            base_env.recorded_actions[1],
+        )
+        np.testing.assert_array_equal(obs, np.full((2, 1), 3.0, dtype=np.float32))
+        np.testing.assert_array_equal(rewards, np.array([6.0, 6.0], dtype=np.float32))
+        np.testing.assert_array_equal(dones, np.array([False, False]))
+        assert len(infos) == 2
+
+    def test_invalid_stride_raises(self):
+        with pytest.raises(ValueError, match="stride"):
+            DecisionStrideVecEnv(RecordingVecEnv(num_envs=2), stride=0)
 
 
 class TestStructuredMultiDiscreteVecEnv:
