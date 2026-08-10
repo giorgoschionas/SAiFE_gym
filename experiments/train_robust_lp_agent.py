@@ -161,8 +161,8 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         help="Number of vectorized episodes per convergence-check evaluation.",
     )
     parser.add_argument("--learning-rate", type=float, default=3e-4)
-    parser.add_argument("--periodic-rebalance-every", type=int, default=5)
-    parser.add_argument("--periodic-width", type=int, default=125)
+    parser.add_argument("--periodic-rebalance-every", type=int, default=20)
+    parser.add_argument("--periodic-width", type=int, default=250)
     parser.add_argument("--no-normalise-obs", dest="normalise_obs", action="store_false")
     parser.set_defaults(normalise_obs=True)
 

@@ -616,8 +616,8 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.initial_wealth == 1_000.0
     assert args.inventory_phi == 0.4
     assert args.evaluation_seed == 100042
-    assert args.periodic_rebalance_every == 5
-    assert args.periodic_width == 125
+    assert args.periodic_rebalance_every == 20
+    assert args.periodic_width == 250
     assert args.nominal_sigma == 0.03
     assert args.nominal_arrival_rate == 250.0
     assert tuple(args.train_sigma_range) == (0.01, 0.05)
