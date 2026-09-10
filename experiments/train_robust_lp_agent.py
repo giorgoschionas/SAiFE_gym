@@ -110,7 +110,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         "--output-dir",
         default="experiments/results/domain_randomized_ppo",
     )
-    parser.add_argument("--total-timesteps", type=int, default=8_000_000)
+    parser.add_argument("--total-timesteps", type=int, default=10_000_000)
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)

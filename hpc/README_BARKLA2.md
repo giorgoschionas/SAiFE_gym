@@ -44,7 +44,7 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
 Both the single-training and seed-sweep launchers default to
-`TOTAL_TIMESTEPS=8000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
+`TOTAL_TIMESTEPS=10000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
 and `TAU=50`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. These values can still be
@@ -59,7 +59,7 @@ exported environment variable when needed.
 
 `TOTAL_TIMESTEPS` is a simulator-equivalent budget. With the default
 `DECISION_STRIDE=100`, PPO acts once every 100 simulator steps, so the default
-run trains on 80,000 PPO decision timesteps and each 1,000-step episode exposes
+run trains on 100,000 PPO decision timesteps and each 1,000-step episode exposes
 at most 10 agent decisions. The simulator uses forced hold actions between
 agent decisions.
 
@@ -69,7 +69,7 @@ With the default `TAU=50` and `tick_stride=5`, the PPO action space is
 Override parameters at submission time when needed:
 
 ```bash
-sbatch --export=ALL,TOTAL_TIMESTEPS=8000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
+sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 

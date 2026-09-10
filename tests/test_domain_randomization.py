@@ -636,7 +636,7 @@ def test_decision_stride_defaults_derive_ppo_training_budget():
 
     assert args.max_agent_decisions_per_episode == 10
     assert args.ppo_n_steps == 10
-    assert args.ppo_total_timesteps == 80_000
+    assert args.ppo_total_timesteps == 100_000
 
 
 @pytest.mark.parametrize(

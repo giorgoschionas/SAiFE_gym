@@ -118,10 +118,10 @@ Important script defaults:
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
-| `--total-timesteps` | `5_500_000` | Simulator-equivalent training budget |
+| `--total-timesteps` | `10_000_000` | Simulator-equivalent training budget |
 | `--num-trajectories` | `100` | Vectorized paths per episode |
 | `--n-steps` | `1000` | Simulator steps per episode |
-| `--decision-stride` | `20` | PPO acts once every 20 simulator steps |
+| `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
 | `--tau` | `250` | Maximum center offset and half-width in ticks |
 | `--tick-stride` | `5` | Structured action grid spacing |
 | `--alpha3` | `4000.0` | Mispricing/arbitrage intensity coefficient |
@@ -139,7 +139,7 @@ rate `300.0`, the midpoints of the randomized training ranges. The final
 in-distribution evaluation grid includes this nominal condition.
 
 With the default decision stride, the default simulator budget corresponds to
-`275_000` PPO decision timesteps and each episode exposes at most 50 PPO
+`100_000` PPO decision timesteps and each episode exposes at most 10 PPO
 decisions. Forced hold actions are used between PPO decisions.
 
 By default, the Python script uses `min(10, num_trajectories)` balanced sampled
