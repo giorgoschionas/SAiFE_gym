@@ -50,6 +50,13 @@ Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. These values can still be
 overridden through exported environment variables.
 
+Both launchers default to `NOMINAL_SIGMA=0.03` and
+`NOMINAL_ARRIVAL_RATE=300.0` for nominal training and convergence validation.
+These are the midpoints of the randomized training ranges, sigma `[0.01, 0.05]`
+and arrival rate `[200.0, 400.0]`. The final in-distribution evaluation grid
+includes the nominal condition. Override either nominal parameter through its
+exported environment variable when needed.
+
 `TOTAL_TIMESTEPS` is a simulator-equivalent budget. With the default
 `DECISION_STRIDE=100`, PPO acts once every 100 simulator steps, so the default
 run trains on 80,000 PPO decision timesteps and each 1,000-step episode exposes

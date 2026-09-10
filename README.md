@@ -128,11 +128,15 @@ Important script defaults:
 | `--initial-wealth` | `1000.0` | LP starting capital in token1 units |
 | `--inventory-phi` | `0.4` | Running token0 inventory penalty coefficient |
 | `--nominal-sigma` | `0.03` | Fixed nominal GBM volatility |
-| `--nominal-arrival-rate` | `250.0` | Fixed nominal baseline order rate |
+| `--nominal-arrival-rate` | `300.0` | Fixed nominal baseline order rate |
 | `--nominal-gas-cost` | `2.0` | Fixed rebalance gas cost |
 | `--train-sigma-range` | `0.01 0.05` | Randomized training support for sigma |
 | `--train-arrival-rate-range` | `200.0 400.0` | Randomized training support for arrival rate |
 | `--evaluation-seed` | `100042` | Evaluation paths, independent of training seed |
+
+Nominal training and convergence validation default to sigma `0.03` and arrival
+rate `300.0`, the midpoints of the randomized training ranges. The final
+in-distribution evaluation grid includes this nominal condition.
 
 With the default decision stride, the default simulator budget corresponds to
 `275_000` PPO decision timesteps and each episode exposes at most 50 PPO

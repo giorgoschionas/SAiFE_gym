@@ -619,7 +619,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.periodic_rebalance_every == 100
     assert args.periodic_width == 50
     assert args.nominal_sigma == 0.03
-    assert args.nominal_arrival_rate == 250.0
+    assert args.nominal_arrival_rate == 300.0
     assert tuple(args.train_sigma_range) == (0.01, 0.05)
     assert tuple(args.train_arrival_rate_range) == (200.0, 400.0)
     assert args.nominal_gas_cost == 2.0
