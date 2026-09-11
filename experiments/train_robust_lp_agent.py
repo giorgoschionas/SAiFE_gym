@@ -821,8 +821,13 @@ def train_and_save(
     env,
     args: argparse.Namespace,
     run_dir: Path,
+    *,
+    environment_seed: Optional[int] = None,
 ) -> tuple[PPO, Optional[VecNormalize]]:
-    model, _, vec_normalize = build_ppo(env, args)
+    model, ppo_env, vec_normalize = build_ppo(env, args)
+    if environment_seed is not None:
+        # PPO construction seeds the environment with its own training seed.
+        ppo_env.seed(environment_seed)
     callback = ConvergenceEvaluationCallback(
         f"{label}_ppo",
         vec_normalize,
@@ -1227,9 +1232,14 @@ def main() -> int:
         sigma=args.nominal_sigma,
         arrival_rate=args.nominal_arrival_rate,
     )
-    nominal_env = make_fixed_env(args, nominal_params, seed=args.seed + 20_000)
+    nominal_environment_seed = args.seed + 20_000
+    nominal_env = make_fixed_env(args, nominal_params, seed=nominal_environment_seed)
     nominal_model, nominal_vecnormalize = train_and_save(
-        "nominal", nominal_env, args, run_dir
+        "nominal",
+        nominal_env,
+        args,
+        run_dir,
+        environment_seed=nominal_environment_seed,
     )
 
     rows = []

@@ -24,6 +24,7 @@ from experiments.train_robust_lp_agent import (
     summarize_running_inventory_objective,
     summarize_rows,
     summarize_single_training_seed,
+    train_and_save,
     validate_evaluation_configuration,
     validate_and_derive_decision_timing,
 )
@@ -523,6 +524,47 @@ def test_script_domain_randomization_seed_offset_survives_external_seed_calls():
         env.last_domain_parameters.domain_id,
         expected.domain_id,
     )
+
+
+@pytest.mark.parametrize("environment_seed", [None, 0, 20_042])
+def test_train_and_save_separates_environment_seed_from_ppo_seed(
+    environment_seed, monkeypatch, tmp_path
+):
+    args = parse_args([
+        "--num-trajectories", "2",
+        "--n-steps", "4",
+        "--decision-stride", "2",
+        "--total-timesteps", "8",
+        "--tau", "5",
+        "--tick-stride", "1",
+        "--seed", "42",
+        "--convergence-eval-every-rollouts", "0",
+    ])
+    validate_and_derive_decision_timing(args)
+    env = create_test_amm_env(n_steps=args.n_steps, seed=20_042)
+    expected_seed = args.seed if environment_seed is None else environment_seed
+    original_learn = PPO.learn
+
+    def check_seed_then_learn(model, *learn_args, **learn_kwargs):
+        assert model.seed == args.seed
+        md = env.model_dynamics
+        for rng, seed in [
+            (md.midprice_model.rng, expected_seed),
+            (md.arrival_model.rng, expected_seed + 1),
+            (md.price_impact_model.rng, expected_seed + 2),
+            (md.rng, expected_seed + 3),
+        ]:
+            assert rng.bit_generator.state == np.random.default_rng(seed).bit_generator.state
+        return original_learn(model, *learn_args, **learn_kwargs)
+
+    monkeypatch.setattr(PPO, "learn", check_seed_then_learn)
+    model, _ = train_and_save(
+        "nominal", env, args, tmp_path, environment_seed=environment_seed
+    )
+
+    assert model.num_timesteps == args.ppo_total_timesteps
+    assert env.model_dynamics.midprice_model.seed_ == expected_seed
+    assert (tmp_path / "nominal_ppo.zip").is_file()
 
 
 def test_default_sb3_observation_hides_gas_cost():
