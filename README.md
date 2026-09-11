@@ -114,7 +114,7 @@ The robust training environment uses:
 - `StructuredMultiDiscreteVecEnv`
 - SB3 `VecNormalize` unless `--no-normalise-obs` is passed
 
-Important script defaults:
+Important script defaults (also used by the HPC training launchers):
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
@@ -122,7 +122,7 @@ Important script defaults:
 | `--num-trajectories` | `100` | Vectorized paths per episode |
 | `--n-steps` | `1000` | Simulator steps per episode |
 | `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
-| `--tau` | `250` | Maximum center offset and half-width in ticks |
+| `--tau` | `50` | Maximum center offset and half-width in ticks |
 | `--tick-stride` | `5` | Structured action grid spacing |
 | `--alpha3` | `4000.0` | Mispricing/arbitrage intensity coefficient |
 | `--initial-wealth` | `1000.0` | LP starting capital in token1 units |
@@ -270,8 +270,8 @@ Use wrapper action spaces when training agents:
 - `DiscreteActionVecEnv` exposes the same table for SB3 `VecEnv` pipelines.
 - `StructuredMultiDiscreteVecEnv` exposes decoupled
   `[center_offset_id, half_width_id, hold_id]` action heads. With
-  `tau=250` and `tick_stride=5`, the SB3 action space is
-  `MultiDiscrete([101, 50, 2])`.
+  the default `tau=50` and `tick_stride=5`, the SB3 action space is
+  `MultiDiscrete([21, 10, 2])`.
 
 ## Testing
 

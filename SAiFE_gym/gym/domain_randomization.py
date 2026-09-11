@@ -4,6 +4,11 @@ from typing import Optional
 import numpy as np
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
+
+
+DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET = 10_000
+
+
 @dataclass(frozen=True)
 class DomainParameters:
     """Episode-level market parameters used for domain randomization."""
@@ -138,6 +143,11 @@ class DomainRandomizedAMMEnvironment:
     reset, episode parameters are sampled and held fixed. The default keeps one
     parameter tuple shared by every trajectory; ``num_domains > 1`` enables
     balanced per-trajectory domain assignments.
+
+    Domain sampling uses ``seed + domain_seed_offset`` (default: 10_000),
+    while the wrapped environment receives ``seed`` unchanged. This separation
+    is preserved when PPO reseeds the environment. An explicit offset of zero
+    restores the legacy shared-stream behavior; ``seed=None`` remains unseeded.
     """
 
     def __init__(
@@ -146,7 +156,7 @@ class DomainRandomizedAMMEnvironment:
         config: UniformDomainRandomizationConfig,
         seed: Optional[int] = None,
         num_domains: int = 1,
-        domain_seed_offset: int = 0,
+        domain_seed_offset: int = DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     ):
         _validate_batch_sizes(env.num_trajectories, num_domains)
         self.env = env

@@ -10,7 +10,6 @@ from experiments.policy_behavior_diagnostics import (
     zero_behavior_diagnostics,
 )
 from experiments.train_robust_lp_agent import (
-    DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     add_gap_columns,
     apply_smoke_overrides,
     evaluate_cash,
@@ -35,6 +34,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
     StableBaselinesAMMEnvironment,
 )
 from SAiFE_gym.gym.domain_randomization import (
+    DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     BatchedDomainParameters,
     DomainParameters,
     DomainRandomizedAMMEnvironment,
@@ -485,6 +485,109 @@ def test_amm_environment_seed_resets_model_dynamics_and_price_impact_rngs():
         first_price_impact_draw,
         second_price_impact_draw,
     )
+
+
+@pytest.mark.parametrize("seed", [0, 11])
+@pytest.mark.parametrize("num_domains", [1, 2])
+@pytest.mark.parametrize("domain_seed_offset", [None, 0, 1234])
+def test_domain_stream_seeding_and_reset_sequence(
+    seed, num_domains, domain_seed_offset
+):
+    config = UniformDomainRandomizationConfig()
+    kwargs = (
+        {} if domain_seed_offset is None
+        else {"domain_seed_offset": domain_seed_offset}
+    )
+    env = DomainRandomizedAMMEnvironment(
+        create_test_amm_env(seed=seed), config, seed=seed,
+        num_domains=num_domains, **kwargs,
+    )
+    offset = 10_000 if domain_seed_offset is None else domain_seed_offset
+    expected_rng = np.random.default_rng(seed + offset)
+    assert env.domain_seed_offset == offset
+    assert env.domain_seed_ == seed + offset
+    assert env.rng.bit_generator.state == expected_rng.bit_generator.state
+    if domain_seed_offset is None:
+        market_rng = env.model_dynamics.midprice_model.rng
+        assert env.rng.bit_generator.state != market_rng.bit_generator.state
+
+    samples = []
+    for _ in range(2):
+        _, info = env.reset()
+        expected = (
+            config.sample(expected_rng) if num_domains == 1
+            else config.sample_batch(expected_rng, env.num_trajectories, num_domains)
+        )
+        for key, value in expected.to_dict().items():
+            np.testing.assert_array_equal(info["domain_parameters"][key], value)
+        samples.append(info["domain_parameters"])
+
+    assert not np.array_equal(samples[0]["sigma"], samples[1]["sigma"])
+    _, replay = env.reset(seed=seed)
+    for key, value in samples[0].items():
+        np.testing.assert_array_equal(replay["domain_parameters"][key], value)
+
+
+def test_domain_stream_without_seed_remains_unseeded():
+    env = DomainRandomizedAMMEnvironment(
+        create_test_amm_env(), UniformDomainRandomizationConfig(),
+    )
+    assert env.seed_ is None
+    assert env.domain_seed_ is None
+    env.seed(None)
+    env.reset()
+    assert env.seed_ is None
+    assert env.domain_seed_ is None
+    assert env.model_dynamics.midprice_model.seed_ is None
+
+
+@pytest.mark.parametrize("seed", [0, 11])
+@pytest.mark.parametrize("num_domains", [1, 2])
+def test_default_domain_stream_separation_survives_ppo_reseeding(seed, num_domains):
+    env = DomainRandomizedAMMEnvironment(
+        create_test_amm_env(seed=99), UniformDomainRandomizationConfig(),
+        seed=99, num_domains=num_domains,
+    )
+    train_env = StructuredMultiDiscreteVecEnv(
+        StableBaselinesAMMEnvironment(env), tau=5,
+    )
+    model = PPO(
+        "MlpPolicy", train_env, n_steps=5, batch_size=10,
+        n_epochs=1, verbose=0, seed=seed,
+    )
+    snapshots = []
+
+    # Check PPO construction first, then replay and replace its environment seed.
+    for index, current_seed in enumerate([seed, seed, seed + 1]):
+        if index:
+            model.set_random_seed(current_seed)
+        domain_seed = current_seed + DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET
+        assert env.seed_ == current_seed
+        assert env.domain_seed_ == domain_seed
+        expected_domain_rng = np.random.default_rng(domain_seed)
+        assert env.rng.bit_generator.state == expected_domain_rng.bit_generator.state
+        md = env.model_dynamics
+        market_rngs = [
+            md.midprice_model.rng, md.arrival_model.rng,
+            md.price_impact_model.rng, md.rng,
+        ]
+        for offset, rng in enumerate(market_rngs):
+            expected = np.random.default_rng(current_seed + offset)
+            assert rng.bit_generator.state == expected.bit_generator.state
+            assert rng.bit_generator.state != env.rng.bit_generator.state
+
+        train_env.reset()
+        snapshots.append((
+            env.last_domain_parameters.to_dict(),
+            np.stack([rng.uniform(size=4) for rng in market_rngs]),
+        ))
+
+    for key, value in snapshots[0][0].items():
+        np.testing.assert_array_equal(snapshots[1][0][key], value)
+    np.testing.assert_array_equal(snapshots[0][1], snapshots[1][1])
+    assert not np.array_equal(snapshots[0][0]["sigma"], snapshots[2][0]["sigma"])
+    assert not np.array_equal(snapshots[0][1], snapshots[2][1])
+    train_env.close()
 
 
 def test_script_domain_randomization_seed_offset_survives_external_seed_calls():

@@ -55,6 +55,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (  # noqa: E402
     StableBaselinesAMMEnvironment,
 )
 from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
+    DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     DomainParameters,
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
@@ -75,7 +76,6 @@ from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
-DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET = 10_000
 FORCED_HOLD_ACTION = np.array([0.0, 1.0, 1.0], dtype=np.float32)
 AGENT_DECISION_DIAGNOSTIC_COLUMNS = (
     "agent_decision_stride",
