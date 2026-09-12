@@ -5,6 +5,7 @@ import csv
 import json
 import sys
 from dataclasses import dataclass
+from itertools import product
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -70,6 +71,11 @@ GAP_COLUMNS = {
     "domain_randomized_vs_cash": (
         "domain_randomized_vs_cash_mean_running_inventory_objective_gap"
     ),
+}
+GAP_BASELINE_POLICIES = {
+    "domain_randomized_vs_nominal": "nominal_ppo",
+    "domain_randomized_vs_periodic_rebalance": "periodic_rebalance",
+    "domain_randomized_vs_cash": "cash",
 }
 SET_METRICS = {
     "mean_of_regime_mean_running_inventory_objective": np.mean,
@@ -234,6 +240,65 @@ def _read_result_rows(result_path: Path) -> list[dict]:
     return rows
 
 
+def _configured_run_layout(config: dict, result_path: Path) -> tuple[set, int]:
+    config_path = result_path.parent / CONFIG_FILENAME
+    expected_keys = set()
+    for evaluation_set in ("in_distribution", "stress"):
+        axes = []
+        for parameter in ("sigma", "arrival_rate"):
+            name = f"eval_{evaluation_set}_{parameter}_values"
+            if name not in config:
+                raise ValueError(f"missing required {name} in {config_path}")
+            values = config[name]
+            if not isinstance(values, list) or not values or any(
+                isinstance(value, bool) or not isinstance(value, (int, float))
+                for value in values
+            ):
+                raise ValueError(
+                    f"{name} in {config_path} must be a nonempty "
+                    "one-dimensional list of numbers"
+                )
+            try:
+                axis = np.asarray(values, dtype=np.float64)
+            except (TypeError, ValueError, OverflowError) as exc:
+                raise ValueError(f"invalid {name} in {config_path}") from exc
+            if not np.all(np.isfinite(axis)) or np.any(axis < 0.0):
+                raise ValueError(
+                    f"{name} in {config_path} must contain only finite, "
+                    "non-negative values"
+                )
+            if np.unique(axis).size != axis.size:
+                raise ValueError(
+                    f"{name} in {config_path} must not contain duplicate values"
+                )
+            axes.append(axis.tolist())
+        expected_keys.update(product([evaluation_set], EXPECTED_POLICIES, *axes))
+
+    expected_path_count = 1
+    for name in ("n_eval_episodes", "num_trajectories"):
+        if name not in config:
+            raise ValueError(f"missing required {name} in {config_path}")
+        value = config[name]
+        if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+            raise ValueError(f"{name} in {config_path} must be a positive integer")
+        expected_path_count *= value
+    return expected_keys, expected_path_count
+
+
+def _gap_from_policy_means(
+    rows_by_key: dict[tuple, dict], domain_key: tuple, comparison: str,
+) -> float:
+    evaluation_set, sigma, arrival_rate = domain_key
+    randomized_key = (evaluation_set, "domain_randomized_ppo", sigma, arrival_rate)
+    baseline_key = (
+        evaluation_set, GAP_BASELINE_POLICIES[comparison], sigma, arrival_rate,
+    )
+    return (
+        rows_by_key[randomized_key]["mean_running_inventory_objective"]
+        - rows_by_key[baseline_key]["mean_running_inventory_objective"]
+    )
+
+
 def _validate_run_rows(
     rows: list[dict],
     config: dict,
@@ -245,6 +310,7 @@ def _validate_run_rows(
         )
     training_seed = int(config["seed"])
     evaluation_seed = int(config["evaluation_seed"])
+    expected_keys, expected_path_count = _configured_run_layout(config, result_path)
     rows_by_key = {}
     domain_rows: dict[tuple, list[dict]] = {}
 
@@ -260,31 +326,37 @@ def _validate_run_rows(
         key = tuple(row[field] for field in REGIME_FIELDS)
         if key in rows_by_key:
             raise ValueError(f"duplicate regime-policy row {key} in {result_path}")
+        if row["n_evaluation_paths"] != expected_path_count:
+            raise ValueError(
+                f"mismatched evaluation path counts for {key} in {result_path}: "
+                f"got {row['n_evaluation_paths']}, expected {expected_path_count} "
+                "(n_eval_episodes * num_trajectories)"
+            )
         rows_by_key[key] = row
         domain_key = tuple(row[field] for field in DOMAIN_FIELDS)
         domain_rows.setdefault(domain_key, []).append(row)
 
-    evaluation_sets = {row["evaluation_set"] for row in rows}
-    if evaluation_sets != {"in_distribution", "stress"}:
+    actual_keys = set(rows_by_key)
+    if actual_keys != expected_keys:
         raise ValueError(
-            f"evaluation sets in {result_path} are {sorted(evaluation_sets)}, "
-            "expected ['in_distribution', 'stress']"
+            f"regime coverage in {result_path} does not match the expected "
+            f"configured grid; missing rows: {sorted(expected_keys - actual_keys)}; "
+            f"unexpected rows: {sorted(actual_keys - expected_keys)}"
         )
 
     for domain_key, grouped_rows in domain_rows.items():
-        policies = {row["policy"] for row in grouped_rows}
-        if policies != EXPECTED_POLICIES:
-            raise ValueError(
-                f"domain {domain_key} in {result_path} has policies "
-                f"{sorted(policies)}, expected {sorted(EXPECTED_POLICIES)}"
-            )
-        for gap_column in GAP_COLUMNS.values():
-            gap_values = {row[gap_column] for row in grouped_rows}
-            if len(gap_values) != 1:
-                raise ValueError(
-                    f"inconsistent {gap_column} for domain {domain_key} in "
-                    f"{result_path}"
-                )
+        for comparison, gap_column in GAP_COLUMNS.items():
+            expected_gap = _gap_from_policy_means(rows_by_key, domain_key, comparison)
+            for row in grouped_rows:
+                if not np.isclose(
+                    row[gap_column], expected_gap, rtol=1e-9, atol=1e-7,
+                ):
+                    raise ValueError(
+                        f"incorrect {gap_column} for domain {domain_key}, "
+                        f"policy {row['policy']} in {result_path}: "
+                        f"got {row[gap_column]}, expected {expected_gap} "
+                        "from policy means"
+                    )
 
     return rows_by_key
 
@@ -461,15 +533,10 @@ def aggregate_gaps(
     rows = []
     for domain_key in domain_keys:
         domain_mapping = dict(zip(DOMAIN_FIELDS, domain_key))
-        policy_key = (
-            domain_mapping["evaluation_set"],
-            "domain_randomized_ppo",
-            domain_mapping["sigma"],
-            domain_mapping["arrival_rate"],
-        )
-        for comparison, gap_column in GAP_COLUMNS.items():
+        for comparison in GAP_COLUMNS:
             values = np.array([
-                run.rows_by_key[policy_key][gap_column] for run in runs
+                _gap_from_policy_means(run.rows_by_key, domain_key, comparison)
+                for run in runs
             ])
             stats = summarize_seed_values(
                 values,

@@ -121,6 +121,17 @@ want a different replicate count. The aggregation job runs only after every
 array task succeeds and rejects duplicate seeds, incomplete grids, legacy
 schemas, or incompatible configurations.
 
+Each run must include its four evaluation-grid axes, `n_eval_episodes`, and
+`num_trajectories` in `config.json`. Aggregation checks exact coverage of both
+Cartesian grids for all four policies, and requires every row's evaluation path
+count to equal `n_eval_episodes * num_trajectories`. Missing or unexpected
+regimes are rejected even if every training seed has the same discrepancy.
+Saved policy gaps must agree with the differences between policy means
+(`rtol=1e-9`, `atol=1e-7`); inconsistent files are rejected, not repaired.
+Aggregate gap statistics are calculated directly from the policy means.
+Validation completes before aggregate outputs are created or overwritten, and
+source result files are never modified. Valid existing runs need no retraining.
+
 Each individual `evaluation_grid.csv` reports
 `evaluation_path_std_running_inventory_objective`, which measures variation
 over evaluation paths for one learned network. The aggregate artifacts report

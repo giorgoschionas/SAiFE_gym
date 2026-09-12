@@ -6,6 +6,7 @@ import numpy as np
 import pytest
 
 from experiments.aggregate_domain_randomized_seed_sweep import (
+    GAP_COLUMNS,
     aggregate_seed_sweep,
     discover_seed_runs,
     parse_args,
@@ -23,6 +24,18 @@ POLICIES = (
     "periodic_rebalance",
     "cash",
 )
+GRID_AXES = {
+    "eval_in_distribution_sigma_values": [0.055],
+    "eval_in_distribution_arrival_rate_values": [125.0],
+    "eval_stress_sigma_values": [0.10],
+    "eval_stress_arrival_rate_values": [300.0],
+}
+MULTI_GRID_AXES = {
+    "eval_in_distribution_sigma_values": [0.0, 0.055],
+    "eval_in_distribution_arrival_rate_values": [100.0, 125.0],
+    "eval_stress_sigma_values": [0.10, 0.12],
+    "eval_stress_arrival_rate_values": [300.0, 400.0],
+}
 
 
 def _policy_values(seed_index: int, evaluation_set: str) -> dict[str, float]:
@@ -77,11 +90,14 @@ def _make_rows(
     evaluation_seed: int,
     seed_index: int,
     n_evaluation_paths: int,
+    grid_axes: dict,
 ) -> list[dict]:
     rows = []
     for evaluation_set, params in [
-        ("in_distribution", (0.055, 125.0)),
-        ("stress", (0.10, 300.0)),
+        (evaluation_set, (sigma, arrival_rate))
+        for evaluation_set in ("in_distribution", "stress")
+        for sigma in grid_axes[f"eval_{evaluation_set}_sigma_values"]
+        for arrival_rate in grid_axes[f"eval_{evaluation_set}_arrival_rate_values"]
     ]:
         values = _policy_values(seed_index, evaluation_set)
         gaps = {
@@ -131,6 +147,7 @@ def _write_seed_run(
     drop_last_row: bool = False,
     legacy_schema: bool = False,
     missing_behavior_schema: bool = False,
+    grid_axes: dict | None = None,
 ) -> Path:
     run_dir = root / directory_name / "run_20260802_000000"
     run_dir.mkdir(parents=True)
@@ -141,6 +158,8 @@ def _write_seed_run(
         "n_eval_episodes": 2,
         "num_trajectories": 3,
         "evaluation_design": "test_fixture",
+        **GRID_AXES,
+        **(grid_axes or {}),
     }
     (run_dir / "config.json").write_text(json.dumps(config))
 
@@ -149,6 +168,7 @@ def _write_seed_run(
         evaluation_seed,
         seed_index,
         n_evaluation_paths,
+        config,
     )
     if drop_last_row:
         rows.pop()
@@ -162,16 +182,20 @@ def _write_seed_run(
         for row in rows:
             row.pop("never_deployed_fraction")
 
-    with (run_dir / "evaluation_grid.csv").open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
-        writer.writeheader()
-        writer.writerows(rows)
+    _write_csv(run_dir / "evaluation_grid.csv", rows)
     return run_dir
 
 
 def _read_csv(path: Path) -> list[dict]:
     with path.open(newline="") as f:
         return list(csv.DictReader(f))
+
+
+def _write_csv(path: Path, rows: list[dict]) -> None:
+    with path.open("w", newline="") as f:
+        writer = csv.DictWriter(f, fieldnames=list(rows[0]))
+        writer.writeheader()
+        writer.writerows(rows)
 
 
 def test_aggregator_parser_defaults():
@@ -333,6 +357,11 @@ def test_seed_sweep_aggregation_reports_training_and_path_variation(tmp_path):
     ).read_text() == (
         second_output / "training_seed_behavior_summary.csv"
     ).read_text()
+    assert (
+        first_output / "training_seed_gap_summary.csv"
+    ).read_text() == (
+        second_output / "training_seed_gap_summary.csv"
+    ).read_text()
 
 
 def test_discovery_rejects_duplicate_training_seeds(tmp_path):
@@ -383,3 +412,233 @@ def test_discovery_requires_at_least_two_training_seeds(tmp_path):
 
     with pytest.raises(ValueError, match="at least two"):
         discover_seed_runs(tmp_path)
+
+
+@pytest.mark.parametrize("episodes,trajectories", [(1, 1), (2, 3), (4, 5)])
+def test_aggregation_accepts_complete_multi_axis_grids(tmp_path, episodes, trajectories):
+    for seed_index, seed in enumerate([43, 44]):
+        run_dir = _write_seed_run(
+            tmp_path, f"seed_{seed}", seed, seed_index,
+            n_evaluation_paths=episodes * trajectories,
+            grid_axes=MULTI_GRID_AXES,
+        )
+        config_path = run_dir / "config.json"
+        config = json.loads(config_path.read_text())
+        config.update(n_eval_episodes=episodes, num_trajectories=trajectories)
+        config_path.write_text(json.dumps(config))
+
+    runs = discover_seed_runs(tmp_path)
+    for run in runs:
+        assert len(run.rows_by_key) == 32
+        assert ("in_distribution", "nominal_ppo", 0.0, 125.0) in run.rows_by_key
+        assert ("stress", "cash", 0.12, 400.0) in run.rows_by_key
+    output = aggregate_seed_sweep(parse_args([
+        "--input-dir", str(tmp_path), "--bootstrap-resamples", "20",
+    ]))
+    regime_rows = _read_csv(output / "training_seed_regime_summary.csv")
+    assert len(regime_rows) == 32
+    assert all(
+        int(row["n_evaluation_paths_per_training_seed"]) == episodes * trajectories
+        for row in regime_rows
+    )
+    assert len(_read_csv(output / "training_seed_gap_summary.csv")) == 24
+
+
+@pytest.mark.parametrize("evaluation_set", ["in_distribution", "stress"])
+def test_discovery_rejects_same_missing_regime_in_every_seed(tmp_path, evaluation_set):
+    sigma = MULTI_GRID_AXES[f"eval_{evaluation_set}_sigma_values"][0]
+    arrival_rate = MULTI_GRID_AXES[f"eval_{evaluation_set}_arrival_rate_values"][0]
+    for seed_index, seed in enumerate([43, 44]):
+        run_dir = _write_seed_run(
+            tmp_path, f"seed_{seed}", seed, seed_index,
+            grid_axes=MULTI_GRID_AXES,
+        )
+        path = run_dir / "evaluation_grid.csv"
+        rows = [
+            row for row in _read_csv(path)
+            if not (
+                row["evaluation_set"] == evaluation_set
+                and float(row["sigma"]) == sigma
+                and float(row["arrival_rate"]) == arrival_rate
+            )
+        ]
+        _write_csv(path, rows)
+
+    with pytest.raises(ValueError, match="missing rows") as error:
+        discover_seed_runs(tmp_path)
+    assert "seed_43" in str(error.value)
+    assert str((evaluation_set, "cash", sigma, arrival_rate)) in str(error.value)
+
+
+@pytest.mark.parametrize("duplicate", [False, True])
+def test_discovery_rejects_unexpected_or_duplicate_rows(tmp_path, duplicate):
+    run_dir = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    _write_seed_run(tmp_path, "seed_44", 44, 1)
+    path = run_dir / "evaluation_grid.csv"
+    rows = _read_csv(path)
+    extra_rows = [dict(row) for row in rows[:4]]
+    if not duplicate:
+        for row in extra_rows:
+            row["sigma"] = 0.056
+    _write_csv(path, rows + extra_rows)
+
+    message = "duplicate regime-policy row" if duplicate else "unexpected rows"
+    with pytest.raises(ValueError, match=message) as error:
+        discover_seed_runs(tmp_path)
+    assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize("field", [*GRID_AXES, "n_eval_episodes", "num_trajectories"])
+def test_discovery_requires_grid_and_path_count_configuration(tmp_path, field):
+    run_dir = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    path = run_dir / "config.json"
+    config = json.loads(path.read_text())
+    del config[field]
+    path.write_text(json.dumps(config))
+
+    with pytest.raises(ValueError, match=f"missing required {field}") as error:
+        discover_seed_runs(tmp_path)
+    assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize("field", GRID_AXES)
+@pytest.mark.parametrize("value", [
+    None, [], 0.055, [[0.055]], [0.055, 0.055], [-0.1],
+    [float("inf")], [float("nan")], ["0.055"], [True], [10**400],
+])
+def test_discovery_rejects_malformed_grid_axes(tmp_path, field, value):
+    run_dir = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    path = run_dir / "config.json"
+    config = json.loads(path.read_text())
+    config[field] = value
+    path.write_text(json.dumps(config))
+
+    with pytest.raises(ValueError, match=field) as error:
+        discover_seed_runs(tmp_path)
+    assert str(path) in str(error.value)
+
+
+@pytest.mark.parametrize("field", ["n_eval_episodes", "num_trajectories"])
+@pytest.mark.parametrize("value", [None, 0, -1, 1.5, 2.0, True, "2"])
+def test_discovery_requires_positive_integer_path_configuration(tmp_path, field, value):
+    run_dir = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    path = run_dir / "config.json"
+    config = json.loads(path.read_text())
+    config[field] = value
+    path.write_text(json.dumps(config))
+
+    with pytest.raises(ValueError, match=f"{field}.*positive integer"):
+        discover_seed_runs(tmp_path)
+
+
+def test_discovery_rejects_same_incorrect_path_counts_in_every_seed(tmp_path):
+    for seed_index, seed in enumerate([43, 44]):
+        _write_seed_run(
+            tmp_path, f"seed_{seed}", seed, seed_index, n_evaluation_paths=7,
+        )
+
+    with pytest.raises(ValueError, match="got 7, expected 6"):
+        discover_seed_runs(tmp_path)
+
+
+@pytest.mark.parametrize("comparison", GAP_COLUMNS)
+@pytest.mark.parametrize("all_policies", [False, True])
+def test_discovery_verifies_every_saved_gap_against_policy_means(
+    tmp_path, comparison, all_policies,
+):
+    gap_column = GAP_COLUMNS[comparison]
+    for seed_index, seed in enumerate([43, 44]):
+        run_dir = _write_seed_run(tmp_path, f"seed_{seed}", seed, seed_index)
+        path = run_dir / "evaluation_grid.csv"
+        rows = _read_csv(path)
+        for row in rows:
+            if row["evaluation_set"] == "in_distribution" and (
+                all_policies or row["policy"] == "nominal_ppo"
+            ):
+                row[gap_column] = float(row[gap_column]) + 1.0
+        _write_csv(path, rows)
+
+    with pytest.raises(ValueError, match=f"incorrect {gap_column}") as error:
+        discover_seed_runs(tmp_path)
+    assert "seed_43" in str(error.value)
+    assert "expected" in str(error.value)
+    assert "from policy means" in str(error.value)
+
+
+@pytest.mark.parametrize("comparison,baseline", [
+    ("domain_randomized_vs_nominal", "nominal_ppo"),
+    ("domain_randomized_vs_periodic_rebalance", "periodic_rebalance"),
+    ("domain_randomized_vs_cash", "cash"),
+])
+def test_aggregation_tolerates_rounding_but_computes_gaps_from_policy_means(
+    tmp_path, comparison, baseline,
+):
+    originals = {}
+    for seed_index, seed in enumerate([43, 44]):
+        run_dir = _write_seed_run(tmp_path, f"seed_{seed}", seed, seed_index)
+        path = run_dir / "evaluation_grid.csv"
+        rows = _read_csv(path)
+        for index, row in enumerate(rows):
+            column = GAP_COLUMNS[comparison]
+            row[column] = float(row[column]) + (index + 1) * 1e-9
+        _write_csv(path, rows)
+        originals[path] = path.read_bytes()
+
+    output = aggregate_seed_sweep(parse_args([
+        "--input-dir", str(tmp_path), "--bootstrap-resamples", "20",
+    ]))
+    gaps = _read_csv(output / "training_seed_gap_summary.csv")
+    for evaluation_set in ("in_distribution", "stress"):
+        values = [_policy_values(index, evaluation_set) for index in (0, 1)]
+        expected = np.mean([
+            value["domain_randomized_ppo"] - value[baseline] for value in values
+        ])
+        actual = next(
+            row for row in gaps
+            if row["comparison"] == comparison
+            and row["evaluation_set"] == evaluation_set
+        )
+        assert float(actual["mean_gap_across_training_seeds"]) == expected
+    for path, contents in originals.items():
+        assert path.read_bytes() == contents
+
+
+@pytest.mark.parametrize("existing_output", [False, True])
+@pytest.mark.parametrize("invalid_artifact", ["grid", "gap"])
+def test_invalid_runs_do_not_create_or_overwrite_outputs(
+    tmp_path, existing_output, invalid_artifact,
+):
+    run_dir = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    _write_seed_run(tmp_path, "seed_44", 44, 1)
+    if invalid_artifact == "grid":
+        path = run_dir / "config.json"
+        config = json.loads(path.read_text())
+        config["eval_stress_sigma_values"].append(0.12)
+        path.write_text(json.dumps(config))
+    else:
+        path = run_dir / "evaluation_grid.csv"
+        rows = _read_csv(path)
+        for row in rows:
+            row[GAP_COLUMNS["domain_randomized_vs_nominal"]] = 999.0
+        _write_csv(path, rows)
+    original = path.read_bytes()
+    output = tmp_path / "aggregate"
+    filenames = (
+        "training_seed_regime_summary.csv", "training_seed_gap_summary.csv",
+        "training_seed_behavior_summary.csv", "training_seed_summary.json",
+    )
+    if existing_output:
+        output.mkdir()
+        for filename in filenames:
+            (output / filename).write_text("existing output")
+
+    with pytest.raises(ValueError):
+        aggregate_seed_sweep(parse_args(["--input-dir", str(tmp_path)]))
+
+    assert path.read_bytes() == original
+    if existing_output:
+        assert {path.name for path in output.iterdir()} == set(filenames)
+        for filename in filenames:
+            assert (output / filename).read_text() == "existing output"
+    else:
+        assert not output.exists()
