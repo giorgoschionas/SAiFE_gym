@@ -342,7 +342,25 @@ def _parameters_within_training_support(
 
 
 def validate_evaluation_configuration(args: argparse.Namespace) -> None:
-    """Validate that diagnostic grids match their declared semantics."""
+    """Validate evaluation settings and diagnostic grids before training."""
+    for name, minimum in [
+        ("n_eval_episodes", 1),
+        ("periodic_width", 1),
+        ("periodic_rebalance_every", 1),
+        ("convergence_eval_every_rollouts", 0),
+        ("convergence_n_eval_episodes", 1),
+    ]:
+        value = getattr(args, name)
+        if isinstance(value, bool) or not isinstance(value, (int, np.integer)):
+            raise ValueError(f"{name} must be an integer, got {value!r}")
+        if value < minimum:
+            raise ValueError(f"{name} must be >= {minimum}, got {value}")
+    if args.periodic_width > args.tau:
+        raise ValueError(
+            "periodic_width must satisfy 1 <= periodic_width <= tau; "
+            f"got periodic_width={args.periodic_width}, tau={args.tau}"
+        )
+
     if isinstance(args.evaluation_seed, bool) or not isinstance(
         args.evaluation_seed,
         (int, np.integer),

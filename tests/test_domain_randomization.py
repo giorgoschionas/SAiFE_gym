@@ -1,9 +1,13 @@
+import json
+import sys
 from argparse import Namespace
+from unittest.mock import Mock
 
 import numpy as np
 import pytest
 from stable_baselines3 import PPO
 
+from experiments import train_robust_lp_agent as training
 from experiments.helpers import INITIAL_WEALTH
 from experiments.policy_behavior_diagnostics import (
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
@@ -888,6 +892,123 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
         ("in_distribution", DomainParameters(0.030, 300.0)),
         ("stress", DomainParameters(0.08, 450.0)),
     ]
+
+
+@pytest.mark.parametrize("argv,error", [
+    (["--n-eval-episodes", "0"], "n_eval_episodes"),
+    (["--n-eval-episodes", "-1"], "n_eval_episodes"),
+    (["--periodic-width", "0"], "periodic_width"),
+    (["--periodic-width", "-1"], "periodic_width"),
+    (["--periodic-width", "51"], "periodic_width"),
+    (["--tau", "20"], "periodic_width"),
+    (["--smoke-test", "--tau", "20"], "periodic_width"),
+    (["--periodic-rebalance-every", "0"], "periodic_rebalance_every"),
+    (["--periodic-rebalance-every", "-1"], "periodic_rebalance_every"),
+    (["--convergence-eval-every-rollouts", "-1"], "convergence_eval_every_rollouts"),
+    (["--convergence-n-eval-episodes", "0"], "convergence_n_eval_episodes"),
+    (["--convergence-n-eval-episodes", "-1"], "convergence_n_eval_episodes"),
+    (["--convergence-eval-every-rollouts", "0", "--convergence-n-eval-episodes", "0"],
+     "convergence_n_eval_episodes"),
+])
+def test_invalid_evaluation_settings_fail_before_directory_creation_or_training(
+    argv, error, monkeypatch, tmp_path,
+):
+    output_dir = tmp_path / "runs"
+    monkeypatch.setattr(sys, "argv", [
+        "train_robust_lp_agent.py", "--output-dir", str(output_dir), *argv,
+    ])
+    create_run = Mock(side_effect=AssertionError("run directory creation reached"))
+    train = Mock(side_effect=AssertionError("training reached"))
+    monkeypatch.setattr(training, "make_run_dir", create_run)
+    monkeypatch.setattr(training, "train_and_save", train)
+
+    with pytest.raises(ValueError, match=error):
+        training.main()
+
+    create_run.assert_not_called()
+    train.assert_not_called()
+    assert not output_dir.exists()
+
+
+@pytest.mark.parametrize("field", [
+    "n_eval_episodes", "periodic_width", "periodic_rebalance_every",
+    "convergence_eval_every_rollouts", "convergence_n_eval_episodes",
+])
+@pytest.mark.parametrize("value", [True, 1.5, 1.0, "1", None])
+def test_evaluation_settings_reject_nonintegers_without_coercion(field, value):
+    args = parse_args([])
+    setattr(args, field, value)
+
+    with pytest.raises(ValueError, match=f"{field} must be an integer"):
+        validate_evaluation_configuration(args)
+
+    assert getattr(args, field) is value
+
+
+def test_invalid_baseline_width_is_not_clipped():
+    args = parse_args(["--tau", "20"])
+    original = vars(args).copy()
+
+    with pytest.raises(ValueError, match="periodic_width=50, tau=20"):
+        validate_evaluation_configuration(args)
+
+    assert vars(args) == original
+
+
+@pytest.mark.parametrize("integer_type", [int, np.int64])
+@pytest.mark.parametrize("argv", [
+    [],
+    ["--tau", "1", "--periodic-width", "1"],
+    ["--tau", "20", "--periodic-width", "1"],
+    ["--tau", "20", "--periodic-width", "20"],
+    ["--n-eval-episodes", "1", "--periodic-rebalance-every", "1",
+     "--convergence-eval-every-rollouts", "0", "--convergence-n-eval-episodes", "1"],
+    ["--convergence-eval-every-rollouts", "1"],
+    ["--periodic-rebalance-every", "2000"],
+])
+def test_valid_evaluation_boundaries_are_preserved(argv, integer_type):
+    args = parse_args(argv)
+    for name in (
+        "n_eval_episodes", "periodic_width", "periodic_rebalance_every",
+        "convergence_eval_every_rollouts", "convergence_n_eval_episodes",
+    ):
+        setattr(args, name, integer_type(getattr(args, name)))
+    original = vars(args).copy()
+
+    validate_evaluation_configuration(args)
+
+    assert vars(args) == original
+
+
+@pytest.mark.parametrize("argv", [
+    [],
+    ["--tau", "1", "--tick-stride", "1", "--periodic-width", "1",
+     "--periodic-rebalance-every", "1", "--convergence-eval-every-rollouts", "0"],
+])
+def test_script_smoke_runs_with_valid_evaluation_settings(argv, monkeypatch, tmp_path):
+    output_dir = tmp_path / "smoke"
+    monkeypatch.setattr(sys, "argv", [
+        "train_robust_lp_agent.py", "--output-dir", str(output_dir),
+        "--smoke-test", "--decision-stride", "2", *argv,
+    ])
+
+    assert training.main() == 0
+
+    run_dirs = list(output_dir.iterdir())
+    assert len(run_dirs) == 1
+    run_dir = run_dirs[0]
+    config = json.loads((run_dir / "config.json").read_text())
+    requested = parse_args(argv)
+    assert config["n_eval_episodes"] == 1
+    assert config["periodic_width"] == requested.periodic_width
+    assert config["periodic_rebalance_every"] == requested.periodic_rebalance_every
+    assert config["convergence_eval_every_rollouts"] == requested.convergence_eval_every_rollouts
+    for filename in (
+        "domain_randomized_ppo.zip", "nominal_ppo.zip",
+        "domain_randomized_vecnormalize.pkl", "nominal_vecnormalize.pkl",
+        "evaluation_grid.csv", "summary.json",
+    ):
+        assert (run_dir / filename).is_file()
 
 
 def test_removed_generic_evaluation_cli_flags_are_rejected():
