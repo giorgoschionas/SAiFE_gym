@@ -44,12 +44,13 @@ GAS_COST_KEY = 'gas_cost'               # Fixed rebalancing cost in token1 units
 INITIAL_WEALTH_KEY = 'initial_wealth'   # LP's starting wealth before first deployment - shape: (num_trajectories,)
 
 # Derived observation features (computed from state, not stored in state dict)
-MISPRICING_KEY      = 'mispricing'       # asset_price - amm_price (= ASSET_PRICE - sqrt_price²)
+MISPRICING_KEY      = 'mispricing'       # (asset_price - amm_price) / asset_price
 LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
 LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
 
 BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset) — distance to nearest boundary
 POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
-
-
+HAS_POSITION_KEY = 'has_position'              # 1.0 when LP liquidity is deployed, else 0.0
+PORTFOLIO_VALUE_RATIO_KEY = 'portfolio_value_ratio'  # portfolio_value / initial_wealth
+UNCLAIMED_FEE_VALUE_RATIO_KEY = 'unclaimed_fee_value_ratio'  # unclaimed fee value / initial_wealth
 

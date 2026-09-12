@@ -37,6 +37,24 @@ class ArrivalModel(StochasticProcessModel):
         seed: int = None,
     ):
         super().__init__(min_value, max_value, step_size, terminal_time, initial_state, num_trajectories, seed)
+        self.set_episode_baseline_intensity(self.initial_vector_state)
+
+    def set_episode_baseline_intensity(self, intensity: np.ndarray) -> None:
+        """Set the trajectory-aligned baseline used for the current episode."""
+        episode_intensity = np.asarray(intensity, dtype=np.float64)
+        expected_shape = (self.num_trajectories, 2)
+        if episode_intensity.shape != expected_shape:
+            raise ValueError(
+                "episode baseline intensity must have shape "
+                f"{expected_shape}, got {episode_intensity.shape}"
+            )
+        if not np.all(np.isfinite(episode_intensity)):
+            raise ValueError(
+                "episode baseline intensity must contain only finite values"
+            )
+        if np.any(episode_intensity < 0.0):
+            raise ValueError("episode baseline intensity must be non-negative")
+        self.episode_baseline_intensity = episode_intensity.copy()
 
     @abc.abstractmethod
     def get_arrivals(self) -> np.ndarray:
@@ -102,7 +120,7 @@ class PoissonArrivalModel(ArrivalModel):
 
     def reset(self):
         """Reset internal state to constant intensity."""
-        self.current_state = np.ones((self.num_trajectories, 2)) * self.intensity
+        self.current_state = self.episode_baseline_intensity.copy()
 
 
 class PoissonLinearArrivalModel(ArrivalModel):
@@ -215,7 +233,7 @@ class PoissonLinearArrivalModel(ArrivalModel):
         sign_multiplier = np.array([-1.0, 1.0])
 
         # Compute linear part: a1 + a2*L +/- a3*(S-Z)
-        linear_part = (self.alpha[1] + self.alpha[2] * L_expanded
+        linear_part = (self.episode_baseline_intensity + self.alpha[2] * L_expanded
                        + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
 
         # Apply floor at minimum intensity
@@ -236,7 +254,7 @@ class PoissonLinearArrivalModel(ArrivalModel):
 
     def reset(self):
         """Reset internal state to baseline intensity (α₁)."""
-        self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
+        self.current_state = self.episode_baseline_intensity.copy()
 
 
 class LiquidityKernelArrivalModel(ArrivalModel):
@@ -392,7 +410,11 @@ class LiquidityKernelArrivalModel(ArrivalModel):
         arb = np.stack([arb_sell, arb_buy], axis=1)            # (N, 2)
 
         # Linear intensity: alpha_1 + alpha_2 * weighted_liq + arb
-        linear_part = self.alpha[1] + self.alpha[2] * weighted_liq + arb  # (N, 2)
+        linear_part = (
+            self.episode_baseline_intensity
+            + self.alpha[2] * weighted_liq
+            + arb
+        )  # (N, 2)
 
         # Apply floor
         self.current_state = np.maximum(self.alpha[0], linear_part)  # (N, 2)
@@ -414,7 +436,7 @@ class LiquidityKernelArrivalModel(ArrivalModel):
 
     def reset(self):
         """Reset internal state to baseline intensity (alpha_1)."""
-        self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
+        self.current_state = self.episode_baseline_intensity.copy()
 
 
 class PoissonNonLinearArrivalModel(ArrivalModel):
@@ -499,7 +521,7 @@ class PoissonNonLinearArrivalModel(ArrivalModel):
         sign_multiplier = np.array([-1.0, 1.0])
 
         # Compute linear part: a1 + a2*L +/- a3*(S-Z)
-        linear_part = (self.alpha[1] + self.alpha[2] * L_expanded
+        linear_part = (self.episode_baseline_intensity + self.alpha[2] * L_expanded
                        + self.alpha[3] * sign_multiplier * mispricing)  # (N, 2)
 
         # Apply floor at minimum intensity
@@ -520,4 +542,4 @@ class PoissonNonLinearArrivalModel(ArrivalModel):
 
     def reset(self):
         """Reset internal state to baseline intensity (α₁)."""
-        self.current_state = np.ones((self.num_trajectories, 2)) * self.alpha[1]
+        self.current_state = self.episode_baseline_intensity.copy()

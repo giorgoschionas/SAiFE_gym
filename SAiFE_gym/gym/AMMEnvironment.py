@@ -69,7 +69,7 @@ class AMMEnvironment(gymnasium.Env):
         self.model_dynamics.state = {k: v.copy() for k, v in self._initial_state.items()}
 
         # Initialize random number generator
-        if seed:
+        if seed is not None:
             self.seed(seed)
         self.rng = np.random.default_rng(seed)
 
@@ -213,10 +213,20 @@ class AMMEnvironment(gymnasium.Env):
         self.rng = np.random.default_rng(seed)
         # Seed stochastic processes via model dynamics
         if self.model_dynamics:
+            self.model_dynamics.rng = np.random.default_rng(
+                seed + 3 if seed is not None else None
+            )
+            self.model_dynamics.seed = seed + 3 if seed is not None else None
             if self.model_dynamics.midprice_model:
                 self.model_dynamics.midprice_model.seed(seed)
             if self.model_dynamics.arrival_model:
-                self.model_dynamics.arrival_model.seed(seed + 1 if seed else None)
+                self.model_dynamics.arrival_model.seed(
+                    seed + 1 if seed is not None else None
+                )
+            if self.model_dynamics.price_impact_model:
+                self.model_dynamics.price_impact_model.seed(
+                    seed + 2 if seed is not None else None
+                )
 
     def reset(self, seed: int = None, options: dict = None):
         """Reset the environment to initial state.

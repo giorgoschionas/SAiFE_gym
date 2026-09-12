@@ -1,9 +1,9 @@
 import abc
-from typing import Union
+from typing import Optional, Union
 
 import numpy as np
 from SAiFE_gym.gym.index_names import (
-    PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY, TIME_KEY,
+    ASSET_PRICE_KEY, PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY, TIME_KEY,
 )
 
 

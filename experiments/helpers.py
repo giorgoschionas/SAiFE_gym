@@ -37,7 +37,7 @@ N_STEPS = 200
 INITIAL_PRICE = 100.0
 VOLATILITY = 2.0
 FEE_TIER = 0.003
-NUM_TICKS = 5000
+NUM_TICKS = 7000
 LIQUIDITY_SCALE = 1e6
 INITIAL_WEALTH = 1e6
 SEED = 42
@@ -518,7 +518,7 @@ def create_policy_behavior_plot(
     vec_normalize: VecNormalize,
     tau: int,
     n_points: int = 101,
-    mispricing_range: tuple = (-5.0, 5.0),
+    mispricing_range: tuple = (-0.05, 0.05),
     fixed_lp_liquidity: float = 2e8,
     fixed_time: float = 0.5,
     gas_cost: float = 0.0,
@@ -541,12 +541,12 @@ def create_policy_behavior_plot(
         0: MISPRICING_KEY       ← swept
         1: LP_LOWER_OFFSET_KEY
         2: LP_UPPER_OFFSET_KEY
-        3: LP_LIQUIDITY_KEY
-        4: LP_COLLECTED_FEES0_KEY
-        5: LP_COLLECTED_FEES1_KEY
-        6: ASSET_PRICE_KEY
-        7: TIME_KEY
-        8: GAS_COST_KEY
+        3: BOUNDARY_PROXIMITY_KEY
+        4: POSITION_WIDTH_KEY
+        5: TIME_KEY
+        6: HAS_POSITION_KEY
+        7: PORTFOLIO_VALUE_RATIO_KEY
+        8: UNCLAIMED_FEE_VALUE_RATIO_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -554,12 +554,12 @@ def create_policy_behavior_plot(
         mispricings,
         np.full(n_points, float(tau)),
         np.full(n_points, float(tau)),
-        np.full(n_points, fixed_lp_liquidity),
-        np.zeros(n_points),
-        np.zeros(n_points),
-        np.full(n_points, INITIAL_PRICE),
+        np.full(n_points, float(tau)),
+        np.full(n_points, float(2 * tau)),
         np.full(n_points, fixed_time),
-        np.full(n_points, gas_cost),
+        np.ones(n_points),
+        np.ones(n_points),
+        np.zeros(n_points),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -583,7 +583,7 @@ def create_policy_behavior_plot(
                    color=AGENT_COLORS["uniform"], linestyle="--", linewidth=1.5,
                    label=AGENT_LABELS["uniform"])
         ax.axvline(0, color="gray", linestyle=":", linewidth=0.8)
-        ax.set_xlabel("Mispricing (asset_price − AMM_price)")
+        ax.set_xlabel("Relative mispricing ((asset_price - AMM_price) / asset_price)")
         ax.set_ylabel(ylabel)
         ax.set_title(sub_title)
         ax.legend()
@@ -617,7 +617,7 @@ def create_time_behavior_plot(
     level) show whether the policy adapts its range width over time.
     """
     if mispricing_levels is None:
-        mispricing_levels = [-5.0, 0.0, 5.0]
+        mispricing_levels = [-0.05, 0.0, 0.05]
     time_vals  = np.linspace(0.0, TERMINAL_TIME, n_time_points)
     n_levels   = len(mispricing_levels)
     n_total    = n_levels * n_time_points
@@ -628,12 +628,12 @@ def create_time_behavior_plot(
         mispricing_rep,
         np.full(n_total, float(tau)),
         np.full(n_total, float(tau)),
-        np.full(n_total, fixed_lp_liquidity),
-        np.zeros(n_total),
-        np.zeros(n_total),
-        np.full(n_total, INITIAL_PRICE),
+        np.full(n_total, float(tau)),
+        np.full(n_total, float(2 * tau)),
         time_tiled,
-        np.full(n_total, gas_cost),
+        np.ones(n_total),
+        np.ones(n_total),
+        np.zeros(n_total),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
