@@ -1,6 +1,9 @@
+import csv
 import json
 import sys
 from argparse import Namespace
+from collections import Counter
+from itertools import product
 from unittest.mock import Mock
 
 import numpy as np
@@ -856,7 +859,7 @@ def test_evaluation_seed_is_independent_of_training_seed():
         validate_evaluation_configuration(invalid)
 
 
-def test_evaluation_regimes_separate_interpolation_and_stress_grids():
+def test_evaluation_regimes_cover_full_grid_with_four_groups():
     args = parse_args([])
 
     regimes = evaluation_regimes(args)
@@ -868,8 +871,19 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     assert len(in_distribution) == 9
     assert len(stress) == 4
     assert regimes[:9] == in_distribution
-    assert regimes[9:] == stress
-    assert len({regime.parameters for regime in regimes}) == 13
+    assert regimes[9:13] == stress
+    assert Counter(regime.evaluation_set for regime in regimes) == {
+        "in_distribution": 9, "stress": 4,
+        "sigma_only_stress": 6, "arrival_only_stress": 6,
+    }
+    expected = {
+        DomainParameters(sigma, arrival)
+        for sigma, arrival in product(
+            [0.015, 0.03, 0.045, 0.065, 0.08], [150., 250., 300., 350., 450.],
+        )
+    }
+    assert len(regimes) == 25
+    assert {regime.parameters for regime in regimes} == expected
     assert in_distribution[0].parameters == DomainParameters(0.015, 250.0)
     assert in_distribution[-1].parameters == DomainParameters(0.045, 350.0)
     assert stress[0].parameters == DomainParameters(0.065, 150.0)
@@ -879,7 +893,24 @@ def test_evaluation_regimes_separate_interpolation_and_stress_grids():
     }
 
 
-def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
+def test_full_grid_preserves_original_regime_seed_mapping():
+    args = parse_args([])
+    regimes = evaluation_regimes(args)
+    original = list(product([.015, .03, .045], [250., 300., 350.]))
+    original += list(product([.065, .08], [150., 450.]))
+    by_params = {
+        (r.parameters.sigma, r.parameters.arrival_rate): evaluation_regime_seed(args, i)
+        for i, r in enumerate(regimes)
+    }
+    for i, params in enumerate(original):
+        assert by_params[params] == 100042 + 1000 * i
+    assert by_params[(.015, 150.)] == 113042
+    assert by_params[(.065, 250.)] == 119042
+    assert by_params[(.08, 350.)] == 124042
+    assert len(set(by_params.values())) == 25
+
+
+def test_smoke_overrides_keep_one_regime_in_each_of_four_evaluation_sets():
     args = parse_args(["--smoke-test"])
 
     apply_smoke_overrides(args)
@@ -891,6 +922,8 @@ def test_smoke_overrides_keep_one_regime_in_each_evaluation_set():
     ] == [
         ("in_distribution", DomainParameters(0.030, 300.0)),
         ("stress", DomainParameters(0.08, 450.0)),
+        ("arrival_only_stress", DomainParameters(0.030, 450.0)),
+        ("sigma_only_stress", DomainParameters(0.08, 300.0)),
     ]
 
 
@@ -998,6 +1031,7 @@ def test_script_smoke_runs_with_valid_evaluation_settings(argv, monkeypatch, tmp
     assert len(run_dirs) == 1
     run_dir = run_dirs[0]
     config = json.loads((run_dir / "config.json").read_text())
+    assert config["evaluation_grid_version"] == 2
     requested = parse_args(argv)
     assert config["n_eval_episodes"] == 1
     assert config["periodic_width"] == requested.periodic_width
@@ -1009,6 +1043,43 @@ def test_script_smoke_runs_with_valid_evaluation_settings(argv, monkeypatch, tmp
         "evaluation_grid.csv", "summary.json",
     ):
         assert (run_dir / filename).is_file()
+    with (run_dir / "evaluation_grid.csv").open() as handle:
+        rows = list(csv.DictReader(handle))
+    assert len(rows) == 16
+    assert Counter(row["evaluation_set"] for row in rows) == {
+        "in_distribution": 4, "stress": 4,
+        "sigma_only_stress": 4, "arrival_only_stress": 4,
+    }
+    summary = json.loads((run_dir / "summary.json").read_text())
+    for policy_summary in summary["policies"].values():
+        assert set(policy_summary) == {
+            "in_distribution", "stress", "sigma_only_stress", "arrival_only_stress",
+        }
+        assert all(group["num_regimes"] == 1 for group in policy_summary.values())
+
+
+def test_full_grid_training_smoke_sweep_can_be_aggregated(monkeypatch, tmp_path):
+    from experiments import aggregate_domain_randomized_seed_sweep as aggregation
+
+    for seed in [43, 44]:
+        monkeypatch.setattr(sys, "argv", [
+            "train_robust_lp_agent.py", "--smoke-test", "--decision-stride", "2",
+            "--seed", str(seed), "--output-dir", str(tmp_path / f"seed_{seed}"),
+            "--convergence-eval-every-rollouts", "0",
+        ])
+        assert training.main() == 0
+    output = aggregation.aggregate_seed_sweep(aggregation.parse_args([
+        "--input-dir", str(tmp_path), "--bootstrap-resamples", "20",
+    ]))
+    summary = json.loads((output / "training_seed_summary.json").read_text())
+    assert summary["training_seeds"] == [43, 44]
+    assert len(summary["policies"]) == 4
+    for policy_summary in summary["policies"].values():
+        assert set(policy_summary) == {
+            "in_distribution", "stress", "sigma_only_stress", "arrival_only_stress",
+        }
+    with (output / "training_seed_regime_summary.csv").open() as handle:
+        assert len(list(csv.DictReader(handle))) == 16
 
 
 def test_removed_generic_evaluation_cli_flags_are_rejected():
@@ -1246,6 +1317,8 @@ def test_summary_aggregates_each_evaluation_set_independently():
         for evaluation_set, values in [
             ("in_distribution", [1.0, 5.0]),
             ("stress", [-8.0, -2.0]),
+            ("sigma_only_stress", [-10.0, -4.0]),
+            ("arrival_only_stress", [3.0, 9.0]),
         ]
         for value in values
     ]
@@ -1284,7 +1357,14 @@ def test_summary_aggregates_each_evaluation_set_independently():
         summary["stress"]["maximum_regime_mean_running_inventory_objective"]
         == -2.0
     )
-    for evaluation_set in ["in_distribution", "stress"]:
+    for evaluation_set, expected_mean in [
+        ("in_distribution", 3.0), ("stress", -5.0),
+        ("sigma_only_stress", -7.0), ("arrival_only_stress", 6.0),
+    ]:
+        assert summary[evaluation_set]["num_regimes"] == 2
+        assert summary[evaluation_set][
+            "mean_of_regime_mean_running_inventory_objective"
+        ] == expected_mean
         assert summary[evaluation_set][
             "behavior_diagnostics_mean_across_regimes"
         ] == zero_behavior_diagnostics()

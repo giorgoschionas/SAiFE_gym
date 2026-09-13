@@ -84,9 +84,32 @@ Domain-randomized training uses one sampled domain per trajectory by default. Se
 `TRAIN_DOMAINS_PER_RESET=1` to restore a single shared domain, or choose any
 value from `1` through `NUM_TRAJECTORIES` for balanced grouped assignments.
 
-Evaluation is reported separately on an in-distribution interpolation grid and
-an out-of-distribution stress grid. Override their Cartesian axes independently
-with `EVAL_IN_DISTRIBUTION_SIGMA_VALUES`,
+Final evaluation uses the full Cartesian product of the combined volatility
+and arrival-rate lists. The defaults cover all 25 combinations of sigma
+`[0.015, 0.030, 0.045, 0.065, 0.08]` and arrival rate
+`[150.0, 250.0, 300.0, 350.0, 450.0]`. Each combination is evaluated once for
+nominal PPO, domain-randomized PPO, periodic rebalancing, and cash, producing
+100 rows per training seed in `evaluation_grid.csv`.
+
+Results and summaries distinguish four `evaluation_set` values, classified
+against the randomized training ranges (including their endpoints):
+
+| Evaluation set | Volatility | Arrival rate | Default regimes |
+|---|---|---|---:|
+| `in_distribution` | Inside | Inside | 9 |
+| `sigma_only_stress` | Outside | Inside | 6 |
+| `arrival_only_stress` | Inside | Outside | 6 |
+| `stress` | Outside | Outside | 4 |
+
+The original 13 regimes retain their order and evaluation seeds. The generator
+then appends in-distribution volatility crossed with stress arrivals, followed
+by stress volatility crossed with in-distribution arrivals, skipping duplicate
+combinations. With the default evaluation seed, the original regime seeds are
+100042–112042 in steps of 1000; the additions use 113042–124042. Configured axis
+order is significant for these seed assignments. Overlapping axis lists are
+deduplicated, and group labels depend on actual support, not the list names.
+
+Override the axis lists independently with `EVAL_IN_DISTRIBUTION_SIGMA_VALUES`,
 `EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES`,
 `EVAL_STRESS_SIGMA_VALUES`, and `EVAL_STRESS_ARRIVAL_RATE_VALUES`. Each
 variable is a space-separated list. Gas cost is fixed for the run via
@@ -99,8 +122,16 @@ sbatch --export=ALL,EVAL_STRESS_SIGMA_VALUES="0.065 0.08",NOMINAL_GAS_COST=2.0 \
 ```
 
 Every in-distribution value must lie within its corresponding training range,
-and every stress-grid tuple must have at least one value outside training
-support.
+and every tuple from the explicitly supplied stress axes must have at least
+one value outside training support. These existing constraints still apply
+before the cross combinations are added.
+
+The usual submission commands enable the full grid without additional flags.
+The training budget and nominal convergence checks are unchanged. Final
+evaluation covers 25 rather than 13 regimes, approximately 1.92 times as much
+final-evaluation work; this is not a multiplier for the entire job runtime.
+Smoke mode uses a full 2 × 2 grid with one regime in each group and 16 result
+rows.
 
 ## Seed sweep
 
@@ -122,9 +153,17 @@ array task succeeds and rejects duplicate seeds, incomplete grids, legacy
 schemas, or incompatible configurations.
 
 Each run must include its four evaluation-grid axes, `n_eval_episodes`, and
-`num_trajectories` in `config.json`. Aggregation checks exact coverage of both
-Cartesian grids for all four policies, and requires every row's evaluation path
-count to equal `n_eval_episodes * num_trajectories`. Missing or unexpected
+`num_trajectories` in `config.json`. New runs also record
+`evaluation_grid_version: 2` and the randomized training bounds; aggregation
+checks exact full-grid coverage and group labels for all four policies.
+Existing configurations without the version marker (or with version 1) retain
+the original two-grid interpretation and remain aggregatable. Unsupported
+versions are rejected. Keep old and new grid versions in separate sweep
+directories; aggregation rejects mixing them, and source results are not
+migrated or edited.
+
+Every row's evaluation path count must equal
+`n_eval_episodes * num_trajectories`. Missing or unexpected
 regimes are rejected even if every training seed has the same discrepancy.
 Saved policy gaps must agree with the differences between policy means
 (`rtol=1e-9`, `atol=1e-7`); inconsistent files are rejected, not repaired.
