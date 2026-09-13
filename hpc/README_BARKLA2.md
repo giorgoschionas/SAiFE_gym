@@ -133,6 +133,76 @@ final-evaluation work; this is not a multiplier for the entire job runtime.
 Smoke mode uses a full 2 × 2 grid with one regime in each group and 16 result
 rows.
 
+## Moderate-arrival seed sweep
+
+This experiment uses submission-time overrides for
+`hpc/sbatch_robust_lp_seed_sweep_cpu.sh`; the Python and launcher defaults remain
+as documented above. It trains on the following market parameters:
+
+| Parameter | Domain-randomized PPO | Nominal PPO |
+|---|---|---|
+| Volatility sigma | Uniform `[0.015, 0.045]` | `0.030` |
+| Baseline arrival alpha1 | Uniform `[300, 600]` | `450` |
+
+The randomized agent samples the two parameters independently. The nominal
+condition is the midpoint of both ranges and is also used for convergence
+validation. Each reset assigns one sampled domain per trajectory across the
+100 training trajectories.
+
+These ranges follow the periodic baseline's original-resolution results: mean
+total reward was `+32.13` at `(sigma=0.030, alpha1=450)`, `-10.80` at
+`(0.045, 300)`, and `+12.64` at `(0.045, 600)`. The independent confirmation at
+`(0.045, 450)` gave `+1.76`. These measurements motivate a training region that
+includes profitable and moderately negative conditions; they do not establish
+profitability at every point in the continuous region or guarantee PPO's
+performance. Reward is PnL minus the accumulated inventory penalty, with gas
+already included in PnL.
+
+Final evaluation crosses sigma `[0.015, 0.030, 0.045, 0.050]` with arrival
+`[250, 300, 450, 600, 800]`, giving a **4 x 5 heatmap**. Only sigma `0.050` is
+outside the volatility training range; arrivals `250` and `800` are outside
+the arrival training range. Arrival `800` tests extrapolation toward a more
+favorable market. The sigma `0.050` row was not measured in the preceding
+periodic baseline sweep.
+
+| Evaluation set | Conditions | Rows per seed (four policies) |
+|---|---:|---:|
+| `in_distribution` | 9 | 36 |
+| `sigma_only_stress` | 3 | 12 |
+| `arrival_only_stress` | 6 | 24 |
+| `stress` | 2 | 8 |
+| Total | 20 | 80 |
+
+From the HPC project root, with the full Cartesian evaluation update present,
+paste this single line to submit seeds 43 through 52:
+
+```bash
+mkdir -p logs && sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,N_STEPS=1000,DECISION_STRIDE=100,NUM_TRAJECTORIES=100,TRAIN_DOMAINS_PER_RESET=100,N_EVAL_EPISODES=10,EVALUATION_SEED=100042,TAU=50,ALPHA3=4000,INITIAL_WEALTH=1000,INVENTORY_PHI=0.4,NOMINAL_GAS_COST=2,PERIODIC_REBALANCE_EVERY=100,PERIODIC_WIDTH=50,NOMINAL_SIGMA=0.030,NOMINAL_ARRIVAL_RATE=450,TRAIN_SIGMA_MIN=0.015,TRAIN_SIGMA_MAX=0.045,TRAIN_ARRIVAL_RATE_MIN=300,TRAIN_ARRIVAL_RATE_MAX=600,EVAL_IN_DISTRIBUTION_SIGMA_VALUES="0.015 0.030 0.045",EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES="300 450 600",EVAL_STRESS_SIGMA_VALUES=0.050,EVAL_STRESS_ARRIVAL_RATE_VALUES="250 800",OUTPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m hpc/sbatch_robust_lp_seed_sweep_cpu.sh
+```
+
+Each policy retains a budget of 10 million simulator-equivalent steps: 100,000
+PPO decision timesteps with ten decisions per 1,000-step episode. The periodic
+baseline rebalances every 100 simulator steps. Initial wealth, gas, inventory
+penalty, action ranges, and alpha3 match the preceding experiment. Conclusions
+remain specific to this resolution; the earlier high-arrival diagnostics found
+material changes in reward when the simulator timestep was refined.
+
+The launcher saves runs under
+`experiments/results/barkla2_seed_sweep/moderate_arrivals_10m/seed_<seed>/run_<timestamp>/`.
+Use a different `OUTPUT_DIR` for a repeat sweep so aggregation does not encounter
+duplicate training seeds. After all ten array tasks finish successfully, run:
+
+```bash
+sbatch --export=ALL,INPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m,OUTPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m/aggregate hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
+```
+
+Check that each saved `config.json` contains the selected bounds, nominal
+parameters, and `evaluation_grid_version: 2`. Expect ten seed runs, each with
+80 rows in `evaluation_grid.csv` and 1,000 evaluation paths per row. Aggregation
+validates full coverage and computes paired randomized-minus-nominal reward
+differences across training seeds. Compare both PPO agents with periodic
+rebalancing and cash, and report reward and PnL separately.
+
 ## Seed sweep
 
 The default array trains ten independent PPO replicates (seeds 43 through 52)
