@@ -1,6 +1,6 @@
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It is Gymnasium-compatible for training RL agents to act as liquidity providers.
+SAiFE_gym is a vectorized Reinforcement Learning simulator for Automated Market Maker (AMM) trading with Concentrated Liquidity in DeFi protocols, like Uniswap v3. Dedicated Gymnasium and Stable-Baselines3 adapters support training RL liquidity providers.
 
 ## Development Setup
 
@@ -69,10 +69,11 @@ array_index = absolute_tick - tick_lower
 
 The environment follows a standard RL cycle with AMM-specific components:
 
-1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Main Gymnasium environment
+1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Native batched simulator
    - Manages episodes, state transitions via `step()` and `reset()`
    - Delegates AMM logic to **ModelDynamics**
-   - Handles observation/action/reward normalization
+   - Returns full-precision batched state, rewards, and termination flags
+   - Delegates library-specific interfaces to the Gymnasium and SB3 adapters
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
@@ -97,11 +98,40 @@ The environment follows a standard RL cycle with AMM-specific components:
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
 
+### Environment Interfaces
+
+- Preserve `AMMEnvironment`'s batched returns, including for one trajectory.
+  Its `action_space`/`single_action_space` describes one `(3,)` command;
+  `batched_action_space` describes `(num_trajectories, 3)` commands. Raw `step`
+  accepts `(3,)` only for one trajectory, plus existing batched commands.
+- `GymnasiumAMMEnvironment` in `gym/GymnasiumAMMEnvironment.py` adapts one
+  trajectory to `gymnasium.Env`: unbatched Dict observations, scalar reward,
+  boolean flags, and explicit reset. Apply standard Gymnasium wrappers here.
+- `GymnasiumAMMVectorEnv` in the same module adapts the native batch to
+  `gymnasium.vector.VectorEnv`. Use Gymnasium vector wrappers here. It exposes
+  single and batched spaces, masked info dictionaries, and next-step autoreset.
+  All trajectories reset together; a scalar seed seeds the shared RNG streams.
+  Seed lists and partial reset masks are unsupported. Use separate single
+  adapters with Gymnasium SyncVectorEnv/AsyncVectorEnv for independent resets.
+- Both Gymnasium adapters preserve the full Dict observation and return copies.
+  They accept raw or domain-randomized AMM environments and support no rendering.
+- `StableBaselinesAMMEnvironment` remains the SB3 adapter with the existing
+  float32 feature vector and same-step autoreset. Preserve this interface for
+  `experiments/train_robust_lp_agent.py`, including observation ordering,
+  normalization, and structured action mappings.
+- `DiscreteActionWrapper` is a native batched action converter; it does not
+  convert the raw simulator's returns into a single Gymnasium Env API.
+
 ### State Representation
 
 **Uniswap V3 State** (defined in `gym/index_names.py`):
 
-The state is a **dictionary** with the following keys:
+The state is a **dictionary** with 22 keys, all declared in the observation
+space. Tick indices remain int64 through reset and rebalance; `lp_ever_deployed`
+is boolean; the remaining fields use float64. The tables below group core keys.
+Raw scalar fields have shape `(num_trajectories,)`; the single Gymnasium adapter
+removes that dimension. Elapsed time has a nonnegative, unbounded observation
+space to accommodate roundoff at the configured terminal horizon.
 
 **Pool-level state:**
 | Key | Shape | Description |
@@ -122,11 +152,14 @@ The state is a **dictionary** with the following keys:
 | `LP_LIQUIDITY_KEY` | `(num_trajectories,)` | LP's position liquidity |
 | `LP_TICK_LOWER_KEY` | `(num_trajectories,)` | LP's position lower tick bound |
 | `LP_TICK_UPPER_KEY` | `(num_trajectories,)` | LP's position upper tick bound |
+| `LP_EVER_DEPLOYED_KEY` | `(num_trajectories,)` | Whether liquidity was previously deployed |
+| `LP_FEE_SNAPSHOT0_KEY` / `LP_FEE_SNAPSHOT1_KEY` | `(num_trajectories,)` | Fee entitlement at position entry |
+| `GAS_COST_KEY` / `INITIAL_WEALTH_KEY` | `(num_trajectories,)` | Episode rebalance cost and starting capital |
 
 **Market state:**
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `MARKET_MIDPRICE_KEY` | `(num_trajectories,)` | External market midprice |
+| `ASSET_PRICE_KEY` | `(num_trajectories,)` | External market midprice |
 | `TIME_KEY` | `(num_trajectories,)` | Current simulation time |
 
 **Per-tick array indexing** (applies to `liquidity_array`):

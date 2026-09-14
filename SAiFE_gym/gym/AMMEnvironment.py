@@ -1,5 +1,6 @@
 import gymnasium
 import numpy as np
+from gymnasium.vector.utils import batch_space
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
@@ -25,7 +26,16 @@ from SAiFE_gym.gym.simulation_core import (
 
 
 class AMMEnvironment(gymnasium.Env):
-    metadata = {"render.modes": ["human"]}
+    """Native batched simulator, including when ``num_trajectories == 1``.
+
+    Use GymnasiumAMMEnvironment or GymnasiumAMMVectorEnv with third-party
+    Gymnasium wrappers, and StableBaselinesAMMEnvironment for SB3 training.
+    Raw observations reference simulator state; the Gymnasium adapters copy it.
+    """
+
+    metadata = {"render_modes": []}
+    render_mode = None
+
     def __init__(
         self,
         terminal_time: float = 1.0,
@@ -61,8 +71,13 @@ class AMMEnvironment(gymnasium.Env):
 
         # Define observation and low-level command action spaces.
         # Use SAiFE_gym.wrappers for canonical discrete LP decision spaces.
-        self.observation_space = self._create_observation_space()
+        self.single_observation_space = self._create_single_observation_space()
+        self.observation_space = batch_space(
+            self.single_observation_space, self.num_trajectories
+        )
         self.action_space = self.model_dynamics.get_action_space()
+        self.single_action_space = self.action_space
+        self.batched_action_space = batch_space(self.action_space, self.num_trajectories)
 
         # Initialize state based on model dynamics type
         self._initial_state = self._initial_v3_state()
@@ -74,119 +89,42 @@ class AMMEnvironment(gymnasium.Env):
         self.rng = np.random.default_rng(seed)
 
 
-    def _create_observation_space(self) -> gymnasium.spaces.Space:
-        """
-        Create observation space based on model dynamics type.
-
-        Returns:
-            gym.spaces.Dict for Uniswap V3, Box for others
-        """
+    def _create_single_observation_space(self) -> gymnasium.spaces.Space:
+        """Describe one trajectory without reducing simulator precision."""
         if not isinstance(self.model_dynamics, UniswapV3ModelDynamics):
-            # Fallback for other dynamics types (legacy flat array)
-            return gymnasium.spaces.Box(low=-np.inf, high=np.inf, shape=(6,), dtype=np.float32)
+            return gymnasium.spaces.Box(
+                low=-np.inf, high=np.inf, shape=(6,), dtype=np.float64
+            )
 
-        num_ticks = self.model_dynamics.num_ticks
-
-        return gymnasium.spaces.Dict({
-            # Pool state (global liquidity)
-            POOL_SQRT_PRICE_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            POOL_CURRENT_TICK_KEY: gymnasium.spaces.Box(
-                low=-np.inf, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.int32
-            ),
-            POOL_LIQUIDITY_ARRAY_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories, num_ticks),
-                dtype=np.float32
-            ),
-
-            # Fee arrays (per-tick)
-            FEES0_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories, num_ticks),
-                dtype=np.float32
-            ),
-            FEES1_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories, num_ticks),
-                dtype=np.float32
-            ),
-
-            # LP state (agent's position)
-            LP_LIQUIDITY_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            LP_TICK_LOWER_KEY: gymnasium.spaces.Box(
-                low=-np.inf, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.int32
-            ),
-            LP_TICK_UPPER_KEY: gymnasium.spaces.Box(
-                low=-np.inf, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.int32
-            ),
-
-            # LP cumulative fee tracking
-            LP_COLLECTED_FEES0_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            LP_COLLECTED_FEES1_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-
-            # LP unclaimed fee bucket (accrued since last rebalance)
-            LP_UNCLAIMED_FEES0_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            LP_UNCLAIMED_FEES1_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-
-            # Market state
-            ASSET_PRICE_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            TIME_KEY: gymnasium.spaces.Box(
-                low=0.0, high=self.terminal_time,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-
-            # Derived observation features
-            PORTFOLIO_VALUE_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            LP_ALPHA_KEY: gymnasium.spaces.Box(
-                low=0.0, high=1.0,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-            LP_TOKEN0_AMOUNT_KEY: gymnasium.spaces.Box(
-                low=0.0, high=np.inf,
-                shape=(self.num_trajectories,),
-                dtype=np.float32
-            ),
-        })
+        # Elapsed time is unbounded here: repeated additions can exceed the
+        # nominal horizon by roundoff. Termination still uses the trading horizon.
+        scalar_keys = (
+            POOL_SQRT_PRICE_KEY, LP_LIQUIDITY_KEY,
+            LP_COLLECTED_FEES0_KEY, LP_COLLECTED_FEES1_KEY,
+            LP_UNCLAIMED_FEES0_KEY, LP_UNCLAIMED_FEES1_KEY,
+            LP_FEE_SNAPSHOT0_KEY, LP_FEE_SNAPSHOT1_KEY,
+            ASSET_PRICE_KEY, TIME_KEY, GAS_COST_KEY, INITIAL_WEALTH_KEY,
+            PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY,
+        )
+        spaces = {
+            key: gymnasium.spaces.Box(0.0, np.inf, shape=(), dtype=np.float64)
+            for key in scalar_keys
+        }
+        for key in (POOL_CURRENT_TICK_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY):
+            spaces[key] = gymnasium.spaces.Box(
+                -np.inf, np.inf, shape=(), dtype=np.int64
+            )
+        for key in (POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY):
+            spaces[key] = gymnasium.spaces.Box(
+                0.0, np.inf, shape=(self.model_dynamics.num_ticks,), dtype=np.float64
+            )
+        spaces[LP_ALPHA_KEY] = gymnasium.spaces.Box(
+            0.0, 1.0, shape=(), dtype=np.float64
+        )
+        spaces[LP_EVER_DEPLOYED_KEY] = gymnasium.spaces.Box(
+            0, 1, shape=(), dtype=np.bool_
+        )
+        return gymnasium.spaces.Dict(spaces)
 
     def _initial_v3_state(self) -> dict:
         """
@@ -232,7 +170,7 @@ class AMMEnvironment(gymnasium.Env):
         """Reset the environment to initial state.
 
         Returns:
-            (obs, info) per Gymnasium API.
+            (batched_obs, info); arrays keep their trajectory dimension.
         """
         if seed is not None:
             self.seed(seed)
@@ -255,13 +193,30 @@ class AMMEnvironment(gymnasium.Env):
 
 
     def step(self, action: np.ndarray):
-        """Execute one environment step.
+        """Execute one step across the trajectory batch.
+
+        Actions have shape ``(num_trajectories, 3)``. A ``(3,)`` command is
+        also accepted for a single trajectory. Legacy two-column batched
+        rebalance actions and ``None`` remain supported.
 
         Returns:
-            (obs, rewards, terminated, truncated, info) per Gymnasium API.
+            (obs, rewards, terminated, truncated, info), with batched arrays.
             terminated: episode reached its natural end (trading horizon elapsed).
             truncated: always False (no external time-limit truncation).
         """
+        if action is not None:
+            action = np.asarray(action)
+            if self.num_trajectories == 1 and action.shape == (3,):
+                action = action.reshape(1, 3)
+            if (
+                action.ndim != 2
+                or action.shape[0] != self.num_trajectories
+                or action.shape[1] not in (2, 3)
+            ):
+                raise ValueError(
+                    f"expected batched action shape ({self.num_trajectories}, 3) "
+                    f"(or legacy ({self.num_trajectories}, 2)), got {action.shape}"
+                )
         current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
 
         # Update state

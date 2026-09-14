@@ -1,8 +1,8 @@
 # SAiFE Gym
 
-A Gymnasium-compatible reinforcement learning environment for training
-liquidity provision (LP) agents in Uniswap v3 automated market makers with
-concentrated liquidity.
+A vectorized reinforcement learning simulator with Gymnasium and
+Stable-Baselines3 adapters for training liquidity provision (LP) agents in
+Uniswap v3 automated market makers with concentrated liquidity.
 
 ## Overview
 
@@ -174,6 +174,7 @@ SAiFE_gym/
 │   │   └── SbAgent.py
 │   ├── gym/
 │   │   ├── AMMEnvironment.py
+│   │   ├── GymnasiumAMMEnvironment.py
 │   │   ├── ModelDynamics.py
 │   │   ├── StableBaselinesAMMEnvironment.py
 │   │   ├── domain_randomization.py
@@ -202,6 +203,80 @@ SAiFE_gym/
 └── requirements.txt
 ```
 
+## Environment Interfaces
+
+Choose the interface that matches your rollout or training library:
+
+| Interface | Observations | Step returns | Episode reset |
+|-----------|--------------|--------------|---------------|
+| `AMMEnvironment` | Full batched state dictionary | Batched rewards and termination/truncation arrays | Explicit whole-batch reset |
+| `GymnasiumAMMEnvironment` | Full dictionary for one trajectory | Scalar reward and boolean termination/truncation flags | Explicit reset |
+| `GymnasiumAMMVectorEnv` | Full batched state dictionary | Gymnasium vector arrays and masked info dictionary | Next-step whole-batch autoreset |
+| `StableBaselinesAMMEnvironment` | Flat float32 features, nine by default | SB3 rewards, combined dones, and list of infos | Same-step whole-batch autoreset |
+
+The raw `AMMEnvironment` retains its batched API even with one trajectory.
+Its `gymnasium.Env` inheritance is retained for existing code; third-party
+Gymnasium wrappers should use the new adapters instead of wrapping it directly.
+`experiments/train_robust_lp_agent.py` continues to use the SB3 adapter with
+its existing feature order, structured actions, and normalization.
+
+For single-environment Gymnasium wrappers:
+
+```python
+import gymnasium as gym
+from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
+from SAiFE_gym.gym.GymnasiumAMMEnvironment import GymnasiumAMMEnvironment
+
+env = gym.wrappers.RecordEpisodeStatistics(
+    GymnasiumAMMEnvironment(AMMEnvironment(num_trajectories=1))
+)
+obs, info = env.reset(seed=7)
+obs, reward, terminated, truncated, info = env.step(env.action_space.sample())
+if terminated or truncated:
+    obs, info = env.reset()
+env.close()
+```
+
+The single adapter requires exactly one trajectory. Scalar state fields have
+shape `()`, while liquidity and fee arrays have shape `(num_ticks,)`. Actions
+have shape `(3,)`. Standard `FlattenObservation` and `TimeLimit` wrappers can
+also wrap this adapter.
+
+For Gymnasium vector wrappers over the native batch:
+
+```python
+import gymnasium as gym
+from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
+from SAiFE_gym.gym.GymnasiumAMMEnvironment import GymnasiumAMMVectorEnv
+
+envs = gym.wrappers.vector.RecordEpisodeStatistics(
+    GymnasiumAMMVectorEnv(AMMEnvironment(num_trajectories=8))
+)
+obs, info = envs.reset(seed=7)
+obs, rewards, terminated, truncated, info = envs.step(envs.action_space.sample())
+envs.close()
+```
+
+This vector adapter exposes `single_observation_space`, `single_action_space`,
+and batched `observation_space` and `action_space`. Its actions have shape
+`(num_envs, 3)`. Terminal observations are returned on the terminal step. The
+following `step()` resets the batch, ignores its actions, and returns zero
+rewards and false termination/truncation flags. This is Gymnasium's
+`AutoresetMode.NEXT_STEP`; the SB3 adapter keeps its existing same-step behavior.
+
+Both Gymnasium adapters accept an existing `DomainRandomizedAMMEnvironment`
+and copy observations and diagnostics so later steps cannot mutate previous
+results. The vector adapter includes Gymnasium presence masks for info fields,
+including nested domain parameters. Use `gym.wrappers.vector.DictInfoToList`
+if a consumer needs one info dictionary per trajectory.
+
+The native batch has shared RNG streams and a synchronized episode horizon.
+The vector adapter accepts one integer seed or `None`, and only whole-batch
+resets; per-trajectory seed lists and partial `reset_mask` values are rejected.
+For independent seeds or resets, construct separate single adapters using
+`gym.vector.SyncVectorEnv` or `gym.vector.AsyncVectorEnv`. Rendering is not
+implemented by these adapters.
+
 ## State Dictionary
 
 The raw environment observation is a dictionary of vectorized arrays. Core keys
@@ -217,6 +292,8 @@ are defined in `SAiFE_gym/gym/index_names.py`.
 | `lp_tick_lower` / `lp_tick_upper` | `(num_trajectories,)` | Active LP tick bounds |
 | `lp_collected_fees_0` / `lp_collected_fees_1` | `(num_trajectories,)` | Lifetime LP fees earned |
 | `lp_unclaimed_fees_0` / `lp_unclaimed_fees_1` | `(num_trajectories,)` | Fees accrued since current position entry |
+| `lp_fee_snapshot_0` / `lp_fee_snapshot_1` | `(num_trajectories,)` | Fee entitlement at position entry, used to exclude earlier fees |
+| `lp_ever_deployed` | `(num_trajectories,)` | Whether the trajectory has previously deployed LP liquidity |
 | `midprice` | `(num_trajectories,)` | External market price |
 | `time` | `(num_trajectories,)` | Current simulation time |
 | `gas_cost` | `(num_trajectories,)` | Fixed rebalance cost for the episode |
@@ -227,6 +304,12 @@ are defined in `SAiFE_gym/gym/index_names.py`.
 
 `sqrt_price` stores sqrt(P), following the Uniswap v3 convention. Convert with
 `price = sqrt_price ** 2`.
+
+The raw observation space declares all 22 keys. Tick indices use int64,
+`lp_ever_deployed` uses bool, and other fields use float64. The elapsed-time
+space is nonnegative and unbounded to accommodate floating-point accumulation;
+episodes still terminate at the configured trading horizon. Raw observations
+reference simulator state, so copy them when retaining snapshots.
 
 ## SB3 Observation Adapter
 
@@ -248,11 +331,16 @@ excluded from the default SB3 view.
 
 ## Action Spaces
 
-`AMMEnvironment.action_space` is the low-level simulator command space:
+`AMMEnvironment.action_space` (also `single_action_space`) is the low-level
+command space for one trajectory:
 
 ```text
 Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,), dtype=float32)
 ```
+
+Raw `step()` takes a `(num_trajectories, 3)` batch. Sample that batch using
+`env.batched_action_space.sample()`. For one trajectory, a `(3,)` action from
+`env.action_space.sample()` is also accepted, while returns remain batched.
 
 | Idx | Name | Range | Description |
 |-----|------|-------|-------------|
@@ -266,7 +354,8 @@ bounds, and enforces `lower_offset < upper_offset`.
 Use wrapper action spaces when training agents:
 
 - `DiscreteActionWrapper` exposes one hold action plus finite rebalance ranges
-  for raw Gymnasium use.
+  for the native batched simulator. It converts actions and retains raw batched
+  returns; it does not provide a standard single-environment Gymnasium API.
 - `DiscreteActionVecEnv` exposes the same table for SB3 `VecEnv` pipelines.
 - `StructuredMultiDiscreteVecEnv` exposes decoupled
   `[center_offset_id, half_width_id, hold_id]` action heads. With

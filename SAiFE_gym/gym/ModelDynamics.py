@@ -595,8 +595,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # --- Phase 3: Update LP state ---
         self.state[LP_LIQUIDITY_KEY] = new_L
-        self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
-        self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
+        self.state[LP_TICK_LOWER_KEY] = new_lower
+        self.state[LP_TICK_UPPER_KEY] = new_upper
         self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---

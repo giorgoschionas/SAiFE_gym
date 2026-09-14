@@ -51,7 +51,8 @@ class DiscreteActionWrapper(gymnasium.ActionWrapper):
     """Expose discrete hold/rebalance actions for a batched ``AMMEnvironment``.
 
     The wrapped environment still receives its native batched 3-column action:
-    ``[lower_offset, upper_offset, hold_flag]``.
+    ``[lower_offset, upper_offset, hold_flag]``. Returns retain the raw batched
+    API; this action converter is not a standard single-environment adapter.
     """
 
     def __init__(self, env: gymnasium.Env, tau: int, tick_stride: int = 1):
