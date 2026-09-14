@@ -366,17 +366,23 @@ class ArbitrageurAgent(Agent):
 
         if direction == 1:
             interval_indices = idx[:, None] + offsets[None, :]
-            capacities = state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices] * (
-                md.sqrt_grid[interval_indices + 1] - md.sqrt_grid[interval_indices]
-            )
         elif direction == -1:
             interval_indices = idx[:, None] - 1 - offsets[None, :]
-            capacities = state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices] * (
-                1.0 / md.sqrt_grid[interval_indices]
-                - 1.0 / md.sqrt_grid[interval_indices + 1]
-            )
         else:
             raise ValueError("direction must be -1 for sell or 1 for buy")
+
+        # NumPy gathers before masking, so padded intervals need safe indices.
+        interval_indices_safe = np.clip(interval_indices, 0, md.num_ticks - 1)
+        liquidity = state[POOL_LIQUIDITY_ARRAY_KEY][traj[:, None], interval_indices_safe]
+        if direction == 1:
+            capacities = liquidity * (
+                md.sqrt_grid[interval_indices_safe + 1] - md.sqrt_grid[interval_indices_safe]
+            )
+        else:
+            capacities = liquidity * (
+                1.0 / md.sqrt_grid[interval_indices_safe]
+                - 1.0 / md.sqrt_grid[interval_indices_safe + 1]
+            )
 
         crossed = offsets[None, :] < tick_moves[traj, None]
         amounts[traj] = np.sum(capacities * crossed, axis=1)

@@ -553,15 +553,17 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         moving_rows = exec_tick_move > 0
         if np.any(moving_rows):
             moving_fee_indices = fee_indices_matrix[moving_rows]
+            # NumPy gathers before masking, so padded intervals need safe indices.
+            moving_fee_indices_safe = np.clip(moving_fee_indices, 0, num_ticks - 1)
             moving_mask = fee_mask[moving_rows]
             moving_traj = exec_traj[moving_rows]
             moving_liquidity = (
-                liquidity_array[moving_traj[:, None], moving_fee_indices]
+                liquidity_array[moving_traj[:, None], moving_fee_indices_safe]
                 * moving_mask
             )
             moving_capacities = self._interval_capacity(
                 moving_liquidity,
-                moving_fee_indices,
+                moving_fee_indices_safe,
                 sqrt_grid,
                 direction,
             ) * moving_mask

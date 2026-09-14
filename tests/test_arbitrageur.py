@@ -149,6 +149,46 @@ class TestSpeedControlArbitrageurAgent:
         assert action[0, 0] == pytest.approx(25.0)
 
 
+@pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+@pytest.mark.parametrize("max_ticks", [None, 3], ids=["unlimited", "limited"])
+def test_arbitrageur_boundary_order_sizes_and_speeds(direction, max_ticks):
+    env, state = _make_env(num_trajectories=4)
+    md = env.model_dynamics
+    # The two trading trajectories have different distances to the boundary.
+    # The other rows are inside the no-arbitrage band or at the outward boundary.
+    indices = np.array([md.num_ticks - 1, md.num_ticks // 2, md.num_ticks - 5, md.num_ticks])
+    if direction == -1:
+        indices = md.num_ticks - indices
+    state[POOL_CURRENT_TICK_KEY] = md.tick_lower_global + indices
+    state[POOL_SQRT_PRICE_KEY] = md.sqrt_grid[indices]
+    price_multipliers = np.array([2.0, 1.0, 2.0, 2.0]) ** direction
+    state[ASSET_PRICE_KEY] = state[POOL_SQRT_PRICE_KEY] ** 2 * price_multipliers
+    state[POOL_LIQUIDITY_ARRAY_KEY] = (
+        1e6 * np.arange(1, 5)[:, None] * np.arange(1, md.num_ticks + 1)[None, :]
+    )
+    before = {key: value.copy() for key, value in state.items()}
+
+    tick_count = 5 if max_ticks is None else max_ticks
+    first_intervals = indices - (direction == -1)
+    longer_intervals = first_intervals[2] + direction * np.arange(tick_count)
+    interval_widths = (
+        np.diff(md.sqrt_grid) if direction == 1 else -np.diff(1.0 / md.sqrt_grid)
+    )
+    capacities = state[POOL_LIQUIDITY_ARRAY_KEY] * interval_widths
+    expected_orders = np.zeros((4, 1))
+    gross_multiplier = direction * (1.0 + md.fee_multiplier)
+    expected_orders[0, 0] = gross_multiplier * capacities[0, first_intervals[0]]
+    expected_orders[2, 0] = gross_multiplier * capacities[2, longer_intervals].sum()
+
+    orders = ArbitrageurAgent(env, max_ticks_per_trade=max_ticks).get_action(state)
+    speeds = SpeedControlArbitrageurAgent(env, max_ticks_per_step=max_ticks).get_action(state)
+
+    np.testing.assert_allclose(orders, expected_orders)
+    np.testing.assert_allclose(speeds * env.step_size, expected_orders)
+    for key, value in before.items():
+        np.testing.assert_array_equal(state[key], value)
+
+
 class TestLiquidityTakerExecution:
     def test_vectorized_positive_negative_and_zero_orders(self):
         env, state = _make_env(num_trajectories=3)
