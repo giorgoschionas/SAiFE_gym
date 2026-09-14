@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -365,6 +365,9 @@ def make_fixed_env(
     args: argparse.Namespace,
     params: DomainParameters,
     seed: int,
+    *,
+    dynamics_class: type[UniswapV3ModelDynamics] = UniswapV3ModelDynamics,
+    environment_class: type[AMMEnvironment] = AMMEnvironment,
 ):
     step_size = args.terminal_time / args.n_steps
     alpha = np.array([
@@ -399,7 +402,7 @@ def make_fixed_env(
         num_trajectories=args.num_trajectories,
         seed=seed + 2,
     )
-    model_dynamics = UniswapV3ModelDynamics(
+    model_dynamics = dynamics_class(
         midprice_model=midprice_model,
         arrival_model=arrival_model,
         price_impact_model=price_impact_model,
@@ -412,7 +415,7 @@ def make_fixed_env(
         swap_fee_rate=0.0,
         seed=seed + 3,
     )
-    return AMMEnvironment(
+    return environment_class(
         terminal_time=args.terminal_time,
         n_steps=args.n_steps,
         model_dynamics=model_dynamics,
@@ -811,6 +814,8 @@ def evaluate_ppo(
     evaluation_set: EvaluationLabel,
     args: argparse.Namespace,
     regime_seed: int,
+    *,
+    env_factory: Optional[Callable] = None,
 ) -> dict:
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
@@ -820,7 +825,7 @@ def evaluate_ppo(
     )
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
-        env = make_fixed_env(args, params, seed=episode_seed)
+        env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env)
         action_wrapper = StructuredMultiDiscreteVecEnv(
             sb3_env,
@@ -871,12 +876,15 @@ def evaluate_periodic_rebalance(
     evaluation_set: EvaluationSet,
     args: argparse.Namespace,
     regime_seed: int,
+    *,
+    step_observer: Optional[Callable[[AMMEnvironment], None]] = None,
+    env_factory: Optional[Callable] = None,
 ) -> dict:
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
-        env = make_fixed_env(args, params, seed=episode_seed)
+        env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         agent = PeriodicRebalanceAgent(
             env,
             rebalance_every=args.periodic_rebalance_every,
@@ -890,6 +898,8 @@ def evaluate_periodic_rebalance(
             action = agent.get_action(obs)
             behavior_snapshot = behavior.before_step(obs, action)
             obs, rewards, terminated, truncated, _ = env.step(action)
+            if step_observer is not None:
+                step_observer(env)
             behavior.after_step(behavior_snapshot, obs, rewards)
             cumulative_reward += rewards
             if (terminated | truncated).all():

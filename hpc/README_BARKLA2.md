@@ -203,6 +203,60 @@ validates full coverage and computes paired randomized-minus-nominal reward
 differences across training seeds. Compare both PPO agents with periodic
 rebalancing and cash, and report reward and PnL separately.
 
+## Evaluate higher arrival rates without training
+
+`experiments/evaluate_robust_lp_agents.py` loads a saved run's configuration and
+evaluates the periodic baseline by default. It does not call PPO training or
+change the saved models/results. Run it on a compute node with the project
+environment activated:
+
+```bash
+python experiments/evaluate_robust_lp_agents.py \
+  --run-dirs experiments/results/barkla2_seed_sweep/new_300_nom/centered_10m/seed_43/run_20260910_235254 \
+  --output-dir experiments/results/periodic_high_arrival/main_grid \
+  --workers 4
+```
+
+The default diagnostic grid is sigma `[0.03, 0.045, 0.065, 0.08]` crossed with
+arrival `[300, 450, 600, 800, 1000]`. Episode count and trajectory batch size
+default to the saved configuration (10 × 100 in `centered_10m`). Set `--policies
+periodic_rebalance nominal_ppo domain_randomized_ppo` to evaluate saved PPO models
+as well; provide multiple `--run-dirs` for a training-seed comparison. The fixed
+periodic baseline is evaluated once, not repeated for each training seed. PPO
+requires each model's matching normalization file when the saved run used it.
+
+The evaluation runner uses occupied-range fee summation and copies only the
+previous-state fields needed by `RunningInventoryPenalty`. These accounting
+shortcuts preserve the market and action rules and are checked against the
+original evaluator. Use `--reference-evaluator` to disable them. Production
+training and its final evaluations retain their original implementations.
+
+For a resolution check, add `--sigma-values .065 .08 --arrival-rate-values 1000
+--n-steps-values 1000 5000 10000` and choose a fresh output directory. Both the
+PPO decision stride and the periodic rebalance interval scale automatically to
+preserve their physical timing; incompatible resolutions are rejected. These
+are evaluations at different simulator resolutions, not identical coupled
+market paths. Arrivals remain boolean indicators, at most one per side per
+step, with probability `1 - exp(-intensity * dt)`. The periodic diagnostics
+record indicator counts and actual `intensity * dt` to expose this truncation.
+
+Outputs include per-episode CSVs, `evaluation_summary.csv`, a provenance
+`manifest.json`, and reward-versus-arrival PNG/PDF plots. The marginal 95%
+bootstrap intervals resample vectorized episodes, since trajectories within
+each episode share swap-order randomness. They measure evaluation uncertainty,
+not training-seed uncertainty. Existing output directories are rejected to
+protect earlier results unless `--resume` is supplied. To recover an interrupted
+sweep, repeat the original command with `--resume`: completed episode checkpoints
+are validated and reused, and only missing episodes are simulated. The grid,
+seeds, evaluation settings, and simulation source must agree with the saved
+manifest. A directory lock prevents two active sweep processes from writing the
+same outputs, and checkpoint CSVs are replaced atomically after each episode.
+For independent follow-up episodes, use a fresh
+directory and `--episode-offset 100`; seed assignments remain stable when
+subsetting or reordering the diagnostic grid. Existing cells retain the source
+run's regime seeds. Keep these diagnostic outputs separate from the production
+seed-sweep aggregator, which expects its configured grid and all four policies.
+
 ## Seed sweep
 
 The default array trains ten independent PPO replicates (seeds 43 through 52)
