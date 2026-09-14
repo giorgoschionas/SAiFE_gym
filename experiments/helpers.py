@@ -9,6 +9,7 @@ AMM liquidity-provision setting:
 
 import os
 import sys
+from copy import deepcopy
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 import numpy as np
@@ -165,6 +166,28 @@ def wrap_env(env: AMMEnvironment, normalise_obs: bool = True) -> VecMonitor:
 # PPO setup
 # ---------------------------------------------------------------------------
 
+def _validate_separate_eval_env(env: AMMEnvironment, eval_env: AMMEnvironment):
+    """Reject shared simulator components before evaluation can mutate them."""
+    components = [
+        ("environment", env, eval_env),
+        ("model_dynamics", env.model_dynamics, eval_env.model_dynamics),
+        ("reward_function", env.reward_function, eval_env.reward_function),
+    ]
+    for name in (
+        "midprice_model", "arrival_model", "price_impact_model", "fee_accounting_model"
+    ):
+        components.append((
+            name, getattr(env.model_dynamics, name),
+            getattr(eval_env.model_dynamics, name),
+        ))
+    for name, training_component, evaluation_component in components:
+        if training_component is not None and training_component is evaluation_component:
+            raise ValueError(
+                f"Training and evaluation must not share {name}; "
+                "construct an independent evaluation environment."
+            )
+
+
 def get_ppo_learner_and_callback(
     env: AMMEnvironment,
     tensorboard_base_logdir: str = None,
@@ -174,8 +197,25 @@ def get_ppo_learner_and_callback(
     normalise_obs: bool = True,
     learning_rate: float = 3e-4,
     eval_log_path: str = None,
+    *,
+    eval_env: AMMEnvironment = None,
+    eval_seed: int = SEED + 10_000,
 ):
     """Build a PPO model and EvalCallback for the given environment.
+
+    Evaluation uses a deep copy of the raw training environment by default,
+    preserving its configuration without sharing simulator state or components.
+    Pass a separately constructed ``eval_env`` for components that cannot be
+    deep-copied or to use a different evaluation trajectory count. Its SB3
+    observation and action spaces must match those of the training environment.
+    ``eval_seed`` (default 10042) seeds the selected evaluation simulator once,
+    including when ``eval_env`` is supplied; subsequent resets advance its own
+    random streams. Training state and random streams are left untouched.
+
+    Evaluation runs every ten rollouts: ``10 * env.n_steps`` callback calls,
+    or ``10 * env.n_steps * env.num_trajectories`` training transitions.
+    With normalization enabled, EvalCallback copies training statistics before
+    evaluation; evaluation neither updates those statistics nor scales rewards.
 
     Hyperparameter guidance
     -----------------------
@@ -202,8 +242,30 @@ def get_ppo_learner_and_callback(
                     obs_dim=9  (no normalise) →    5M  –  20M
 
     Returns:
-        (model, callback) — call model.learn(total_timesteps=...) to train.
+        (model, callback) — call model.learn(..., callback=callback) to train.
     """
+    if eval_env is None:
+        try:
+            eval_env = deepcopy(env)
+        except Exception as exc:
+            raise ValueError(
+                "Could not copy the training environment for evaluation; "
+                "supply a separately constructed eval_env."
+            ) from exc
+    _validate_separate_eval_env(env, eval_env)
+
+    training_vec = wrap_env(env, normalise_obs=normalise_obs)
+    eval_vec = wrap_env(eval_env, normalise_obs=normalise_obs)
+    if (
+        training_vec.observation_space != eval_vec.observation_space
+        or training_vec.action_space != eval_vec.action_space
+    ):
+        raise ValueError("Training and evaluation SB3 observation/action spaces must match.")
+    eval_env.reset(seed=eval_seed)
+    if isinstance(eval_vec, VecNormalize):
+        eval_vec.training = False  # EvalCallback syncs copies of training statistics
+        eval_vec.norm_reward = False
+
     tau = tau if tau is not None else env.model_dynamics.tau
     alpha3 = alpha3 if alpha3 is not None else 0.0
     experiment_str = get_experiment_string(env, tau=tau, alpha3=alpha3)
@@ -212,7 +274,7 @@ def get_ppo_learner_and_callback(
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
     ppo_params = dict(
         policy="MlpPolicy",
-        env=wrap_env(env, normalise_obs=normalise_obs),
+        env=training_vec,
         verbose=1,
         policy_kwargs=policy_kwargs,
         tensorboard_log=os.path.join(tensorboard_base_logdir, experiment_str) if tensorboard_base_logdir else None,
@@ -224,16 +286,13 @@ def get_ppo_learner_and_callback(
         gae_lambda=0.95,
         gamma=1.0,
     )
-    eval_vec = wrap_env(env, normalise_obs=normalise_obs)
-    if isinstance(eval_vec, VecNormalize):
-        eval_vec.training = False  # stats synced from training env; don't update here
     callback_params = dict(
         eval_env=eval_vec,
         n_eval_episodes=10,
         best_model_save_path=os.path.join(best_model_path, experiment_str),
         log_path=eval_log_path,
         deterministic=True,
-        eval_freq=rollout_size * 10,
+        eval_freq=env.n_steps * 10,  # callbacks count batch steps, not transitions
     )
     model = PPO(**ppo_params)
     callback = EvalCallback(**callback_params)

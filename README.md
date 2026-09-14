@@ -82,6 +82,35 @@ model, callback = get_ppo_learner_and_callback(env, normalise_obs=True)
 model.learn(total_timesteps=2_000_000, callback=callback)
 ```
 
+The helper automatically deep-copies the raw simulator for evaluation, preserving
+its configuration while keeping state, reward objects, and random generators
+independent. Evaluation uses seed `10042` by default, configurable with
+`eval_seed`, and advances its own random streams between evaluations. When
+normalization is enabled, evaluation uses copies of the training statistics
+without updating them, and rewards remain unnormalized.
+
+Evaluation runs every ten rollouts. SB3 callbacks count batch steps, so the
+interval is `10 * env.n_steps` calls. With the settings above, that is 2,000
+calls / 100,000 training transitions, giving 20 scheduled evaluations over the
+run. Each evaluation scores ten episodes; a new best score saves
+`best_model.zip` beneath `best_model_path` (default `./best_models`). Set
+`eval_log_path` to also save `evaluations.npz`.
+
+For custom components that cannot be deep-copied, or a smaller evaluation batch,
+pass a separately constructed raw environment with compatible observation and
+action spaces:
+
+```python
+eval_env = get_amm_env(num_trajectories=10, tau=5, volatility=2.0, alpha3=0.5)
+model, callback = get_ppo_learner_and_callback(
+    env, eval_env=eval_env, eval_seed=12345, normalise_obs=True,
+)
+```
+
+The helper seeds the supplied evaluation environment with `eval_seed` as well.
+Training and evaluation must have separate simulator components, including
+reward objects.
+
 For the current domain-randomized robust LP workflow, run the dedicated script:
 
 ```bash
