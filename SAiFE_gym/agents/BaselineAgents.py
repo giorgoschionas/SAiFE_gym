@@ -53,7 +53,8 @@ class UniformAllocationAgent(Agent):
     Allocates capital across the full active tick range around the current price.
 
     Action format: [lower_offset, upper_offset, hold_flag] = [-tau, +tau, -1.0]
-    This covers 2*tau+1 ticks centered on the current price. Always rebalances.
+    This covers 2*tau tick intervals between 2*tau+1 boundaries, centered on
+    the current tick. Always rebalances.
     """
     def __init__(self, env: AMMEnvironment):
         self.env = env

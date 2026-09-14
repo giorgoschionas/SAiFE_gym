@@ -1,6 +1,6 @@
 ---
 name: stable-baselines3
-description: Production-ready reinforcement learning algorithms (PPO, SAC, DQN, TD3, DDPG, A2C) with scikit-learn-like API. Use for standard RL experiments, quick prototyping, and well-documented algorithm implementations. Best for single-agent RL with Gymnasium environments. For high-performance parallel training, multi-agent systems, or custom vectorized environments, use pufferlib instead.
+description: Reinforcement learning algorithms (PPO, SAC, DQN, TD3, DDPG, A2C) with a scikit-learn-like API. Use for SB3 training, evaluation, callbacks, and Gymnasium integration. For SAiFE_gym batched simulation, use the project's native SB3 adapter and shipped experiment workflows.
 license: MIT license
 metadata:
     skill-author: K-Dense Inc.
@@ -11,6 +11,14 @@ metadata:
 ## Overview
 
 Stable Baselines3 (SB3) is a PyTorch-based library providing reliable implementations of reinforcement learning algorithms. This skill provides comprehensive guidance for training RL agents, creating custom environments, implementing callbacks, and optimizing training workflows using SB3's unified API.
+
+The repository pins SB3 2.7.1 in [requirements.txt](../../requirements.txt).
+The library examples below use standard Gymnasium environments. For SAiFE_gym,
+use [StableBaselinesAMMEnvironment](../../SAiFE_gym/gym/StableBaselinesAMMEnvironment.py)
+for native batched SB3 training. Use the
+[Gymnasium adapters](../../SAiFE_gym/gym/GymnasiumAMMEnvironment.py) for Gymnasium
+wrappers and environment checks; the raw `AMMEnvironment` returns batched data.
+See the [interface guide](../../README.md#environment-interfaces).
 
 ## Core Capabilities
 
@@ -40,17 +48,21 @@ model = PPO.load("ppo_cartpole", env=env)
 
 **Important Notes:**
 - `total_timesteps` is a lower bound; actual training may exceed this due to batch collection
-- Use `model.load()` as a static method, not on an existing instance
+- Load with the algorithm class, for example `PPO.load(...)`; loading creates a new model
 - The replay buffer is NOT saved with the model to save space
 
 **Algorithm Selection:**
-Use `references/algorithms.md` for detailed algorithm characteristics and selection guidance. Quick reference:
-- **PPO/A2C**: General-purpose, supports all action space types, good for multiprocessing
+Use the [SB3 algorithm table][sb3-algorithms] for supported action spaces. Quick reference:
+- **PPO/A2C**: Supports Box, Discrete, MultiDiscrete, and MultiBinary actions
 - **SAC/TD3**: Continuous control, off-policy, sample-efficient
 - **DQN**: Discrete actions, off-policy
 - **HER**: Goal-conditioned tasks
 
-See `scripts/train_rl_agent.py` for a complete training template with best practices.
+For repository training examples, see the nominal PPO helper in
+[experiments/helpers.py](../../experiments/helpers.py) and the complete
+[robust LP training script](../../experiments/train_robust_lp_agent.py).
+The [README training section](../../README.md#training) provides runnable commands;
+the [SB3 examples][sb3-examples] cover generic environments.
 
 ### 2. Custom Environments
 
@@ -76,7 +88,9 @@ from stable_baselines3.common.env_checker import check_env
 check_env(env, warn=True)
 ```
 
-See `scripts/custom_env_template.py` for a complete custom environment template and `references/custom_environments.md` for comprehensive guidance.
+See the [official custom-environment example][sb3-custom-env] for a template.
+For this simulator, construct a single-trajectory `GymnasiumAMMEnvironment`
+before using `check_env`; use the native SB3 adapter for batched PPO training.
 
 ### 3. Vectorized Environments
 
@@ -89,13 +103,17 @@ Vectorized environments run multiple environment instances in parallel, accelera
 
 **Quick Setup:**
 ```python
+from stable_baselines3 import PPO
 from stable_baselines3.common.env_util import make_vec_env
+from stable_baselines3.common.vec_env import SubprocVecEnv
 
-# Create 4 parallel environments
-env = make_vec_env("CartPole-v1", n_envs=4, vec_env_cls=SubprocVecEnv)
+if __name__ == "__main__":
+    # Create 4 parallel environments; run this example as a Python script.
+    env = make_vec_env("CartPole-v1", n_envs=4, vec_env_cls=SubprocVecEnv)
 
-model = PPO("MlpPolicy", env, verbose=1)
-model.learn(total_timesteps=25000)
+    model = PPO("MlpPolicy", env, verbose=1)
+    model.learn(total_timesteps=25000)
+    env.close()
 ```
 
 **Off-Policy Optimization:**
@@ -107,7 +125,10 @@ When using multiple environments with off-policy algorithms (SAC, TD3, DQN), set
 - Environments auto-reset after episodes
 - Terminal observations available via `infos[env_idx]["terminal_observation"]`
 
-See `references/vectorized_envs.md` for detailed information on wrappers and advanced usage.
+See the [SB3 vector-environment guide][sb3-vec-envs] for wrapper and API details.
+SAiFE_gym already batches trajectories inside one simulator. Its
+[SB3 adapter](../../SAiFE_gym/gym/StableBaselinesAMMEnvironment.py) and
+[action wrappers](../../SAiFE_gym/wrappers.py) support this native batch directly.
 
 ### 4. Callbacks for Monitoring and Control
 
@@ -152,23 +173,35 @@ callback = CallbackList([eval_callback, checkpoint_callback, custom_callback])
 model.learn(total_timesteps=10000, callback=callback)
 ```
 
-See `references/callbacks.md` for comprehensive callback documentation.
+See the [SB3 callback guide][sb3-callbacks]. Evaluation needs a separate
+environment, and `eval_freq` counts callback calls: one per vector batch step.
+The nominal helper creates an independent evaluation simulator and evaluates
+every ten rollouts. The robust training script implements its own convergence
+callback; follow those shipped examples when changing evaluation behavior.
 
 ### 5. Model Persistence and Inspection
 
 **Saving and Loading:**
+For a normalized policy, construct a fresh evaluation `VecEnv` with the same
+observation and action wrappers as training, then restore its statistics before
+attaching the loaded model. Here `vec_env` is the training `VecNormalize`, and
+`eval_vec_env` is that fresh evaluation environment:
+
 ```python
+from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import VecNormalize
+
 # Save model
 model.save("model_name")
 
 # Save normalization statistics (if using VecNormalize)
 vec_env.save("vec_normalize.pkl")
 
-# Load model
-model = PPO.load("model_name", env=env)
-
-# Load normalization statistics
-vec_env = VecNormalize.load("vec_normalize.pkl", vec_env)
+# Restore frozen evaluation normalization, then load the model against it
+eval_vec_env = VecNormalize.load("vec_normalize.pkl", eval_vec_env)
+eval_vec_env.training = False
+eval_vec_env.norm_reward = False
+model = PPO.load("model_name", env=eval_vec_env)
 ```
 
 **Parameter Access:**
@@ -210,7 +243,13 @@ env = VecVideoRecorder(
 )
 ```
 
-See `scripts/evaluate_agent.py` for a complete evaluation and recording template.
+For SAiFE_gym, use the
+[standalone evaluator](../../experiments/evaluate_robust_lp_agents.py) and its
+[saved-run walkthrough](../../hpc/README_BARKLA2.md#evaluate-higher-arrival-rates-without-training).
+It restores the saved run's configuration and matching normalization for PPO.
+Generic evaluation is documented in the [SB3 evaluation helper][sb3-evaluation].
+Video recording requires an environment supporting `rgb_array` rendering;
+SAiFE_gym's adapters currently provide no rendering.
 
 ### 7. Advanced Features
 
@@ -257,13 +296,13 @@ model.learn(total_timesteps=10000)
 **Starting a New RL Project:**
 
 1. **Define the problem**: Identify observation space, action space, and reward structure
-2. **Choose algorithm**: Use `references/algorithms.md` for selection guidance
-3. **Create/adapt environment**: Use `scripts/custom_env_template.py` if needed
-4. **Validate environment**: Always run `check_env()` before training
-5. **Set up training**: Use `scripts/train_rl_agent.py` as starting template
+2. **Choose algorithm**: Check the [supported action spaces][sb3-algorithms]
+3. **Create/adapt environment**: Follow the [custom-environment guide][sb3-custom-env] or use the shipped SAiFE_gym adapters
+4. **Validate environment**: Run `check_env()` on a single Gymnasium environment; use the repository tests for the native SB3 batch adapter
+5. **Set up training**: Follow the [README examples](../../README.md#training) and shipped experiment scripts
 6. **Add monitoring**: Implement callbacks for evaluation and checkpointing
 7. **Optimize performance**: Consider vectorized environments for speed
-8. **Evaluate and iterate**: Use `scripts/evaluate_agent.py` for assessment
+8. **Evaluate and iterate**: Follow the [saved-run walkthrough](../../hpc/README_BARKLA2.md#evaluate-higher-arrival-rates-without-training) for SAiFE_gym, or the [SB3 evaluation helper][sb3-evaluation] for generic environments
 
 **Common Issues:**
 
@@ -274,16 +313,29 @@ model.learn(total_timesteps=10000)
 
 ## Resources
 
-### scripts/
-- `train_rl_agent.py`: Complete training script template with best practices
-- `evaluate_agent.py`: Agent evaluation and video recording template
-- `custom_env_template.py`: Custom Gym environment template
+### Shipped repository examples
 
-### references/
-- `algorithms.md`: Detailed algorithm comparison and selection guide
-- `custom_environments.md`: Comprehensive custom environment creation guide
-- `callbacks.md`: Complete callback system reference
-- `vectorized_envs.md`: Vectorized environment usage and wrappers
+- [Nominal PPO helper](../../experiments/helpers.py): training and independent evaluation setup
+- [Robust LP training](../../experiments/train_robust_lp_agent.py): domain randomization, convergence callbacks, model and normalization persistence
+- [Standalone evaluation](../../experiments/evaluate_robust_lp_agents.py): evaluation of saved runs
+- [Gymnasium adapters](../../SAiFE_gym/gym/GymnasiumAMMEnvironment.py): single and vector Gymnasium interfaces
+- [Native SB3 adapter](../../SAiFE_gym/gym/StableBaselinesAMMEnvironment.py): batched simulation through SB3's VecEnv API
+
+### Official SB3 2.7.1 documentation
+
+- [Algorithm capabilities][sb3-algorithms]
+- [Custom environments][sb3-custom-env]
+- [Vector environments and normalization][sb3-vec-envs]
+- [Callbacks][sb3-callbacks]
+- [Training and persistence examples][sb3-examples]
+- [Evaluation helper][sb3-evaluation]
+
+[sb3-algorithms]: https://stable-baselines3.readthedocs.io/en/v2.7.1/guide/algos.html
+[sb3-custom-env]: https://stable-baselines3.readthedocs.io/en/v2.7.1/guide/custom_env.html
+[sb3-vec-envs]: https://stable-baselines3.readthedocs.io/en/v2.7.1/guide/vec_envs.html
+[sb3-callbacks]: https://stable-baselines3.readthedocs.io/en/v2.7.1/guide/callbacks.html
+[sb3-examples]: https://stable-baselines3.readthedocs.io/en/v2.7.1/guide/examples.html
+[sb3-evaluation]: https://stable-baselines3.readthedocs.io/en/v2.7.1/common/evaluation.html
 
 ## Installation
 

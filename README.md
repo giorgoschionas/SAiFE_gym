@@ -30,13 +30,13 @@ the existing position and avoid the step's gas cost.
 - **Stable-Baselines3 integration** - flat SB3 observations, `VecNormalize`,
   decision-stride training, and discrete/structured action adapters.
 - **Baselines and diagnostics** - random, uniform, deploy-once,
-  periodic-rebalance, cash, and arbitrageur agents plus policy behavior
-  diagnostics for evaluation runs.
+  periodic-rebalance, and arbitrageur agents, an undeployed cash benchmark,
+  and policy behavior diagnostics for evaluation runs.
 
 ## Installation
 
 ```bash
-git clone <repository-url>
+git clone https://github.com/giorgoschionas/SAiFE_gym.git
 cd SAiFE_gym
 python -m venv venv
 source venv/bin/activate
@@ -120,8 +120,10 @@ python experiments/train_robust_lp_agent.py \
 ```
 
 The smoke test trains tiny nominal and domain-randomized PPO models, saves the
-models and `VecNormalize` statistics, and evaluates them on one in-distribution
-and one stress regime.
+models and `VecNormalize` statistics, and evaluates all four policies on the
+full 2 × 2 grid: sigma `[0.030, 0.08]` crossed with arrival rate `[300.0, 450.0]`.
+With the default training support, this gives one regime in each of the four
+evaluation sets below, producing 16 rows in `evaluation_grid.csv`.
 
 ## Domain-Randomized PPO
 
@@ -183,15 +185,36 @@ summaries to `summary.json`. The policies are:
 - `periodic_rebalance`
 - `cash`
 
-The default in-distribution grid is the Cartesian product of sigma
-`[0.015, 0.030, 0.045]` and arrival rate `[250.0, 300.0, 350.0]`. The default
-stress grid is sigma `[0.065, 0.08]` by arrival rate `[150.0, 450.0]`.
-In-distribution values must lie inside the training support; each stress tuple
-must have at least one value outside training support.
+Final evaluation uses the full Cartesian product of the combined axis lists:
+sigma `[0.015, 0.030, 0.045, 0.065, 0.08]` and arrival rate
+`[150.0, 250.0, 300.0, 350.0, 450.0]`. The default 25 regimes produce 100 rows
+across the four policies. This includes combinations where only one parameter
+is outside the randomized training support.
 
-For Barkla2/Slurm runs, see `hpc/README_BARKLA2.md`.
+Rows and summaries use four `evaluation_set` labels. Membership in the training
+support includes both endpoints of each configured training range:
+
+| Evaluation set | Sigma | Arrival rate | Default regimes |
+|----------------|-------|--------------|----------------:|
+| `in_distribution` | Inside | Inside | 9 |
+| `sigma_only_stress` | Outside | Inside | 6 |
+| `arrival_only_stress` | Inside | Outside | 6 |
+| `stress` | Outside | Outside | 4 |
+
+The in-distribution axis values must lie inside their training ranges. Each
+tuple from the explicitly configured stress axes must have at least one value
+outside support. The generator also crosses in-distribution sigma with stress
+arrival rates, and stress sigma with in-distribution arrival rates; duplicate
+combinations are evaluated once. Labels depend on actual training support.
+The original 13 regimes retain their ordering and evaluation seeds, followed
+by the mixed combinations.
+
+For Barkla2/Slurm runs and standalone evaluation of saved runs, see the
+[HPC guide](hpc/README_BARKLA2.md).
 
 ## Architecture
+
+Main shipped source and support files:
 
 ```text
 SAiFE_gym/
@@ -203,6 +226,7 @@ SAiFE_gym/
 │   │   └── SbAgent.py
 │   ├── gym/
 │   │   ├── AMMEnvironment.py
+│   │   ├── ArbitrageurEnvironment.py
 │   │   ├── GymnasiumAMMEnvironment.py
 │   │   ├── ModelDynamics.py
 │   │   ├── StableBaselinesAMMEnvironment.py
@@ -220,14 +244,21 @@ SAiFE_gym/
 │   │   └── price_impact_models.py
 │   └── wrappers.py
 ├── experiments/
-│   ├── helpers.py
-│   ├── train_robust_lp_agent.py
 │   ├── aggregate_domain_randomized_seed_sweep.py
-│   └── policy_behavior_diagnostics.py
+│   ├── evaluate_robust_lp_agents.py
+│   ├── evaluation_grid.py
+│   ├── fast_lp_evaluation.py
+│   ├── helpers.py
+│   ├── policy_behavior_diagnostics.py
+│   └── train_robust_lp_agent.py
 ├── hpc/
 │   ├── README_BARKLA2.md
-│   └── sbatch_*.sh
-├── notebooks/
+│   ├── sbatch_aggregate_domain_randomized_seed_sweep.sh
+│   ├── sbatch_robust_lp_seed_sweep_cpu.sh
+│   ├── sbatch_robust_lp_smoke.sh
+│   ├── sbatch_train_robust_lp_agent_cpu.sh
+│   └── setup_barkla2_env.sh
+├── skills/
 ├── tests/
 └── requirements.txt
 ```
