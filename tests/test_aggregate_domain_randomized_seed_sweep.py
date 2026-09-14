@@ -46,6 +46,20 @@ def _policy_values(seed_index: int, evaluation_set: str) -> dict[str, float]:
             "periodic_rebalance": -1.0,
             "cash": 0.0,
         }
+    if evaluation_set == "sigma_only_stress":
+        return {
+            "domain_randomized_ppo": -6.0 + 2.0 * seed_index,
+            "nominal_ppo": -8.0 + seed_index,
+            "periodic_rebalance": -9.0,
+            "cash": 0.0,
+        }
+    if evaluation_set == "arrival_only_stress":
+        return {
+            "domain_randomized_ppo": 8.0 + 2.0 * seed_index,
+            "nominal_ppo": 7.0 + seed_index,
+            "periodic_rebalance": 2.0,
+            "cash": 0.0,
+        }
     return {
         "domain_randomized_ppo": -2.0 + 2.0 * seed_index,
         "nominal_ppo": -3.0 + 2.0 * seed_index,
@@ -93,11 +107,20 @@ def _make_rows(
     grid_axes: dict,
 ) -> list[dict]:
     rows = []
+    grids = [
+        ("in_distribution", "in_distribution", "in_distribution"),
+        ("stress", "stress", "stress"),
+    ]
+    if grid_axes.get("evaluation_grid_version") == 2:
+        grids += [
+            ("arrival_only_stress", "in_distribution", "stress"),
+            ("sigma_only_stress", "stress", "in_distribution"),
+        ]
     for evaluation_set, params in [
         (evaluation_set, (sigma, arrival_rate))
-        for evaluation_set in ("in_distribution", "stress")
-        for sigma in grid_axes[f"eval_{evaluation_set}_sigma_values"]
-        for arrival_rate in grid_axes[f"eval_{evaluation_set}_arrival_rate_values"]
+        for evaluation_set, sigma_set, arrival_set in grids
+        for sigma in grid_axes[f"eval_{sigma_set}_sigma_values"]
+        for arrival_rate in grid_axes[f"eval_{arrival_set}_arrival_rate_values"]
     ]:
         values = _policy_values(seed_index, evaluation_set)
         gaps = {
@@ -148,6 +171,7 @@ def _write_seed_run(
     legacy_schema: bool = False,
     missing_behavior_schema: bool = False,
     grid_axes: dict | None = None,
+    evaluation_grid_version: int | None = None,
 ) -> Path:
     run_dir = root / directory_name / "run_20260802_000000"
     run_dir.mkdir(parents=True)
@@ -161,6 +185,10 @@ def _write_seed_run(
         **GRID_AXES,
         **(grid_axes or {}),
     }
+    if evaluation_grid_version is not None:
+        config["evaluation_grid_version"] = evaluation_grid_version
+        config.setdefault("train_sigma_range", [0.0, 0.06])
+        config.setdefault("train_arrival_rate_range", [100.0, 200.0])
     (run_dir / "config.json").write_text(json.dumps(config))
 
     rows = _make_rows(
@@ -442,6 +470,105 @@ def test_aggregation_accepts_complete_multi_axis_grids(tmp_path, episodes, traje
         for row in regime_rows
     )
     assert len(_read_csv(output / "training_seed_gap_summary.csv")) == 24
+
+
+def test_full_grid_aggregation_keeps_four_groups_and_policy_gaps_separate(tmp_path):
+    axes = {
+        "eval_in_distribution_sigma_values": [.015, .03, .045],
+        "eval_in_distribution_arrival_rate_values": [250., 300., 350.],
+        "eval_stress_sigma_values": [.065, .08],
+        "eval_stress_arrival_rate_values": [150., 450.],
+        "train_sigma_range": [.01, .05],
+        "train_arrival_rate_range": [200., 400.],
+    }
+    for i, seed in enumerate([43, 44]):
+        _write_seed_run(
+            tmp_path, f"seed_{seed}", seed, i,
+            grid_axes=axes, evaluation_grid_version=2,
+        )
+    runs = discover_seed_runs(tmp_path)
+    assert all(len(run.rows_by_key) == 100 for run in runs)
+    output = aggregate_seed_sweep(parse_args([
+        "--input-dir", str(tmp_path), "--bootstrap-resamples", "20",
+    ]))
+    regimes = _read_csv(output / "training_seed_regime_summary.csv")
+    gaps = _read_csv(output / "training_seed_gap_summary.csv")
+    behavior = _read_csv(output / "training_seed_behavior_summary.csv")
+    assert len(regimes) == 100
+    assert len(gaps) == 75
+    assert len(behavior) == 100 * len(BEHAVIOR_DIAGNOSTIC_COLUMNS)
+    summary = json.loads((output / "training_seed_summary.json").read_text())
+    expected_means = {
+        "in_distribution": 4.0, "stress": -1.0,
+        "sigma_only_stress": -5.0, "arrival_only_stress": 9.0,
+    }
+    assert set(summary["policies"]["domain_randomized_ppo"]) == set(expected_means)
+    for group, expected_mean in expected_means.items():
+        actual = summary["policies"]["domain_randomized_ppo"][group]
+        objective_stats = actual["mean_of_regime_mean_running_inventory_objective"]
+        assert objective_stats["mean_across_training_seeds"] == expected_mean
+        penalty_stats = actual["behavior_diagnostics_mean_across_regimes"][
+            "mean_inventory_penalty_per_path"
+        ]
+        assert penalty_stats["mean_across_training_seeds"] == 2.0
+    expected_gaps = {
+        "in_distribution": 2.5, "stress": 1.0,
+        "sigma_only_stress": 2.5, "arrival_only_stress": 1.5,
+    }
+    for row in gaps:
+        if row["comparison"] == "domain_randomized_vs_nominal":
+            assert float(row["mean_gap_across_training_seeds"]) == expected_gaps[
+                row["evaluation_set"]
+            ]
+
+
+@pytest.mark.parametrize("group", ["sigma_only_stress", "arrival_only_stress"])
+@pytest.mark.parametrize("corruption", ["missing", "mislabeled", "duplicate"])
+def test_full_grid_rejects_corrupted_mixed_groups(tmp_path, group, corruption):
+    for i, seed in enumerate([43, 44]):
+        run = _write_seed_run(tmp_path, f"seed_{seed}", seed, i, evaluation_grid_version=2)
+        path = run / "evaluation_grid.csv"
+        rows = _read_csv(path)
+        if corruption == "missing":
+            rows = [row for row in rows if row["evaluation_set"] != group]
+        elif corruption == "mislabeled":
+            for row in rows:
+                if row["evaluation_set"] == group:
+                    row["evaluation_set"] = "stress"
+        else:
+            rows.append(dict(next(row for row in rows if row["evaluation_set"] == group)))
+        _write_csv(path, rows)
+    with pytest.raises(ValueError, match="regime coverage|duplicate regime-policy"):
+        discover_seed_runs(tmp_path)
+
+
+def test_aggregation_rejects_mixing_legacy_and_full_grid_versions(tmp_path):
+    _write_seed_run(tmp_path, "seed_43", 43, 0)
+    _write_seed_run(tmp_path, "seed_44", 44, 1, evaluation_grid_version=2)
+    with pytest.raises(ValueError, match="incompatible"):
+        discover_seed_runs(tmp_path)
+
+
+@pytest.mark.parametrize("version", [0, 3, "2", True, 2.0])
+def test_aggregation_rejects_unsupported_grid_versions(tmp_path, version):
+    run = _write_seed_run(tmp_path, "seed_43", 43, 0)
+    path = run / "config.json"
+    config = json.loads(path.read_text())
+    config["evaluation_grid_version"] = version
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="evaluation_grid_version"):
+        discover_seed_runs(tmp_path)
+
+
+@pytest.mark.parametrize("field", ["train_sigma_range", "train_arrival_rate_range"])
+def test_full_grid_requires_training_bounds_for_classification(tmp_path, field):
+    run = _write_seed_run(tmp_path, "seed_43", 43, 0, evaluation_grid_version=2)
+    path = run / "config.json"
+    config = json.loads(path.read_text())
+    del config[field]
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match=field):
+        discover_seed_runs(tmp_path)
 
 
 @pytest.mark.parametrize("evaluation_set", ["in_distribution", "stress"])

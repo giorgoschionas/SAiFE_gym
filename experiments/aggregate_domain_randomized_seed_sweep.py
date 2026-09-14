@@ -5,7 +5,6 @@ import csv
 import json
 import sys
 from dataclasses import dataclass
-from itertools import product
 from pathlib import Path
 from typing import Optional, Sequence
 
@@ -15,6 +14,7 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.evaluation_grid import configured_evaluation_grid  # noqa: E402
 from experiments.policy_behavior_diagnostics import (  # noqa: E402
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     FRACTION_BEHAVIOR_DIAGNOSTIC_COLUMNS,
@@ -242,37 +242,15 @@ def _read_result_rows(result_path: Path) -> list[dict]:
 
 def _configured_run_layout(config: dict, result_path: Path) -> tuple[set, int]:
     config_path = result_path.parent / CONFIG_FILENAME
-    expected_keys = set()
-    for evaluation_set in ("in_distribution", "stress"):
-        axes = []
-        for parameter in ("sigma", "arrival_rate"):
-            name = f"eval_{evaluation_set}_{parameter}_values"
-            if name not in config:
-                raise ValueError(f"missing required {name} in {config_path}")
-            values = config[name]
-            if not isinstance(values, list) or not values or any(
-                isinstance(value, bool) or not isinstance(value, (int, float))
-                for value in values
-            ):
-                raise ValueError(
-                    f"{name} in {config_path} must be a nonempty "
-                    "one-dimensional list of numbers"
-                )
-            try:
-                axis = np.asarray(values, dtype=np.float64)
-            except (TypeError, ValueError, OverflowError) as exc:
-                raise ValueError(f"invalid {name} in {config_path}") from exc
-            if not np.all(np.isfinite(axis)) or np.any(axis < 0.0):
-                raise ValueError(
-                    f"{name} in {config_path} must contain only finite, "
-                    "non-negative values"
-                )
-            if np.unique(axis).size != axis.size:
-                raise ValueError(
-                    f"{name} in {config_path} must not contain duplicate values"
-                )
-            axes.append(axis.tolist())
-        expected_keys.update(product([evaluation_set], EXPECTED_POLICIES, *axes))
+    try:
+        regimes = configured_evaluation_grid(config)
+    except ValueError as exc:
+        raise ValueError(f"{exc} in {config_path}") from exc
+    expected_keys = {
+        (evaluation_set, policy, sigma, arrival)
+        for evaluation_set, sigma, arrival in regimes
+        for policy in EXPECTED_POLICIES
+    }
 
     expected_path_count = 1
     for name in ("n_eval_episodes", "num_trajectories"):

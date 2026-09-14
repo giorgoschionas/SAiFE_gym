@@ -14,7 +14,7 @@ import sys
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Literal, Optional, Sequence
+from typing import Callable, Literal, Optional, Sequence
 
 os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
@@ -33,6 +33,12 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.evaluation_grid import (  # noqa: E402
+    EVALUATION_GRID_VERSION,
+    EVALUATION_SETS,
+    EvaluationSet,
+    configured_evaluation_grid,
+)
 from experiments.helpers import (  # noqa: E402
     FEE_TIER,
     INITIAL_PRICE,
@@ -76,6 +82,9 @@ from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
+EvaluationLabel = EvaluationSet | Literal[
+    "convergence_validation", "convergence_validation_final",
+]
 FORCED_HOLD_ACTION = np.array([0.0, 1.0, 1.0], dtype=np.float32)
 AGENT_DECISION_DIAGNOSTIC_COLUMNS = (
     "agent_decision_stride",
@@ -91,7 +100,7 @@ AGENT_DECISION_DIAGNOSTIC_COLUMNS = (
 class EvaluationRegime:
     """A fixed evaluation domain and its diagnostic evaluation set."""
 
-    evaluation_set: Literal["in_distribution", "stress"]
+    evaluation_set: EvaluationSet
     parameters: DomainParameters
 
 
@@ -196,7 +205,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         nargs="+",
         type=float,
         default=[0.015, 0.030, 0.045],
-        help="Sigma values for the in-distribution Cartesian evaluation grid.",
+        help="In-distribution sigma values, crossed with both arrival-rate lists.",
     )
     parser.add_argument(
         "--eval-in-distribution-arrival-rate-values",
@@ -204,8 +213,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=float,
         default=[250.0, 300.0, 350.0],
         help=(
-            "Arrival-rate values for the in-distribution Cartesian "
-            "evaluation grid."
+            "In-distribution arrival-rate values, crossed with both sigma lists."
         ),
     )
     parser.add_argument(
@@ -213,14 +221,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         nargs="+",
         type=float,
         default=[0.065, 0.08],
-        help="Sigma values for the out-of-distribution stress grid.",
+        help="Stress sigma values, crossed with both arrival-rate lists.",
     )
     parser.add_argument(
         "--eval-stress-arrival-rate-values",
         nargs="+",
         type=float,
         default=[150.0, 450.0],
-        help="Arrival-rate values for the out-of-distribution stress grid.",
+        help="Stress arrival-rate values, crossed with both sigma lists.",
     )
     parser.add_argument(
         "--smoke-test",
@@ -317,30 +325,6 @@ def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
     return args.train_domains_per_reset
 
 
-def _validate_evaluation_values(name: str, values: Sequence[float]) -> None:
-    values_array = np.asarray(values, dtype=np.float64)
-    if values_array.ndim != 1 or values_array.size == 0:
-        raise ValueError(f"{name} must contain at least one value")
-    if not np.all(np.isfinite(values_array)):
-        raise ValueError(f"{name} must contain only finite values")
-    if np.any(values_array < 0.0):
-        raise ValueError(f"{name} must contain only non-negative values")
-    if len(set(values_array.tolist())) != values_array.size:
-        raise ValueError(f"{name} must not contain duplicate values")
-
-
-def _parameters_within_training_support(
-    params: DomainParameters,
-    config: UniformDomainRandomizationConfig,
-) -> bool:
-    return all([
-        config.sigma_range[0] <= params.sigma <= config.sigma_range[1],
-        config.arrival_rate_range[0]
-        <= params.arrival_rate
-        <= config.arrival_rate_range[1],
-    ])
-
-
 def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     """Validate evaluation settings and diagnostic grids before training."""
     for name, minimum in [
@@ -369,51 +353,7 @@ def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     if args.evaluation_seed < 0:
         raise ValueError("evaluation_seed must be non-negative")
 
-    config = UniformDomainRandomizationConfig(
-        sigma_range=tuple(args.train_sigma_range),
-        arrival_rate_range=tuple(args.train_arrival_rate_range),
-    )
-    dimensions = [
-        (
-            "sigma",
-            config.sigma_range,
-            args.eval_in_distribution_sigma_values,
-            args.eval_stress_sigma_values,
-        ),
-        (
-            "arrival_rate",
-            config.arrival_rate_range,
-            args.eval_in_distribution_arrival_rate_values,
-            args.eval_stress_arrival_rate_values,
-        ),
-    ]
-
-    for parameter_name, training_range, in_distribution, stress in dimensions:
-        in_distribution_name = f"eval_in_distribution_{parameter_name}_values"
-        stress_name = f"eval_stress_{parameter_name}_values"
-        _validate_evaluation_values(in_distribution_name, in_distribution)
-        _validate_evaluation_values(stress_name, stress)
-
-        low, high = training_range
-        outside = [value for value in in_distribution if not low <= value <= high]
-        if outside:
-            raise ValueError(
-                f"{in_distribution_name} must lie within training range "
-                f"[{low}, {high}], got out-of-support values {outside}"
-            )
-
-    in_support_stress_regimes = [
-        regime.parameters
-        for regime in evaluation_regimes(args)
-        if regime.evaluation_set == "stress"
-        and _parameters_within_training_support(regime.parameters, config)
-    ]
-    if in_support_stress_regimes:
-        raise ValueError(
-            "every stress evaluation regime must have at least one parameter "
-            "outside the training support; fully in-support regimes: "
-            f"{in_support_stress_regimes}"
-        )
+    configured_evaluation_grid(vars(args), version=EVALUATION_GRID_VERSION)
 
 
 def evaluation_regime_seed(args: argparse.Namespace, regime_index: int) -> int:
@@ -425,6 +365,9 @@ def make_fixed_env(
     args: argparse.Namespace,
     params: DomainParameters,
     seed: int,
+    *,
+    dynamics_class: type[UniswapV3ModelDynamics] = UniswapV3ModelDynamics,
+    environment_class: type[AMMEnvironment] = AMMEnvironment,
 ):
     step_size = args.terminal_time / args.n_steps
     alpha = np.array([
@@ -459,7 +402,7 @@ def make_fixed_env(
         num_trajectories=args.num_trajectories,
         seed=seed + 2,
     )
-    model_dynamics = UniswapV3ModelDynamics(
+    model_dynamics = dynamics_class(
         midprice_model=midprice_model,
         arrival_model=arrival_model,
         price_impact_model=price_impact_model,
@@ -472,7 +415,7 @@ def make_fixed_env(
         swap_fee_rate=0.0,
         seed=seed + 3,
     )
-    return AMMEnvironment(
+    return environment_class(
         terminal_time=args.terminal_time,
         n_steps=args.n_steps,
         model_dynamics=model_dynamics,
@@ -868,9 +811,11 @@ def evaluate_ppo(
     model: PPO,
     vec_normalize: Optional[VecNormalize],
     params: DomainParameters,
-    evaluation_set: Literal["in_distribution", "stress"],
+    evaluation_set: EvaluationLabel,
     args: argparse.Namespace,
     regime_seed: int,
+    *,
+    env_factory: Optional[Callable] = None,
 ) -> dict:
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
@@ -880,7 +825,7 @@ def evaluate_ppo(
     )
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
-        env = make_fixed_env(args, params, seed=episode_seed)
+        env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env)
         action_wrapper = StructuredMultiDiscreteVecEnv(
             sb3_env,
@@ -928,15 +873,18 @@ def evaluate_ppo(
 
 def evaluate_periodic_rebalance(
     params: DomainParameters,
-    evaluation_set: Literal["in_distribution", "stress"],
+    evaluation_set: EvaluationSet,
     args: argparse.Namespace,
     regime_seed: int,
+    *,
+    step_observer: Optional[Callable[[AMMEnvironment], None]] = None,
+    env_factory: Optional[Callable] = None,
 ) -> dict:
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
-        env = make_fixed_env(args, params, seed=episode_seed)
+        env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         agent = PeriodicRebalanceAgent(
             env,
             rebalance_every=args.periodic_rebalance_every,
@@ -950,6 +898,8 @@ def evaluate_periodic_rebalance(
             action = agent.get_action(obs)
             behavior_snapshot = behavior.before_step(obs, action)
             obs, rewards, terminated, truncated, _ = env.step(action)
+            if step_observer is not None:
+                step_observer(env)
             behavior.after_step(behavior_snapshot, obs, rewards)
             cumulative_reward += rewards
             if (terminated | truncated).all():
@@ -973,7 +923,7 @@ def evaluate_periodic_rebalance(
 
 def evaluate_cash(
     params: DomainParameters,
-    evaluation_set: Literal["in_distribution", "stress"],
+    evaluation_set: EvaluationSet,
     args: argparse.Namespace,
 ) -> dict:
     """Report the undeployed token1 baseline without simulating market paths.
@@ -1013,7 +963,7 @@ def normalize_obs(
 def summarize_running_inventory_objective(
     policy_name: str,
     params: DomainParameters,
-    evaluation_set: Literal["in_distribution", "stress"],
+    evaluation_set: EvaluationLabel,
     objective_values: np.ndarray,
     training_seed: int,
     evaluation_seed: int,
@@ -1066,18 +1016,7 @@ def summarize_running_inventory_objective(
 
 
 def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
-    grid_definitions = [
-        (
-            "in_distribution",
-            args.eval_in_distribution_sigma_values,
-            args.eval_in_distribution_arrival_rate_values,
-        ),
-        (
-            "stress",
-            args.eval_stress_sigma_values,
-            args.eval_stress_arrival_rate_values,
-        ),
-    ]
+    """Return the full grid, preserving the original regimes' seed indices."""
     return [
         EvaluationRegime(
             evaluation_set=evaluation_set,
@@ -1086,10 +1025,9 @@ def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
                 arrival_rate=arrival_rate,
             ),
         )
-        for evaluation_set, sigma_values, arrival_rate_values
-        in grid_definitions
-        for sigma in sigma_values
-        for arrival_rate in arrival_rate_values
+        for evaluation_set, sigma, arrival_rate in configured_evaluation_grid(
+            vars(args), version=EVALUATION_GRID_VERSION,
+        )
     ]
 
 
@@ -1138,7 +1076,10 @@ def add_gap_columns(rows: list[dict]) -> None:
 
 def summarize_rows(rows: list[dict]) -> dict:
     policies = sorted({row["policy"] for row in rows})
-    evaluation_sets = ["in_distribution", "stress"]
+    policy_sets = {
+        policy: {row["evaluation_set"] for row in rows if row["policy"] == policy}
+        for policy in policies
+    }
     return {
         policy: {
             evaluation_set: _summarize_policy_evaluation_set(
@@ -1146,7 +1087,8 @@ def summarize_rows(rows: list[dict]) -> dict:
                 policy,
                 evaluation_set,
             )
-            for evaluation_set in evaluation_sets
+            for evaluation_set in EVALUATION_SETS
+            if evaluation_set in policy_sets[policy]
         }
         for policy in policies
     }
@@ -1235,6 +1177,7 @@ def main() -> int:
     validate_and_derive_decision_timing(args)
     resolve_train_domains_per_reset(args)
     validate_evaluation_configuration(args)
+    args.evaluation_grid_version = EVALUATION_GRID_VERSION
     args.behavior_diagnostics_schema_version = (
         BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION
     )
