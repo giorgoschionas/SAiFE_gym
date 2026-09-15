@@ -1,6 +1,6 @@
 ## Project Overview
 
-SAiFE_gym is a Reinforcement Learning environment for simulating Automated Market Maker (AMM) with Concentrated Liquidity trading in DeFi protocols, like Uniswap v3. It is Gymnasium-compatible for training RL agents to act as liquidity providers.
+SAiFE_gym is a vectorized Reinforcement Learning simulator for Automated Market Maker (AMM) trading with Concentrated Liquidity in DeFi protocols, like Uniswap v3. Dedicated Gymnasium and Stable-Baselines3 adapters support training RL liquidity providers.
 
 ## Development Setup
 
@@ -31,7 +31,8 @@ source venv/bin/activate
 - Liquidity represented as NumPy arrays indexed by tick: `liquidity_array[tick_idx]`
 - Price movements tracked per trajectory: `sqrt_price_current.shape = (num_trajectories,)`
 - Active trajectory masking eliminates branching in hot loops
-- Out-of-bounds ticks treated as zero liquidity (no dict lookups)
+- Directional liquidity lookups use safe array indices and validity masks;
+  swap behavior at the tracked boundaries depends on the price-impact model
 
 ### Liquidity Array Indexing
 
@@ -62,17 +63,22 @@ array_index = absolute_tick - tick_lower
 **Key Properties:**
 - `tick_lower` is set once at environment initialization and remains **fixed** throughout simulation
 - Array size `num_ticks` determines the supported price range
-- Out-of-bounds ticks (index < 0 or ≥ num_ticks) are treated as zero liquidity
+- Valid liquidity interval indices are `0 <= index < num_ticks`; the price
+  lattice has `num_ticks + 1` boundaries. Kernel-arrival and depth lookups mask
+  unavailable intervals, so they contribute zero to those calculations.
+- Swap execution stays within the tracked window: one-tick impact asserts on
+  an outward boundary crossing, while liquidity-depth impact caps movement.
 - Shape: `(num_ticks,)` for shared liquidity, `(num_trajectories, num_ticks)` for per-trajectory
 
 ### Core Data Flow
 
 The environment follows a standard RL cycle with AMM-specific components:
 
-1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Main Gymnasium environment
+1. **AMMEnvironment** (`gym/AMMEnvironment.py`) - Native batched simulator
    - Manages episodes, state transitions via `step()` and `reset()`
    - Delegates AMM logic to **ModelDynamics**
-   - Handles observation/action/reward normalization
+   - Returns full-precision batched state, rewards, and termination flags
+   - Delegates library-specific interfaces to the Gymnasium and SB3 adapters
 
 2. **ModelDynamics** (`gym/ModelDynamics.py`) - AMM protocol implementations
    - `UniswapV3ModelDynamics`: Concentrated liquidity logic
@@ -97,11 +103,40 @@ The environment follows a standard RL cycle with AMM-specific components:
 5. **RewardFunctions** (`rewards/RewardFunctions.py`) - Performance metrics
    - Abstract base class with `calculate()` and `reset()` methods
 
+### Environment Interfaces
+
+- Preserve `AMMEnvironment`'s batched returns, including for one trajectory.
+  Its `action_space`/`single_action_space` describes one `(3,)` command;
+  `batched_action_space` describes `(num_trajectories, 3)` commands. Raw `step`
+  accepts `(3,)` only for one trajectory, plus existing batched commands.
+- `GymnasiumAMMEnvironment` in `gym/GymnasiumAMMEnvironment.py` adapts one
+  trajectory to `gymnasium.Env`: unbatched Dict observations, scalar reward,
+  boolean flags, and explicit reset. Apply standard Gymnasium wrappers here.
+- `GymnasiumAMMVectorEnv` in the same module adapts the native batch to
+  `gymnasium.vector.VectorEnv`. Use Gymnasium vector wrappers here. It exposes
+  single and batched spaces, masked info dictionaries, and next-step autoreset.
+  All trajectories reset together; a scalar seed seeds the shared RNG streams.
+  Seed lists and partial reset masks are unsupported. Use separate single
+  adapters with Gymnasium SyncVectorEnv/AsyncVectorEnv for independent resets.
+- Both Gymnasium adapters preserve the full Dict observation and return copies.
+  They accept raw or domain-randomized AMM environments and support no rendering.
+- `StableBaselinesAMMEnvironment` remains the SB3 adapter with the existing
+  float32 feature vector and same-step autoreset. Preserve this interface for
+  `experiments/train_robust_lp_agent.py`, including observation ordering,
+  normalization, and structured action mappings.
+- `DiscreteActionWrapper` is a native batched action converter; it does not
+  convert the raw simulator's returns into a single Gymnasium Env API.
+
 ### State Representation
 
 **Uniswap V3 State** (defined in `gym/index_names.py`):
 
-The state is a **dictionary** with the following keys:
+The state is a **dictionary** with 22 keys, all declared in the observation
+space. Tick indices remain int64 through reset and rebalance; `lp_ever_deployed`
+is boolean; the remaining fields use float64. The tables below group core keys.
+Raw scalar fields have shape `(num_trajectories,)`; the single Gymnasium adapter
+removes that dimension. Elapsed time has a nonnegative, unbounded observation
+space to accommodate roundoff at the configured terminal horizon.
 
 **Pool-level state:**
 | Key | Shape | Description |
@@ -122,11 +157,14 @@ The state is a **dictionary** with the following keys:
 | `LP_LIQUIDITY_KEY` | `(num_trajectories,)` | LP's position liquidity |
 | `LP_TICK_LOWER_KEY` | `(num_trajectories,)` | LP's position lower tick bound |
 | `LP_TICK_UPPER_KEY` | `(num_trajectories,)` | LP's position upper tick bound |
+| `LP_EVER_DEPLOYED_KEY` | `(num_trajectories,)` | Whether liquidity was previously deployed |
+| `LP_FEE_SNAPSHOT0_KEY` / `LP_FEE_SNAPSHOT1_KEY` | `(num_trajectories,)` | Fee entitlement at position entry |
+| `GAS_COST_KEY` / `INITIAL_WEALTH_KEY` | `(num_trajectories,)` | Episode rebalance cost and starting capital |
 
 **Market state:**
 | Key | Shape | Description |
 |-----|-------|-------------|
-| `MARKET_MIDPRICE_KEY` | `(num_trajectories,)` | External market midprice |
+| `ASSET_PRICE_KEY` | `(num_trajectories,)` | External market midprice |
 | `TIME_KEY` | `(num_trajectories,)` | Current simulation time |
 
 **Per-tick array indexing** (applies to `liquidity_array`):
@@ -202,7 +240,14 @@ making both components injectable and testable independently.
 
 ### State Update Mechanism
 
-The `update_state()` method in `UniswapV3ModelDynamics` advances the state by one step size. Each step size `step_size = terminal_time/n_{steps}` is the finite discretization of the continuous-time infinitesimal $dt$ and so, for small enough $\lambda \cdot \Delta t$, we approximate Poisson counts with a Bernoulli trial that has at most one sell and one buy arrival (boolean arrays). The injected `PriceImpactModel` determines how far an active trade moves the pool.
+The `update_state()` method in `UniswapV3ModelDynamics` advances the state by
+`dt = terminal_time / n_steps`. Arrival models draw boolean indicators for
+each side using `P(arrival) = 1 - exp(-max(intensity, 0) * dt)`, the probability
+of at least one Poisson arrival over the step. Each side can generate at most
+one arrival indicator per step; multiple arrivals on that side are not
+simulated. For small `intensity * dt`, this probability is approximately
+`intensity * dt`; the implementation uses the exponential formula. The
+injected `PriceImpactModel` determines how far an active trade moves the pool.
 
 **Default One-Tick Principle**: With `OneTickUniswapV3PriceImpact`, each trade = one tick of price movement.
 - Trade size is computed from the **crossed tick interval's liquidity only** in `OneTickUniswapV3PriceImpact`
@@ -211,7 +256,8 @@ The `update_state()` method in `UniswapV3ModelDynamics` advances the state by on
 - Buy token0 arrival (`direction=1`): fees are accounted in `FEES1_KEY` at `idx`
 - Sell amount: `L * (1 / sqrt_grid[idx - 1] - 1 / sqrt_grid[idx])`
 - Buy amount: `L * (sqrt_grid[idx + 1] - sqrt_grid[idx])`
-- Arrivals are Bernoulli trials (boolean arrays): `P(arrival) = intensity * step_size`
+- Arrivals use the Bernoulli probability described above, independently of
+  the choice of price-impact model
 - When both sell and buy arrive simultaneously, execution order is randomized via coin flip
 - On crossing, `sqrt_price` is set from the tick lattice: `sqrt_grid[new_tick - tick_lower_global]`
 
@@ -222,12 +268,19 @@ The `update_state()` method in `UniswapV3ModelDynamics` advances the state by on
 - Zero-tick sampled arrivals allocate all fees to the first executable interval
 - Multi-tick sampled arrivals allocate the full curve input across realized crossed intervals using directional capacity weights
 - This model remains vectorized across trajectories; it uses array masks and scatter-style fee accounting
+- Mixed trajectory batches gather padded fee intervals through clipped indices
+  before applying validity masks, keeping boundary lookups within the arrays
 
 **Crossing Behavior**:
-- The default price-impact model always advances exactly one lattice tick for each active swap side
-- Sell swaps require current tick index `idx >= 1` so the crossed lower interval exists
-- Buy swaps require current tick index `idx <= num_ticks - 1` so the crossed upper boundary exists
-- Under the one-tick model, zero-liquidity ticks still move one tick; their returned swap amount is zero
+- Here `idx = current_tick - tick_lower_global` is the current price boundary.
+- The one-tick model requires `1 <= idx <= num_ticks` for sells and
+  `0 <= idx < num_ticks` for buys. An active outward swap at the lower/upper
+  boundary raises an assertion; increase `num_ticks` to accommodate longer paths.
+- Within that window, the one-tick model advances one tick even through an
+  interval with zero liquidity; its returned swap amount is zero.
+- Liquidity-depth impact caps movement to the available boundaries. An outward
+  arrival already at a boundary has no executable interval, so it leaves the
+  pool price unchanged and contributes no fees.
 
 **Key Parameters**:
 - `fee_tier` (default: 0.003): Pool fee rate (0.3%)
@@ -274,12 +327,14 @@ price = np.where(active, update_price(price, amount), price)
 ### Environment Initialization
 
 When creating `UniswapV3ModelDynamics`:
-- **Must provide `tau`** parameter (number of ticks on each side of current price)
+- **Optional**: Specify `tau` (default `5`), the maximum raw action-bound offset
+  on each side of the current tick
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
 - **Optional**: Inject `price_impact_model`; defaults to `OneTickUniswapV3PriceImpact`
 - **Optional**: Inject `fee_accounting_model`; defaults to `UniswapV3FeeAccounting`
 - The action space is automatically set to `Box(shape=(3,))` with bounds described above
-- Example: `tau=5` allows LP positions spanning up to 11 ticks (current tick ± 5)
+- Example: with `tau=5`, the full raw range `[-5, +5)` covers 10 tick intervals
+  between 11 boundaries. In general, `[-tau, +tau)` covers `2 * tau` intervals.
 
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment

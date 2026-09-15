@@ -122,8 +122,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
     def _build_sqrt_grid(self):
         """Precompute the lattice `AMM[i] = sqrt(r^i)` for every reachable absolute tick.
 
-        Must be called after `tick_lower_global` is assigned (see
-        `AMMEnvironment._build_initial_state`).
+        Called after `tick_lower_global` is assigned by
+        `simulation_core.create_uniswap_v3_initial_state`, which is shared by
+        `AMMEnvironment._initial_v3_state` and `ArbitrageurEnvironment`.
         """
         absolute_ticks = self.tick_lower_global + np.arange(
             self.num_ticks + 1, dtype=np.float64
@@ -595,8 +596,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         # --- Phase 3: Update LP state ---
         self.state[LP_LIQUIDITY_KEY] = new_L
-        self.state[LP_TICK_LOWER_KEY] = new_lower.astype(np.float64)
-        self.state[LP_TICK_UPPER_KEY] = new_upper.astype(np.float64)
+        self.state[LP_TICK_LOWER_KEY] = new_lower
+        self.state[LP_TICK_UPPER_KEY] = new_upper
         self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---

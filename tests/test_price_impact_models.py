@@ -696,6 +696,83 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             _capacity_weighted_amounts(capacities, 1e18),
         )
 
+    @pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+    @pytest.mark.parametrize("zero_liquidity", [False, True], ids=["nonuniform", "zero"])
+    def test_mixed_trajectories_at_array_boundary(self, direction, zero_liquidity):
+        num_ticks = 10
+        tick_lower_global = 100
+        fee_multiplier = 0.25
+        state, sqrt_grid = _make_state(num_trajectories=5)
+        # Trajectories 0 and 2 move one and five ticks, respectively; the others
+        # are inactive, have a zero-sized order, or are already at the boundary.
+        indices = np.array([9, 7, 5, 9, 10])
+        if direction == -1:
+            indices = num_ticks - indices
+        state[POOL_CURRENT_TICK_KEY] = tick_lower_global + indices
+        state[POOL_SQRT_PRICE_KEY] = sqrt_grid[indices]
+        state[POOL_LIQUIDITY_ARRAY_KEY] = (
+            1e6 * np.arange(1, 6)[:, None] * np.arange(1, num_ticks + 1)[None, :]
+        )
+        if zero_liquidity:
+            state[POOL_LIQUIDITY_ARRAY_KEY].fill(0.0)
+        liquidity_before = state[POOL_LIQUIDITY_ARRAY_KEY].copy()
+        gross_inputs = np.array([1e9, 2e9, 0.0, 3e9])
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(gross_inputs),
+            depth_window=3,
+            num_trajectories=5,
+            seed=7,
+        )
+
+        result = model.process_swap(
+            state,
+            np.array([True, False, True, True, True]),
+            direction,
+            tick_lower_global=tick_lower_global,
+            sqrt_grid=sqrt_grid,
+            num_ticks=num_ticks,
+            fee_multiplier=fee_multiplier,
+        )
+
+        expected_indices = indices + direction * np.array([1, 0, 5, 0, 0])
+        np.testing.assert_array_equal(
+            state[POOL_CURRENT_TICK_KEY], tick_lower_global + expected_indices
+        )
+        np.testing.assert_array_equal(state[POOL_SQRT_PRICE_KEY], sqrt_grid[expected_indices])
+        np.testing.assert_array_equal(state[POOL_LIQUIDITY_ARRAY_KEY], liquidity_before)
+        np.testing.assert_array_equal(state[FEES0_KEY], 0.0)
+        np.testing.assert_array_equal(state[FEES1_KEY], 0.0)
+
+        expected_traj = np.array([0, 2, 2, 2, 2, 2])
+        if direction == 1:
+            expected_fee_indices = np.array([9, 5, 6, 7, 8, 9])
+            capacities = _buy_capacity(state, sqrt_grid, 2, expected_fee_indices[1:])
+            fee_key, other_fee_key = FEES1_KEY, FEES0_KEY
+        else:
+            expected_fee_indices = np.array([0, 4, 3, 2, 1, 0])
+            capacities = _sell_capacity(state, sqrt_grid, 2, expected_fee_indices[1:])
+            fee_key, other_fee_key = FEES0_KEY, FEES1_KEY
+        curve_inputs = gross_inputs[:2] / (1.0 + fee_multiplier)
+        expected_amounts = np.concatenate([
+            curve_inputs[:1],
+            _capacity_weighted_amounts(capacities, curve_inputs[1]),
+        ])
+        assert result.fee_key == fee_key
+        assert result.direction == direction
+        np.testing.assert_array_equal(result.trajectories, expected_traj)
+        np.testing.assert_array_equal(result.fee_indices, expected_fee_indices)
+        np.testing.assert_allclose(result.amounts, expected_amounts)
+        np.testing.assert_allclose(
+            np.bincount(result.trajectories, weights=result.amounts, minlength=5),
+            np.array([curve_inputs[0], 0.0, curve_inputs[1], 0.0, 0.0]),
+        )
+
+        UniswapV3FeeAccounting().apply_fees(state, result, fee_multiplier)
+        expected_fees = np.zeros_like(state[fee_key])
+        expected_fees[expected_traj, expected_fee_indices] = fee_multiplier * expected_amounts
+        np.testing.assert_allclose(state[fee_key], expected_fees)
+        np.testing.assert_array_equal(state[other_fee_key], 0.0)
+
     def test_zero_realized_move_returns_none_and_leaves_state_unchanged(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
         before = {key: value.copy() for key, value in state.items()}

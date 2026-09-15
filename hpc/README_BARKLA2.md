@@ -1,28 +1,54 @@
 # Barkla2 example Slurm scripts for domain-randomized LP PPO
 
-These example scripts are written for the University of Liverpool Barkla2 Slurm setup described
-in `docs/Barkla2_User_Guide (2).pdf`. They are templates for reproducing the domain-randomized PPO
-experiment on that cluster; adjust paths, partitions, time limits, and resources for other HPC
-systems.
+These templates run the domain-randomized PPO experiment using Slurm and
+environment modules. Their Barkla2-specific settings are recorded here and in
+the shipped scripts; no separate cluster PDF is required. Adapt the module,
+paths, partitions, time limits, and resources to your cluster allocation.
 
-Recommended layout on Barkla2:
+The scripts assume:
+
+- Python 3.12 from `miniforge3/25.3.0-python3.12.10`, loaded with `module load`.
+- The `short` partition for the smoke job and `nodes` for full CPU training.
+- Writable project and virtual-environment directories at the paths below.
+- Dependencies installed from the checkout's `requirements.txt`, with `logs/`
+  created before submission so Slurm can open its output files.
+
+Default layout used by the templates:
 
 ```bash
 /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym        # project checkout / working directory
 /mnt/fastscratch/users/$USER/venvs/rl_venv       # Python virtual environment
 ```
 
-The guide recommends using `scratch` as a work directory and `fastscratch` for Python
-environments. Avoid installing Python packages in `/users/$USER`.
+The templates put the checkout on `scratch` and the environment on
+`fastscratch`. Export `SAIFE_PROJECT_DIR` and `SAIFE_VENV_DIR` to use different
+locations; the setup and job scripts read both variables. The submission
+examples below use the default project path. If you override it, submit from
+your chosen checkout so the relative `hpc/` and `logs/` paths resolve there.
 
 ## One-time setup
 
-Run this from `barklaviz1` or `barklaviz2`, not the login node, because package installation can
-be resource intensive:
+Use an interactive or compute session permitted for package installation by
+your cluster. For a new checkout, create the parent directory and clone the
+repository, then run the shipped setup script:
 
 ```bash
-cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
+export SAIFE_PROJECT_DIR="/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym"
+export SAIFE_VENV_DIR="/mnt/fastscratch/users/$USER/venvs/rl_venv"
+mkdir -p "$(dirname "$SAIFE_PROJECT_DIR")"
+git clone https://github.com/giorgoschionas/SAiFE_gym.git "$SAIFE_PROJECT_DIR"
+cd "$SAIFE_PROJECT_DIR"
 bash hpc/setup_barkla2_env.sh
+```
+
+For an existing checkout, set the variables, enter that directory, and run
+the setup command. It creates the virtual environment and output directories,
+installs the pinned dependencies, and prints the installed Python, NumPy, SB3,
+and Torch versions. Each job activates this environment itself. To run Python
+commands interactively afterward:
+
+```bash
+source "$SAIFE_VENV_DIR/bin/activate"
 ```
 
 ## Smoke test
@@ -207,23 +233,46 @@ rebalancing and cash, and report reward and PnL separately.
 
 `experiments/evaluate_robust_lp_agents.py` loads a saved run's configuration and
 evaluates the periodic baseline by default. It does not call PPO training or
-change the saved models/results. Run it on a compute node with the project
-environment activated:
+change the saved models/results. Use a completed run from the smoke or full
+training instructions above. Alternatively, generate a small example run
+from the project root with the project environment activated:
 
 ```bash
+python experiments/train_robust_lp_agent.py \
+  --smoke-test \
+  --output-dir experiments/results/domain_randomized_ppo/evaluator_example
+```
+
+This creates `smoke_<timestamp>/` containing `config.json`, both PPO model
+ZIPs, their `VecNormalize` files, and the training evaluation results. Smoke
+models demonstrate the workflow; use a full training run for policy comparisons.
+
+Replace `<timestamp>` below with the generated directory's actual timestamp,
+or set `SAIFE_RUN_DIR` to your completed full run. On a compute node (or locally
+for the small example), run:
+
+```bash
+SAIFE_RUN_DIR="experiments/results/domain_randomized_ppo/evaluator_example/smoke_<timestamp>"
 python experiments/evaluate_robust_lp_agents.py \
-  --run-dirs experiments/results/barkla2_seed_sweep/new_300_nom/centered_10m/seed_43/run_20260910_235254 \
+  --run-dirs "$SAIFE_RUN_DIR" \
   --output-dir experiments/results/periodic_high_arrival/main_grid \
+  --n-eval-episodes 2 \
   --workers 4
 ```
 
 The default diagnostic grid is sigma `[0.03, 0.045, 0.065, 0.08]` crossed with
 arrival `[300, 450, 600, 800, 1000]`. Episode count and trajectory batch size
-default to the saved configuration (10 × 100 in `centered_10m`). Set `--policies
-periodic_rebalance nominal_ppo domain_randomized_ppo` to evaluate saved PPO models
-as well; provide multiple `--run-dirs` for a training-seed comparison. The fixed
-periodic baseline is evaluated once, not repeated for each training seed. PPO
-requires each model's matching normalization file when the saved run used it.
+default to the saved configuration unless overridden. The standalone evaluator
+requires at least two evaluation episodes, so the command overrides the one
+episode saved by smoke mode. Increase this count for substantive comparisons;
+the smoke run uses only two trajectories. Choose a new `--output-dir` for each
+independent evaluation.
+
+Set `--policies periodic_rebalance nominal_ppo domain_randomized_ppo` to evaluate
+saved PPO models as well; provide multiple `--run-dirs` for a training-seed
+comparison. The fixed periodic baseline is evaluated once, not repeated for
+each training seed. PPO requires each model's matching normalization file when
+the saved run used it.
 
 The evaluation runner uses occupied-range fee summation and copies only the
 previous-state fields needed by `RunningInventoryPenalty`. These accounting
