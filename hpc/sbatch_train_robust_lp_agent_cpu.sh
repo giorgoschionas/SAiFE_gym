@@ -1,9 +1,8 @@
 #!/bin/bash -l
 
-# Example Barkla2 single-node CPU Slurm job for domain-randomized LP PPO.
+# Single-node CPU Slurm job for domain-randomized LP PPO.
 
 #SBATCH -J dr_ppo_train
-#SBATCH -p nodes
 #SBATCH -N 1
 #SBATCH -n 16
 #SBATCH -t 2-00:00:00
@@ -13,8 +12,16 @@
 
 set -euo pipefail
 
-PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
-VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
+PROJECT_DIR=${SAIFE_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}
+if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+  echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR or submit from the project root." >&2
+  exit 1
+fi
+PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd)
+VENV_DIR=${SAIFE_VENV_DIR:-$PROJECT_DIR/venv}
+if [[ "$VENV_DIR" != /* ]]; then
+  VENV_DIR="$PROJECT_DIR/$VENV_DIR"
+fi
 
 TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-10000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
@@ -33,7 +40,7 @@ CONVERGENCE_N_EVAL_EPISODES=${CONVERGENCE_N_EVAL_EPISODES:-1}
 LEARNING_RATE=${LEARNING_RATE:-3e-4}
 PERIODIC_REBALANCE_EVERY=${PERIODIC_REBALANCE_EVERY:-100}
 PERIODIC_WIDTH=${PERIODIC_WIDTH:-50}
-OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/domain_randomized_ppo/barkla2_full}
+OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/domain_randomized_ppo/full}
 
 NOMINAL_SIGMA=${NOMINAL_SIGMA:-0.03}
 NOMINAL_ARRIVAL_RATE=${NOMINAL_ARRIVAL_RATE:-300.0}
@@ -49,11 +56,17 @@ EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES=${EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VAL
 EVAL_STRESS_SIGMA_VALUES=${EVAL_STRESS_SIGMA_VALUES:-"0.065 0.08"}
 EVAL_STRESS_ARRIVAL_RATE_VALUES=${EVAL_STRESS_ARRIVAL_RATE_VALUES:-"150.0 450.0"}
 
-module purge
-module load miniforge3/25.3.0-python3.12.10
+if [ -n "${SAIFE_PYTHON_MODULE:-}" ]; then
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: SAIFE_PYTHON_MODULE is set, but 'module' is unavailable. Initialize your cluster's module system or unset SAIFE_PYTHON_MODULE." >&2
+    exit 1
+  fi
+  module purge
+  module load "$SAIFE_PYTHON_MODULE"
+fi
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
   echo "ERROR: no virtualenv found at $VENV_DIR" >&2
-  echo "Create it with 'bash hpc/setup_barkla2_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
+  echo "Create it with 'bash hpc/setup_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
   exit 1
 fi
 source "$VENV_DIR/bin/activate"
@@ -63,7 +76,10 @@ export MKL_NUM_THREADS=$SLURM_NTASKS
 export OPENBLAS_NUM_THREADS=$SLURM_NTASKS
 export NUMEXPR_NUM_THREADS=$SLURM_NTASKS
 export PYTHONUNBUFFERED=1
-export MPLCONFIGDIR=${MPLCONFIGDIR:-/tmp/users/$USER/saife_matplotlib_${SLURM_JOB_ID}}
+if [ -z "${MPLCONFIGDIR:-}" ]; then
+  MPLCONFIGDIR=$(mktemp -d "${TMPDIR:-/tmp}/saife_matplotlib.XXXXXX")
+fi
+export MPLCONFIGDIR
 
 mkdir -p "$MPLCONFIGDIR"
 cd "$PROJECT_DIR"

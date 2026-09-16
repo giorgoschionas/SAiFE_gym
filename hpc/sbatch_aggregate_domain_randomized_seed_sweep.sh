@@ -3,7 +3,6 @@
 # Aggregate a completed domain-randomized PPO training-seed sweep.
 
 #SBATCH -J dr_ppo_aggregate
-#SBATCH -p short
 #SBATCH -N 1
 #SBATCH -n 1
 #SBATCH -t 01:00:00
@@ -13,19 +12,33 @@
 
 set -euo pipefail
 
-PROJECT_DIR=${SAIFE_PROJECT_DIR:-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym}
-VENV_DIR=${SAIFE_VENV_DIR:-/mnt/fastscratch/users/$USER/venvs/rl_venv}
-INPUT_DIR=${INPUT_DIR:-experiments/results/domain_randomized_ppo/barkla2_seed_sweep}
+PROJECT_DIR=${SAIFE_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}
+if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+  echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR or submit from the project root." >&2
+  exit 1
+fi
+PROJECT_DIR=$(cd "$PROJECT_DIR" && pwd)
+VENV_DIR=${SAIFE_VENV_DIR:-$PROJECT_DIR/venv}
+if [[ "$VENV_DIR" != /* ]]; then
+  VENV_DIR="$PROJECT_DIR/$VENV_DIR"
+fi
+INPUT_DIR=${INPUT_DIR:-experiments/results/domain_randomized_ppo/seed_sweep}
 OUTPUT_DIR=${OUTPUT_DIR:-$INPUT_DIR/aggregate}
 BOOTSTRAP_RESAMPLES=${BOOTSTRAP_RESAMPLES:-10000}
 BOOTSTRAP_SEED=${BOOTSTRAP_SEED:-42}
 CONFIDENCE_LEVEL=${CONFIDENCE_LEVEL:-0.95}
 
-module purge
-module load miniforge3/25.3.0-python3.12.10
+if [ -n "${SAIFE_PYTHON_MODULE:-}" ]; then
+  if ! command -v module >/dev/null 2>&1; then
+    echo "ERROR: SAIFE_PYTHON_MODULE is set, but 'module' is unavailable. Initialize your cluster's module system or unset SAIFE_PYTHON_MODULE." >&2
+    exit 1
+  fi
+  module purge
+  module load "$SAIFE_PYTHON_MODULE"
+fi
 if [ ! -f "$VENV_DIR/bin/activate" ]; then
   echo "ERROR: no virtualenv found at $VENV_DIR" >&2
-  echo "Create it with 'bash hpc/setup_barkla2_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
+  echo "Create it with 'bash hpc/setup_env.sh', or point SAIFE_VENV_DIR at an existing env." >&2
   exit 1
 fi
 source "$VENV_DIR/bin/activate"

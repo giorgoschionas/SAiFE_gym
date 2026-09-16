@@ -245,7 +245,7 @@ env = VecVideoRecorder(
 
 For SAiFE_gym, use the
 [standalone evaluator](../../experiments/evaluate_robust_lp_agents.py) and its
-[saved-run walkthrough](../../hpc/README_BARKLA2.md#evaluate-higher-arrival-rates-without-training).
+[saved-run walkthrough](../../hpc/README.md#evaluate-higher-arrival-rates-without-training).
 It restores the saved run's configuration and matching normalization for PPO.
 Generic evaluation is documented in the [SB3 evaluation helper][sb3-evaluation].
 Video recording requires an environment supporting `rgb_array` rendering;
@@ -302,7 +302,7 @@ model.learn(total_timesteps=10000)
 5. **Set up training**: Follow the [README examples](../../README.md#training) and shipped experiment scripts
 6. **Add monitoring**: Implement callbacks for evaluation and checkpointing
 7. **Optimize performance**: Consider vectorized environments for speed
-8. **Evaluate and iterate**: Follow the [saved-run walkthrough](../../hpc/README_BARKLA2.md#evaluate-higher-arrival-rates-without-training) for SAiFE_gym, or the [SB3 evaluation helper][sb3-evaluation] for generic environments
+8. **Evaluate and iterate**: Follow the [saved-run walkthrough](../../hpc/README.md#evaluate-higher-arrival-rates-without-training) for SAiFE_gym, or the [SB3 evaluation helper][sb3-evaluation] for generic environments
 
 **Common Issues:**
 
