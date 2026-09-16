@@ -1,30 +1,17 @@
 # SAiFE Gym
 
-A vectorized reinforcement learning simulator with Gymnasium and
-Stable-Baselines3 adapters for training liquidity provision (LP) agents in
-Uniswap v3 automated market makers with concentrated liquidity.
-
-## Overview
-
-SAiFE_gym simulates Uniswap v3 LP decisions under stochastic external prices,
-liquidity-taking order flow, fee accrual, rebalancing costs, and mark-to-market
-portfolio accounting. The simulator is vectorized end to end: one
-`AMMEnvironment.step()` advances every trajectory in the batch.
-
-The raw simulator action is `[lower_offset, upper_offset, hold_flag]`, where
-the offsets are tick distances from the current pool tick. Rebalance actions
-deploy the LP's available wealth into the requested range; hold actions keep
-the existing position and avoid the step's gas cost.
+`SAiFE_gym` is a module which provides a collection of Gymnasium environments for training reinforcement learning (RL) agents for dynamic liquidity provision (LP) in automated market makers (AMMs) with concentrated liquidity (CL), like Uniswap v3. We decompose the microstructure of AMMs with CL in interactive components that
+allow researchers and practitioners to combine them and capture various economic settings. The module is vectorized end-to-end which allows faster training of RL agents. 
 
 ## Features
 
-- **Uniswap v3 concentrated liquidity** - tick-indexed liquidity arrays, pool
+- **Mechanics of AMMs with CL** - tick-indexed liquidity arrays, pool price and 
   fee accounting, LP fee snapshots, and mark-to-market LP portfolio value.
-- **Vectorized rollouts** - state, actions, arrivals, swaps, rewards, and
-  diagnostics are batched across `num_trajectories`.
-- **Injectable market components** - Brownian and geometric Brownian midprices,
+- **Market components as stochastic processes** - External midprice,
   Poisson/linear/kernel arrivals, one-tick or liquidity-depth price impact, and
   separate fee-accounting models.
+- **Vectorized rollouts** - state, actions, arrivals, swaps, rewards and
+  diagnostics are batched across `num_trajectories`.
 - **Domain-randomized PPO workflow** - episode-level randomization of volatility
   (`sigma`) and baseline arrival rate for robust LP training.
 - **Stable-Baselines3 integration** - flat SB3 observations, `VecNormalize`,
@@ -42,9 +29,6 @@ python -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
 ```
-
-The project is developed against Python 3.12. `requirements.txt` is the
-authoritative pinned dependency list.
 
 ## Quick Start
 
