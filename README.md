@@ -1,13 +1,13 @@
 # SAiFE Gym
 
-`SAiFE_gym` is a module which provides a collection of Gymnasium environments for training reinforcement learning (RL) agents for dynamic liquidity provision (LP) in automated market makers (AMMs) with concentrated liquidity (CL), like Uniswap v3. We decompose the microstructure of AMMs with CL in interactive components that
+`SAiFE_gym` is a module which provides a collection of Gymnasium environments for training reinforcement learning (RL) agents for dynamic liquidity provision (LP) in automated market makers (AMMs) with concentrated liquidity (CL), like Uniswap v3. The microstructure of AMMs with CL is decomposed in interactive components that
 allow researchers and practitioners to combine them and capture various economic settings. The module is vectorized end-to-end which allows faster training of RL agents. 
 
 ## Features
 
-- **Mechanics of AMMs with CL** - tick-indexed liquidity arrays, pool price and 
-  fee accounting, LP fee snapshots, and mark-to-market LP portfolio value.
-- **Market components as stochastic processes** - External midprice models, orderflow models (that captures noise traders, liquidity-attracted traders and informed traders), price impact models, and separate fee-accounting models.
+- **Mechanics of AMMs with CL** - tick-indexed liquidity array, pool price and 
+  fee accounting, LP fee snapshots.
+- **Market components as stochastic processes** - External midprice models, orderflow models (that capture baseline traders, liquidity-attracted traders and informed traders), price impact models, and separate fee-accounting models.
 - **Vectorized rollouts** - state, actions, arrivals, swaps, rewards and
   diagnostics are batched across `num_trajectories`.
 - **Domain-randomized PPO workflow** - episode-level randomization of volatility
@@ -136,7 +136,7 @@ Important script defaults (also used by the HPC training launchers):
 | `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
 | `--tau` | `50` | Maximum center offset and half-width in ticks |
 | `--tick-stride` | `5` | Structured action grid spacing |
-| `--alpha3` | `4000.0` | Mispricing/arbitrage intensity coefficient |
+| `--alpha3` | `4000.0` | arbitrage arrival rate (per-unit of mispricing) |
 | `--initial-wealth` | `1000.0` | LP starting capital in token1 units |
 | `--inventory-phi` | `0.4` | Running token0 inventory penalty coefficient |
 | `--nominal-sigma` | `0.03` | Fixed nominal GBM volatility |
