@@ -14,10 +14,7 @@ The associated paper can be found at [https://arxiv.org/abs/2609.17788](https://
   diagnostics are batched across `num_trajectories`.
 - **Domain-randomized PPO workflow** - episode-level randomization of volatility
   (`sigma`) and baseline arrival rate for robust LP training.
-- **Stable-Baselines3 integration** - flat SB3 observations, `VecNormalize`,
-  decision-stride training, and discrete/structured action adapters.
-- **Baselines and diagnostics** - random, uniform, deploy-once,
-  periodic-rebalance, and arbitrageur agents, and policy behavior diagnostics for evaluation runs.
+
 
 ## Installation
 
