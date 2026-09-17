@@ -1,7 +1,9 @@
 # SAiFE Gym
 
 `SAiFE_gym` is a module which provides a collection of Gymnasium environments for training reinforcement learning (RL) agents for dynamic liquidity provision (LP) in automated market makers (AMMs) with concentrated liquidity (CL), like Uniswap v3. The microstructure of AMMs with CL is decomposed in interactive components that
-allow researchers and practitioners to combine them and capture various economic settings. The module is vectorized end-to-end which allows faster training of RL agents. 
+allow researchers and practitioners to combine them and capture various economic settings. The module is vectorized end-to-end which allows faster training of RL agents.
+
+The associated paper can be found at [https://arxiv.org/abs/2609.17788](https://arxiv.org/abs/2609.17788)
 
 ## Features
 
@@ -50,61 +52,6 @@ for _ in range(env.n_steps):
 
 print("Episode rewards:", cumulative_rewards)
 ```
-
-## Training
-
-For the basic nominal PPO helper:
-
-```python
-from experiments.helpers import get_amm_env, get_ppo_learner_and_callback
-
-env = get_amm_env(num_trajectories=50, tau=5, volatility=2.0, alpha3=0.5)
-model, callback = get_ppo_learner_and_callback(env, normalise_obs=True)
-model.learn(total_timesteps=2_000_000, callback=callback)
-```
-
-The helper automatically deep-copies the raw simulator for evaluation, preserving
-its configuration while keeping state, reward objects, and random generators
-independent. Evaluation uses seed `10042` by default, configurable with
-`eval_seed`, and advances its own random streams between evaluations. When
-normalization is enabled, evaluation uses copies of the training statistics
-without updating them, and rewards remain unnormalized.
-
-Evaluation runs every ten rollouts. SB3 callbacks count batch steps, so the
-interval is `10 * env.n_steps` calls. With the settings above, that is 2,000
-calls / 100,000 training transitions, giving 20 scheduled evaluations over the
-run. Each evaluation scores ten episodes; a new best score saves
-`best_model.zip` beneath `best_model_path` (default `./best_models`). Set
-`eval_log_path` to also save `evaluations.npz`.
-
-For custom components that cannot be deep-copied, or a smaller evaluation batch,
-pass a separately constructed raw environment with compatible observation and
-action spaces:
-
-```python
-eval_env = get_amm_env(num_trajectories=10, tau=5, volatility=2.0, alpha3=0.5)
-model, callback = get_ppo_learner_and_callback(
-    env, eval_env=eval_env, eval_seed=12345, normalise_obs=True,
-)
-```
-
-The helper seeds the supplied evaluation environment with `eval_seed` as well.
-Training and evaluation must have separate simulator components, including
-reward objects.
-
-For the current domain-randomized robust LP workflow, run the dedicated script:
-
-```bash
-python experiments/train_robust_lp_agent.py \
-  --smoke-test \
-  --output-dir experiments/results/domain_randomized_ppo/local_smoke
-```
-
-The smoke test trains tiny nominal and domain-randomized PPO models, saves the
-models and `VecNormalize` statistics, and evaluates all four policies on the
-full 2 × 2 grid: sigma `[0.030, 0.08]` crossed with arrival rate `[300.0, 450.0]`.
-With the default training support, this gives one regime in each of the four
-evaluation sets below, producing 16 rows in `evaluation_grid.csv`.
 
 ## Domain-Randomized PPO
 
@@ -241,22 +188,6 @@ SAiFE_gym/
 ├── skills/
 ├── tests/
 └── requirements.txt
-```
-## Testing
-
-Run the full test suite with:
-
-```bash
-python -m pytest
-```
-
-Targeted checks for the domain-randomized PPO workflow:
-
-```bash
-python -m pytest \
-  tests/test_domain_randomization.py \
-  tests/test_wrappers.py \
-  tests/test_aggregate_domain_randomized_seed_sweep.py
 ```
 
 ## Dependencies
