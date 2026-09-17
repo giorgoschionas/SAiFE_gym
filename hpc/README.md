@@ -1,53 +1,104 @@
-# Barkla2 example Slurm scripts for domain-randomized LP PPO
+# Slurm jobs for domain-randomized LP PPO
 
-These templates run the domain-randomized PPO experiment using Slurm and
-environment modules. Their Barkla2-specific settings are recorded here and in
-the shipped scripts; no separate cluster PDF is required. Adapt the module,
-paths, partitions, time limits, and resources to your cluster allocation.
+These templates run the domain-randomized PPO experiment on a Slurm cluster.
+They use Python 3.12 and the checkout's `requirements.txt`. Adapt paths,
+optional Python module loading, partitions, time limits, and resource requests
+to your allocation. Submit from the checkout root, with `logs/` already created
+so Slurm can open its output files before the job starts.
 
-The scripts assume:
+## Private cluster settings
 
-- Python 3.12 from `miniforge3/25.3.0-python3.12.10`, loaded with `module load`.
-- The `short` partition for the smoke job and `nodes` for full CPU training.
-- Writable project and virtual-environment directories at the paths below.
-- Dependencies installed from the checkout's `requirements.txt`, with `logs/`
-  created before submission so Slurm can open its output files.
-
-Default layout used by the templates:
+For a new checkout:
 
 ```bash
-/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym        # project checkout / working directory
-/mnt/fastscratch/users/$USER/venvs/rl_venv       # Python virtual environment
+git clone https://github.com/giorgoschionas/SAiFE_gym.git
+cd SAiFE_gym
 ```
 
-The templates put the checkout on `scratch` and the environment on
-`fastscratch`. Export `SAIFE_PROJECT_DIR` and `SAIFE_VENV_DIR` to use different
-locations; the setup and job scripts read both variables. The submission
-examples below use the default project path. If you override it, submit from
-your chosen checkout so the relative `hpc/` and `logs/` paths resolve there.
+Create a private configuration once, unless you already have one:
+
+```bash
+cp hpc/.env.example hpc/.env
+```
+
+Edit `hpc/.env` for your cluster. It is a shell file containing exported
+variables and is ignored by Git; only the generic `.env.example` is published.
+If moving between checkouts or machines, copy your private configuration
+separately. Pulling the repository does not copy it. Use absolute paths for
+an existing checkout and virtual environment on shared storage accessible
+from compute nodes.
+
+| Setting | Default and purpose |
+|---|---|
+| `SAIFE_PROJECT_DIR` | Jobs use `SLURM_SUBMIT_DIR`, then the current directory. Setup uses its own checkout. The example config uses `$PWD` when sourced from the checkout root. |
+| `SAIFE_VENV_DIR` | `venv/` inside the project. Override to reuse an existing environment; relative values resolve inside the project. |
+| `SAIFE_PYTHON_MODULE` | Empty: leave loaded modules unchanged. If set, the scripts require the `module` command, purge modules, and load this exact module before activating the environment. |
+| `SBATCH_PARTITION` | Omitted: use the cluster's default partition. Set this in your private config to select a training partition. |
+| `SBATCH_ACCOUNT` | Optional allocation/account, handled by Slurm. |
+
+At the start of each submission session, from the checkout root:
+
+```bash
+source hpc/.env
+cd "$SAIFE_PROJECT_DIR"
+mkdir -p logs
+```
+
+Source this file **before** calling `sbatch`: the jobs do not source it
+automatically. Slurm selects partitions at submission time, and shell variables
+are not expanded in `#SBATCH` directives. `SBATCH_PARTITION` supplies a default;
+`sbatch --partition=YOUR_PARTITION ...` overrides it for a particular job.
+See the [Slurm sbatch documentation](https://slurm.schedmd.com/sbatch.html).
+The launchers keep `--export=ALL` so your exported settings reach the jobs.
+Avoid `--export=NONE` when relying on this configuration.
+
+The jobs preserve their single-node resource requests: 16 tasks for training
+and each sweep replicate, two for the smoke job, and one for aggregation.
+Their thread limits follow `SLURM_NTASKS`. Adjust resources and time limits
+with `sbatch` options as required by your allocation.
+
+New outputs default to these directories inside the checkout:
+
+| Job | Default results directory |
+|---|---|
+| Smoke | `experiments/results/domain_randomized_ppo/smoke` |
+| Full training | `experiments/results/domain_randomized_ppo/full` |
+| Seed sweep | `experiments/results/domain_randomized_ppo/seed_sweep/seed_<seed>` |
+| Aggregation | `experiments/results/domain_randomized_ppo/seed_sweep/aggregate` |
+
+Set `OUTPUT_DIR` to override a job's destination. For a sweep it is the parent
+directory, with `seed_<seed>` appended by each array task. Set aggregation's
+`INPUT_DIR` to that same parent; its output defaults to `$INPUT_DIR/aggregate`.
+Existing saved results are not moved or renamed. Supply their original paths
+through `INPUT_DIR`, `OUTPUT_DIR`, or the evaluator's run-directory arguments
+to continue using them. Relative output paths resolve inside the checkout.
+
+Jobs preserve an exported `MPLCONFIGDIR`; otherwise the training launchers
+create a unique Matplotlib cache beneath `${TMPDIR:-/tmp}`.
 
 ## One-time setup
 
 Use an interactive or compute session permitted for package installation by
-your cluster. For a new checkout, create the parent directory and clone the
-repository, then run the shipped setup script:
+your cluster. After configuring and sourcing `hpc/.env`, run:
 
 ```bash
-export SAIFE_PROJECT_DIR="/mnt/scratch/users/$USER/rl_experiments/SAiFE_gym"
-export SAIFE_VENV_DIR="/mnt/fastscratch/users/$USER/venvs/rl_venv"
-mkdir -p "$(dirname "$SAIFE_PROJECT_DIR")"
-git clone https://github.com/giorgoschionas/SAiFE_gym.git "$SAIFE_PROJECT_DIR"
-cd "$SAIFE_PROJECT_DIR"
-bash hpc/setup_barkla2_env.sh
+bash hpc/setup_env.sh
 ```
 
-For an existing checkout, set the variables, enter that directory, and run
-the setup command. It creates the virtual environment and output directories,
-installs the pinned dependencies, and prints the installed Python, NumPy, SB3,
-and Torch versions. Each job activates this environment itself. To run Python
-commands interactively afterward:
+This creates the virtual environment and output directories, installs the
+pinned dependencies, and prints Python, NumPy, SB3, and Torch versions.
+If you already have a compatible environment, set `SAIFE_VENV_DIR` to it and
+skip installation. Each job loads the selected module and activates the
+environment itself.
+
+Setup runs in a child shell. To run Python commands interactively afterward,
+load the same module in your current shell when configured, then activate:
 
 ```bash
+if [ -n "${SAIFE_PYTHON_MODULE:-}" ]; then
+  module purge
+  module load "$SAIFE_PYTHON_MODULE"
+fi
 source "$SAIFE_VENV_DIR/bin/activate"
 ```
 
@@ -56,16 +107,27 @@ source "$SAIFE_VENV_DIR/bin/activate"
 Submit a tiny end-to-end job first:
 
 ```bash
-cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
+cd "$SAIFE_PROJECT_DIR"
 sbatch hpc/sbatch_robust_lp_smoke.sh
 ```
+
+If your cluster has a separate short-job partition, select it explicitly:
+
+```bash
+sbatch --partition=YOUR_SHORT_PARTITION hpc/sbatch_robust_lp_smoke.sh
+```
+
+Check that the job finishes successfully and saves both PPO models and an
+`evaluation_grid.csv` containing 16 rows. This verifies module loading,
+environment activation, and training on your actual compute nodes.
+All submission examples assume `logs/` exists before calling `sbatch`.
 
 ## Full training
 
 Submit the default production run:
 
 ```bash
-cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
+cd "$SAIFE_PROJECT_DIR"
 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
@@ -98,6 +160,11 @@ Override parameters at submission time when needed:
 sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
   hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
+
+With `--export=ALL,NAME=value`, an already exported `NAME` takes precedence
+over the value in the option. To replace an existing exported value for one
+submission, use a shell assignment instead, such as
+`NUM_TRAJECTORIES=128 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh`.
 
 The training job writes convergence traces during learning:
 `domain_randomized_convergence.csv` and `nominal_convergence.csv`. By default
@@ -203,7 +270,7 @@ From the HPC project root, with the full Cartesian evaluation update present,
 paste this single line to submit seeds 43 through 52:
 
 ```bash
-mkdir -p logs && sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,N_STEPS=1000,DECISION_STRIDE=100,NUM_TRAJECTORIES=100,TRAIN_DOMAINS_PER_RESET=100,N_EVAL_EPISODES=10,EVALUATION_SEED=100042,TAU=50,ALPHA3=4000,INITIAL_WEALTH=1000,INVENTORY_PHI=0.4,NOMINAL_GAS_COST=2,PERIODIC_REBALANCE_EVERY=100,PERIODIC_WIDTH=50,NOMINAL_SIGMA=0.030,NOMINAL_ARRIVAL_RATE=450,TRAIN_SIGMA_MIN=0.015,TRAIN_SIGMA_MAX=0.045,TRAIN_ARRIVAL_RATE_MIN=300,TRAIN_ARRIVAL_RATE_MAX=600,EVAL_IN_DISTRIBUTION_SIGMA_VALUES="0.015 0.030 0.045",EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES="300 450 600",EVAL_STRESS_SIGMA_VALUES=0.050,EVAL_STRESS_ARRIVAL_RATE_VALUES="250 800",OUTPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m hpc/sbatch_robust_lp_seed_sweep_cpu.sh
+mkdir -p logs && sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,N_STEPS=1000,DECISION_STRIDE=100,NUM_TRAJECTORIES=100,TRAIN_DOMAINS_PER_RESET=100,N_EVAL_EPISODES=10,EVALUATION_SEED=100042,TAU=50,ALPHA3=4000,INITIAL_WEALTH=1000,INVENTORY_PHI=0.4,NOMINAL_GAS_COST=2,PERIODIC_REBALANCE_EVERY=100,PERIODIC_WIDTH=50,NOMINAL_SIGMA=0.030,NOMINAL_ARRIVAL_RATE=450,TRAIN_SIGMA_MIN=0.015,TRAIN_SIGMA_MAX=0.045,TRAIN_ARRIVAL_RATE_MIN=300,TRAIN_ARRIVAL_RATE_MAX=600,EVAL_IN_DISTRIBUTION_SIGMA_VALUES="0.015 0.030 0.045",EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES="300 450 600",EVAL_STRESS_SIGMA_VALUES=0.050,EVAL_STRESS_ARRIVAL_RATE_VALUES="250 800",OUTPUT_DIR=experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m hpc/sbatch_robust_lp_seed_sweep_cpu.sh
 ```
 
 Each policy retains a budget of 10 million simulator-equivalent steps: 100,000
@@ -214,12 +281,12 @@ remain specific to this resolution; the earlier high-arrival diagnostics found
 material changes in reward when the simulator timestep was refined.
 
 The launcher saves runs under
-`experiments/results/barkla2_seed_sweep/moderate_arrivals_10m/seed_<seed>/run_<timestamp>/`.
+`experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m/seed_<seed>/run_<timestamp>/`.
 Use a different `OUTPUT_DIR` for a repeat sweep so aggregation does not encounter
 duplicate training seeds. After all ten array tasks finish successfully, run:
 
 ```bash
-sbatch --export=ALL,INPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m,OUTPUT_DIR=experiments/results/barkla2_seed_sweep/moderate_arrivals_10m/aggregate hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
+sbatch --export=ALL,INPUT_DIR=experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m,OUTPUT_DIR=experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m/aggregate hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
 ```
 
 Check that each saved `config.json` contains the selected bounds, nominal
@@ -306,6 +373,13 @@ subsetting or reordering the diagnostic grid. Existing cells retain the source
 run's regime seeds. Keep these diagnostic outputs separate from the production
 seed-sweep aggregator, which expects its configured grid and all four policies.
 
+To plot matched periodic-LP and nominal-PPO paths from a saved run, supply the
+run explicitly; the plotting tool has no default checkpoint location:
+
+```bash
+python experiments/plot_nominal_lp_strategy_comparison.py --run-dir "$SAIFE_RUN_DIR"
+```
+
 ## Seed sweep
 
 The default array trains ten independent PPO replicates (seeds 43 through 52)
@@ -314,11 +388,14 @@ while evaluating every learned network on the same paths using
 dependency:
 
 ```bash
-cd /mnt/scratch/users/$USER/rl_experiments/SAiFE_gym
+cd "$SAIFE_PROJECT_DIR"
 SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_robust_lp_seed_sweep_cpu.sh)
 sbatch --dependency=afterok:$SWEEP_JOB_ID \
   hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
 ```
+
+Add `--partition=YOUR_SHORT_PARTITION` to the aggregation submission if it
+should use a different partition from training. Keep the `afterok` dependency.
 
 Edit both `SEEDS=(...)` and the Slurm array bounds in the sweep script if you
 want a different replicate count. The aggregation job runs only after every
