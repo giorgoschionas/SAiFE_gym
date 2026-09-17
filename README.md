@@ -275,3 +275,10 @@ Main runtime and workflow dependencies include:
 - `ipykernel` and `ipython` for notebooks
 
 See `requirements.txt` for exact versions.
+
+## License
+
+Original contributions to SAiFE_gym are licensed under the [MIT License](LICENSE).
+Reused code from `mbt_gym` retains its BSD-3-Clause terms. See
+[third-party notices](THIRD_PARTY_NOTICES.md) for attribution and the full upstream
+license.
