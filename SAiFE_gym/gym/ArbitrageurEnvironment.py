@@ -20,6 +20,7 @@ from SAiFE_gym.gym.simulation_core import (
     reset_model_state,
     reset_stochastic_processes,
     terminated_flags,
+    validate_gas_cost_model,
 )
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import OrnsteinUhlenbeckMidpriceModel
@@ -77,6 +78,7 @@ class ArbitrageurEnvironment(gymnasium.Env):
         self.num_trajectories = num_trajectories
         self.initial_pool_price = initial_pool_price
         self._step_size = self.terminal_time / self.n_steps
+        validate_gas_cost_model(self.model_dynamics, num_trajectories, self._step_size)
         self.max_speed = float(max_speed)
         self.speed_cost_coefficient = float(speed_cost_coefficient)
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_ARBITRAGEUR_OBS_KEYS
@@ -104,7 +106,7 @@ class ArbitrageurEnvironment(gymnasium.Env):
             self.num_trajectories,
         )
 
-        if seed:
+        if seed is not None:
             self.seed(seed)
         self.rng = np.random.default_rng(seed)
 
@@ -125,7 +127,11 @@ class ArbitrageurEnvironment(gymnasium.Env):
         if self.model_dynamics.midprice_model:
             self.model_dynamics.midprice_model.seed(seed)
         if self.model_dynamics.arrival_model:
-            self.model_dynamics.arrival_model.seed(seed + 1 if seed else None)
+            self.model_dynamics.arrival_model.seed(seed + 1 if seed is not None else None)
+        if self.model_dynamics.gas_cost_model is not None:
+            self.model_dynamics.gas_cost_model.seed(
+                seed + 4 if seed is not None else None
+            )
 
     def reset(self, seed: int = None, options: dict = None):
         if seed is not None:

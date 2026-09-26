@@ -27,6 +27,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnviro
 from SAiFE_gym.rewards.RewardFunctions import PnL, RewardFunction
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from SAiFE_gym.stochastic_processes.gas_cost_models import GasCostModel
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ def get_amm_env(
     swap_fee_rate: float = 0.0,
     reward_function: RewardFunction = None,
     seed: int = SEED,
+    gas_cost_model: GasCostModel = None,
 ) -> AMMEnvironment:
     """Build an AMMEnvironment for LP training / evaluation.
 
@@ -84,6 +86,8 @@ def get_amm_env(
                           (e.g. 0.001 = 0.1%). Cost = rate * W * |α_new - α_current|.
         reward_function:  Defaults to PnL.
         seed:             Random seed.
+        gas_cost_model:   Optional stochastic gas process; overrides gas_cost.
+                          Its batch size and timestep must match the environment.
 
     Returns:
         Configured AMMEnvironment ready for reset / step.
@@ -124,6 +128,7 @@ def get_amm_env(
         gas_cost=gas_cost,
         swap_fee_rate=swap_fee_rate,
         seed=seed + 2,
+        gas_cost_model=gas_cost_model,
     )
     return AMMEnvironment(
         terminal_time=terminal_time,
@@ -174,7 +179,8 @@ def _validate_separate_eval_env(env: AMMEnvironment, eval_env: AMMEnvironment):
         ("reward_function", env.reward_function, eval_env.reward_function),
     ]
     for name in (
-        "midprice_model", "arrival_model", "price_impact_model", "fee_accounting_model"
+        "midprice_model", "arrival_model", "price_impact_model", "fee_accounting_model",
+        "gas_cost_model",
     ):
         components.append((
             name, getattr(env.model_dynamics, name),

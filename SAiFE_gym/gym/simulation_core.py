@@ -28,6 +28,23 @@ from SAiFE_gym.gym.index_names import (
 )
 
 
+def validate_gas_cost_model(
+    model_dynamics: ModelDynamics,
+    num_trajectories: int,
+    step_size: float,
+) -> None:
+    """Require the optional gas process to follow the simulator's batch and clock."""
+    gas_model = model_dynamics.gas_cost_model
+    if gas_model is None:
+        return
+    if gas_model.num_trajectories != num_trajectories:
+        raise ValueError("gas_cost_model.num_trajectories must match the environment")
+    if gas_model.num_trajectories != model_dynamics.num_trajectories:
+        raise ValueError("gas_cost_model.num_trajectories must match model dynamics")
+    if not np.isclose(gas_model.step_size, step_size, rtol=1e-12, atol=0.0):
+        raise ValueError("gas_cost_model.step_size must match the environment timestep")
+
+
 def compute_derived_obs(state: dict, model_dynamics: ModelDynamics) -> None:
     """Compute derived LP observation keys in-place on ``state``."""
     state[POOL_SQRT_PRICE_KEY] = model_dynamics.get_pool_sqrt_price(state)
@@ -58,6 +75,10 @@ def create_uniswap_v3_initial_state(
         pool_tick - model_dynamics.tick_lower_global
     ]
     initial_liquidity = 100000.0
+    gas_cost = np.full(num_trajectories, model_dynamics.gas_cost, dtype=np.float64)
+    if model_dynamics.gas_cost_model is not None:
+        model_dynamics.gas_cost_model.reset()
+        gas_cost = model_dynamics.gas_cost_model.current_gas_cost.copy()
 
     return {
         POOL_SQRT_PRICE_KEY: np.full(
@@ -89,9 +110,7 @@ def create_uniswap_v3_initial_state(
             num_trajectories, initial_price, dtype=np.float64
         ),
         TIME_KEY: np.zeros(num_trajectories, dtype=np.float64),
-        GAS_COST_KEY: np.full(
-            num_trajectories, model_dynamics.gas_cost, dtype=np.float64
-        ),
+        GAS_COST_KEY: gas_cost,
         INITIAL_WEALTH_KEY: np.full(
             num_trajectories, initial_wealth, dtype=np.float64
         ),
@@ -108,6 +127,8 @@ def reset_stochastic_processes(model_dynamics: ModelDynamics) -> None:
         model_dynamics.midprice_model.reset()
     if model_dynamics.arrival_model:
         model_dynamics.arrival_model.reset()
+    if model_dynamics.gas_cost_model is not None:
+        model_dynamics.gas_cost_model.reset()
 
 
 def reset_model_state(
@@ -116,6 +137,8 @@ def reset_model_state(
     num_trajectories: int,
 ) -> None:
     model_dynamics.state = {k: v.copy() for k, v in initial_state.items()}
+    if model_dynamics.gas_cost_model is not None:
+        model_dynamics.state[GAS_COST_KEY] = model_dynamics.gas_cost_model.current_gas_cost.copy()
     model_dynamics.last_arrivals = np.zeros((num_trajectories, 2), dtype=bool)
 
 
@@ -124,7 +147,7 @@ def advance_market_state(
     arrivals: np.ndarray,
     action: np.ndarray,
 ) -> None:
-    """Advance midprice and arrival-process state after pool state mutation."""
+    """Advance market processes after actions have used the observed gas cost."""
     md = model_dynamics
 
     md.midprice_model.update(arrivals, None, action, md.state)
@@ -147,6 +170,9 @@ def advance_market_state(
         "tick_lower_global": md.tick_lower_global,
     }
     md.arrival_model.update(arrivals, None, action, context)
+    if md.gas_cost_model is not None:
+        md.gas_cost_model.update(arrivals, None, action, md.state)
+        md.state[GAS_COST_KEY] = md.gas_cost_model.current_gas_cost.copy()
 
 
 def terminated_flags(

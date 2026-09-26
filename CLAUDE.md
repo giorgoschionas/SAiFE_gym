@@ -159,7 +159,7 @@ space to accommodate roundoff at the configured terminal horizon.
 | `LP_TICK_UPPER_KEY` | `(num_trajectories,)` | LP's position upper tick bound |
 | `LP_EVER_DEPLOYED_KEY` | `(num_trajectories,)` | Whether liquidity was previously deployed |
 | `LP_FEE_SNAPSHOT0_KEY` / `LP_FEE_SNAPSHOT1_KEY` | `(num_trajectories,)` | Fee entitlement at position entry |
-| `GAS_COST_KEY` / `INITIAL_WEALTH_KEY` | `(num_trajectories,)` | Episode rebalance cost and starting capital |
+| `GAS_COST_KEY` / `INITIAL_WEALTH_KEY` | `(num_trajectories,)` | Current rebalance cost and starting capital |
 
 **Market state:**
 | Key | Shape | Description |
@@ -339,3 +339,18 @@ When creating `UniswapV3ModelDynamics`:
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
+- **`gas_cost_model`** optionally overrides fixed gas with a `GasCostModel` from
+  `stochastic_processes/gas_cost_models.py`; it can also be passed to `get_amm_env`.
+  Its trajectory count and timestep must match the environment.
+- **`OrnsteinUhlenbeckGasCostModel(theta, mu, sigma, ...)`** uses the exact
+  transition for `dX = theta * (mu - X) dt + sigma dW`. Latent state has shape
+  `(num_trajectories, 1)`; `current_gas_cost` returns `max(X, 0)` with shape
+  `(num_trajectories,)`, without clipping the latent state. `theta > 0`,
+  `mu >= 0`, `sigma >= 0`; initial cost defaults to `mu`.
+- Rebalances pay the pre-action observed gas cost. The shared simulation core
+  then advances gas once per simulator step, including holds. First deployment
+  and holds remain free. Gas uses environment seed plus 4; reset restores its
+  initial state, and only explicit seeding restarts the RNG stream.
+- Default SB3 observation keys and training CLI fixed-gas behavior are unchanged.
+  Gas can be explicitly selected through SB3 `obs_keys`; domain randomization
+  continues to vary only midprice volatility and arrival rates.

@@ -11,6 +11,7 @@ from stable_baselines3.common.vec_env import VecNormalize
 from experiments import helpers
 from SAiFE_gym.gym.index_names import ASSET_PRICE_KEY
 from SAiFE_gym.rewards.RewardFunctions import PnL
+from SAiFE_gym.stochastic_processes.gas_cost_models import OrnsteinUhlenbeckGasCostModel
 
 
 class StatefulPnL(PnL):
@@ -81,7 +82,10 @@ def assert_equal(actual, expected):
 
 def components(env):
     md = env.model_dynamics
-    return [env, md, md.midprice_model, md.arrival_model, md.price_impact_model]
+    result = [env, md, md.midprice_model, md.arrival_model, md.price_impact_model]
+    if md.gas_cost_model is not None:
+        result.append(md.gas_cost_model)
+    return result
 
 
 def snapshot(env):
@@ -92,6 +96,7 @@ def snapshot(env):
         "rngs": [component.rng.bit_generator.state for component in components(env)],
         "midprice": md.midprice_model.current_state,
         "arrival": md.arrival_model.current_state,
+        "gas": None if md.gas_cost_model is None else md.gas_cost_model.current_state,
         "reward": vars(env.reward_function),
     })
 
@@ -104,12 +109,17 @@ def normalization_snapshot(vec):
     })
 
 
+@pytest.mark.parametrize("stochastic_gas", [False, True])
 def test_automatic_copy_preserves_configuration_and_leaves_training_untouched(
-    make_env, make_learner,
+    make_env, make_learner, stochastic_gas,
 ):
+    gas_model = OrnsteinUhlenbeckGasCostModel(
+        theta=2.0, mu=12.0, sigma=1.0, step_size=1 / 64, num_trajectories=2,
+    ) if stochastic_gas else None
     env = make_env(
         tau=7, volatility=1.3, arrival_rate=55.0, alpha3=0.7,
         gas_cost=12.0, swap_fee_rate=0.002, reward_function=StatefulPnL(), seed=17,
+        gas_cost_model=gas_model,
     )
     env.reset()
     env.step(np.tile([-3, 4, -1], (env.num_trajectories, 1)))
@@ -141,10 +151,17 @@ def test_automatic_copy_preserves_configuration_and_leaves_training_untouched(
 
 @pytest.mark.parametrize("normalise_obs", [False, True])
 @pytest.mark.parametrize("num_trajectories", [1, 3])
+@pytest.mark.parametrize("stochastic_gas", [False, True])
 def test_real_evaluation_does_not_change_training_or_next_transition(
-    make_env, make_learner, tmp_path, normalise_obs, num_trajectories,
+    make_env, make_learner, tmp_path, normalise_obs, num_trajectories, stochastic_gas,
 ):
-    env = make_env(num_trajectories=num_trajectories, reward_function=StatefulPnL())
+    gas_model = OrnsteinUhlenbeckGasCostModel(
+        theta=2.0, mu=2.0, sigma=1.0, step_size=1 / 64, num_trajectories=num_trajectories,
+    ) if stochastic_gas else None
+    env = make_env(
+        num_trajectories=num_trajectories, reward_function=StatefulPnL(),
+        gas_cost_model=gas_model,
+    )
     model, callback = make_learner(env, normalise_obs=normalise_obs)
     training_vec = model.get_env()
     control_vec = helpers.wrap_env(deepcopy(env), normalise_obs=normalise_obs)
@@ -204,9 +221,13 @@ def test_explicit_environment_can_have_different_batch_size(make_env, make_learn
 @pytest.mark.parametrize("shared_component", [
     "environment", "model_dynamics", "reward_function", "midprice_model",
     "arrival_model", "price_impact_model", "fee_accounting_model",
+    "gas_cost_model",
 ])
 def test_shared_components_rejected_before_reset(make_env, make_learner, shared_component):
-    env = make_env(reward_function=StatefulPnL())
+    gas_model = OrnsteinUhlenbeckGasCostModel(
+        theta=2.0, mu=2.0, sigma=1.0, step_size=1 / 64, num_trajectories=2,
+    ) if shared_component == "gas_cost_model" else None
+    env = make_env(reward_function=StatefulPnL(), gas_cost_model=gas_model)
     env.reset()
     env.step(np.tile([-1, 1, -1], (env.num_trajectories, 1)))
     evaluation = make_env()

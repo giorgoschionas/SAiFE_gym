@@ -17,6 +17,7 @@ from SAiFE_gym.gym.index_names import (
 from SAiFE_gym.gym.helpers.AMM_utils import get_position_value_vec
 from SAiFE_gym.stochastic_processes.arrival_models import ArrivalModel
 from SAiFE_gym.stochastic_processes.fee_accounting_models import FeeAccountingModel, UniswapV3FeeAccounting
+from SAiFE_gym.stochastic_processes.gas_cost_models import GasCostModel
 from SAiFE_gym.stochastic_processes.midprice_models import MidpriceModel
 from SAiFE_gym.stochastic_processes.price_impact_models import (
     PriceImpactModel,
@@ -32,11 +33,13 @@ class ModelDynamics(metaclass=abc.ABCMeta):
         fee_accounting_model: FeeAccountingModel = None,
         num_trajectories: int = 1,
         seed: int = None,
+        gas_cost_model: GasCostModel = None,
     ):
         self.midprice_model = midprice_model
         self.arrival_model = arrival_model
         self.price_impact_model = price_impact_model
         self.fee_accounting_model = fee_accounting_model
+        self.gas_cost_model = gas_cost_model
         self.num_trajectories = num_trajectories
         self.rng = default_rng(seed)
         self.seed = seed
@@ -88,13 +91,15 @@ class UniswapV3ModelDynamics(ModelDynamics):
         gas_cost: float = 20,      # Fixed cost per rebalance in token1 units
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
+        gas_cost_model: GasCostModel = None,
     ):
         super().__init__(midprice_model = midprice_model,
                          arrival_model = arrival_model,
                          price_impact_model = price_impact_model,
                          fee_accounting_model = fee_accounting_model,
                          num_trajectories = num_trajectories,
-                         seed = seed)
+                         seed = seed,
+                         gas_cost_model = gas_cost_model)
 
         self.price_impact_model = self.price_impact_model or OneTickUniswapV3PriceImpact(
             num_trajectories=num_trajectories,
@@ -575,8 +580,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if np.any(has_position):
             alpha_new = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper)
             swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
-            episode_gas_cost = self.state.get(GAS_COST_KEY, self.gas_cost)
-            total_cost = np.where(has_position, episode_gas_cost + swap_cost, 0.0)
+            current_gas_cost = self.state.get(GAS_COST_KEY, self.gas_cost)
+            total_cost = np.where(has_position, current_gas_cost + swap_cost, 0.0)
             wealth = np.maximum(wealth - total_cost, 0.0)
 
         # Value per unit liquidity at new range
