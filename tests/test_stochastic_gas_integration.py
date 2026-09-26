@@ -177,15 +177,17 @@ def test_gymnasium_observations_and_resets(vector):
     np.testing.assert_array_equal(obs[GAS_COST_KEY], np.full((n,) if vector else (), 5.0))
 
 
-def test_sb3_explicit_gas_feature_and_autoreset():
-    assert GAS_COST_KEY not in DEFAULT_OBS_KEYS
-    env = StableBaselinesAMMEnvironment(
-        make_env(make_gas()), obs_keys=[*DEFAULT_OBS_KEYS, GAS_COST_KEY],
-    )
+def test_sb3_default_gas_feature_and_autoreset():
+    assert DEFAULT_OBS_KEYS[-1] == GAS_COST_KEY
+    env = StableBaselinesAMMEnvironment(make_env(make_gas()))
     obs = env.reset()
+    assert obs.shape == (3, 10)
     np.testing.assert_array_equal(obs[:, -1], np.full(3, 5.0))
     for _ in range(4):
         obs, _, done, infos = env.step(actions(hold=True))
+        np.testing.assert_array_equal(
+            obs[:, -1], env.env.state[GAS_COST_KEY].astype(np.float32),
+        )
     assert done.all()
     np.testing.assert_array_equal(obs[:, -1], np.full(3, 5.0))
     assert not np.array_equal(

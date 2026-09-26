@@ -18,6 +18,7 @@ from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
     BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
+    GAS_COST_KEY,
     HAS_POSITION_KEY,
     INITIAL_WEALTH_KEY,
     LP_LIQUIDITY_KEY,
@@ -119,6 +120,9 @@ class TestReset:
         env = create_sb3_env(num_trajectories=3)
         obs = env.reset()
         assert obs.shape == (3, len(DEFAULT_OBS_KEYS))
+        np.testing.assert_array_equal(
+            obs[:, DEFAULT_OBS_KEYS.index(GAS_COST_KEY)], np.full(3, 20.0),
+        )
 
     def test_dtype(self):
         env = create_sb3_env(num_trajectories=1)

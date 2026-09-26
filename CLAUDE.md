@@ -351,6 +351,7 @@ When creating `AMMEnvironment`:
   then advances gas once per simulator step, including holds. First deployment
   and holds remain free. Gas uses environment seed plus 4; reset restores its
   initial state, and only explicit seeding restarts the RNG stream.
-- Default SB3 observation keys and training CLI fixed-gas behavior are unchanged.
-  Gas can be explicitly selected through SB3 `obs_keys`; domain randomization
-  continues to vary only midprice volatility and arrival rates.
+- Default SB3 observations append `GAS_COST_KEY` as the tenth feature, in token1
+  units. Earlier nine-feature policies require explicit `obs_keys` excluding
+  gas and their original normalization statistics. The training CLI still uses
+  fixed gas; domain randomization varies only midprice volatility and arrival rates.

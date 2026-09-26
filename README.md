@@ -94,10 +94,12 @@ Reset restores the initial gas cost. `reset(seed=...)` also replays the RNG
 stream; resets without a seed continue that stream. Gas uses environment seed
 plus 4, independently of the existing market streams.
 
-Raw and Gymnasium observations include `gas_cost`. The default SB3 feature
-selection stays unchanged; to expose gas to a policy, construct
-`StableBaselinesAMMEnvironment(env, obs_keys=[*DEFAULT_OBS_KEYS, GAS_COST_KEY])`,
-importing the adapter and `DEFAULT_OBS_KEYS` from
+Raw, Gymnasium, and default SB3 observations include `gas_cost`. SB3 appends
+`GAS_COST_KEY` as the tenth feature, in token1 units; the existing `VecNormalize`
+wrapper normalizes it when enabled. For saved policies using the previous
+nine-feature default, pass `obs_keys=[k for k in DEFAULT_OBS_KEYS if k != GAS_COST_KEY]`
+to `StableBaselinesAMMEnvironment`, using the policy's original normalization
+statistics. Import the adapter and `DEFAULT_OBS_KEYS` from
 `SAiFE_gym.gym.StableBaselinesAMMEnvironment` and `GAS_COST_KEY` from
 `SAiFE_gym.gym.index_names`. Stochastic gas is configured through Python;
 the training CLI continues to use fixed gas.

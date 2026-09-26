@@ -677,8 +677,8 @@ def test_train_and_save_separates_environment_seed_from_ppo_seed(
     assert (tmp_path / "nominal_ppo.zip").is_file()
 
 
-def test_default_sb3_observation_hides_gas_cost():
-    assert GAS_COST_KEY not in DEFAULT_OBS_KEYS
+def test_default_sb3_observation_includes_gas_cost():
+    assert GAS_COST_KEY in DEFAULT_OBS_KEYS
 
     env = DomainRandomizedAMMEnvironment(
         create_test_amm_env(),
@@ -690,7 +690,11 @@ def test_default_sb3_observation_hides_gas_cost():
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
-    assert obs.shape[1] == 9
+    assert obs.shape[1] == 10
+    np.testing.assert_array_equal(
+        obs[:, DEFAULT_OBS_KEYS.index(GAS_COST_KEY)],
+        env.state[GAS_COST_KEY].astype(np.float32),
+    )
     np.testing.assert_array_equal(
         obs[:, DEFAULT_OBS_KEYS.index(HAS_POSITION_KEY)],
         np.zeros(env.num_trajectories),
