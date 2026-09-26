@@ -22,6 +22,7 @@ from SAiFE_gym.gym.simulation_core import (
     reset_model_state,
     reset_stochastic_processes,
     terminated_flags,
+    validate_gas_cost_model,
 )
 
 
@@ -65,6 +66,8 @@ class AMMEnvironment(gymnasium.Env):
             num_trajectories=num_trajectories,
             seed=seed
         )
+
+        validate_gas_cost_model(self.model_dynamics, num_trajectories, self._step_size)
 
         # Create reward function (default to PnL which works with both array and dict states)
         self.reward_function = reward_function if reward_function else PnL()
@@ -164,6 +167,10 @@ class AMMEnvironment(gymnasium.Env):
             if self.model_dynamics.price_impact_model:
                 self.model_dynamics.price_impact_model.seed(
                     seed + 2 if seed is not None else None
+                )
+            if self.model_dynamics.gas_cost_model is not None:
+                self.model_dynamics.gas_cost_model.seed(
+                    seed + 4 if seed is not None else None
                 )
 
     def reset(self, seed: int = None, options: dict = None):

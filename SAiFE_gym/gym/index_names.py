@@ -39,8 +39,8 @@ LP_EVER_DEPLOYED_KEY = 'lp_ever_deployed'   # shape: (num_trajectories,), dtype 
 ASSET_PRICE_KEY = 'midprice'            # External market price - shape: (num_trajectories,)
 TIME_KEY = 'time'                           # Current simulation time - shape: (num_trajectories,)
 
-# Environment parameters (constant per episode, exposed as observations)
-GAS_COST_KEY = 'gas_cost'               # Fixed rebalancing cost in token1 units - shape: (num_trajectories,)
+# Rebalance cost and starting capital (exposed as observations)
+GAS_COST_KEY = 'gas_cost'               # Current rebalance cost in token1 units - shape: (num_trajectories,)
 INITIAL_WEALTH_KEY = 'initial_wealth'   # LP's starting wealth before first deployment - shape: (num_trajectories,)
 
 # Derived observation features (computed from state, not stored in state dict)
@@ -53,4 +53,3 @@ POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset —
 HAS_POSITION_KEY = 'has_position'              # 1.0 when LP liquidity is deployed, else 0.0
 PORTFOLIO_VALUE_RATIO_KEY = 'portfolio_value_ratio'  # portfolio_value / initial_wealth
 UNCLAIMED_FEE_VALUE_RATIO_KEY = 'unclaimed_fee_value_ratio'  # unclaimed fee value / initial_wealth
-

@@ -50,6 +50,60 @@ for _ in range(env.n_steps):
 print("Episode rewards:", cumulative_rewards)
 ```
 
+## Stochastic Gas Costs
+
+Gas is a cost per LP rebalance in token1 units. By default it is the fixed
+`gas_cost` supplied to `UniswapV3ModelDynamics` or `get_amm_env`. To make it
+vary over time, inject an `OrnsteinUhlenbeckGasCostModel`:
+
+```python
+from experiments.helpers import get_amm_env
+from SAiFE_gym.stochastic_processes.gas_cost_models import OrnsteinUhlenbeckGasCostModel
+
+gas_model = OrnsteinUhlenbeckGasCostModel(
+    theta=5.0,          # Mean-reversion speed, in inverse simulation time
+    mu=2.0,             # Long-term latent mean, in token1
+    sigma=0.5,          # Volatility, in token1 / sqrt(simulation time)
+    initial_cost=2.0,   # Defaults to mu
+    step_size=1.0 / 200,
+    terminal_time=1.0,
+    num_trajectories=10,
+)
+env = get_amm_env(
+    num_trajectories=10, terminal_time=1.0, n_steps=200,
+    gas_cost_model=gas_model, seed=42,
+)
+obs, _ = env.reset()
+print(obs["gas_cost"])  # Cost available to the next rebalance action
+```
+
+The process follows `dX = theta * (mu - X) dt + sigma dW`, using the exact
+Gaussian transition and independent noise per trajectory. `theta` must be
+positive; `mu`, `sigma`, and `initial_cost` must be nonnegative. The process's
+trajectory count and timestep must match the environment. The injected model
+takes precedence over the scalar `gas_cost` setting.
+
+Charged gas is `max(X, 0)`. The latent OU state remains unclipped, so `mu` is
+the latent mean and the average charged cost can exceed it. Each action uses
+the gas cost in its observation, then gas advances once for the next simulator
+step, including hold steps. First deployment and holds are free; subsequent
+rebalances deduct gas plus any configured swap cost, with wealth floored at
+zero. PnL rewards already include these deductions.
+
+Reset restores the initial gas cost. `reset(seed=...)` also replays the RNG
+stream; resets without a seed continue that stream. Gas uses environment seed
+plus 4, independently of the existing market streams.
+
+Raw, Gymnasium, and default SB3 observations include `gas_cost`. SB3 appends
+`GAS_COST_KEY` as the tenth feature, in token1 units; the existing `VecNormalize`
+wrapper normalizes it when enabled. For saved policies using the previous
+nine-feature default, pass `obs_keys=[k for k in DEFAULT_OBS_KEYS if k != GAS_COST_KEY]`
+to `StableBaselinesAMMEnvironment`, using the policy's original normalization
+statistics. Import the adapter and `DEFAULT_OBS_KEYS` from
+`SAiFE_gym.gym.StableBaselinesAMMEnvironment` and `GAS_COST_KEY` from
+`SAiFE_gym.gym.index_names`. Stochastic gas is configured through Python;
+the training CLI continues to use fixed gas.
+
 ## Domain-Randomized PPO
 
 `experiments/train_robust_lp_agent.py` trains two PPO policies with the same

@@ -27,6 +27,7 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnviro
 from SAiFE_gym.rewards.RewardFunctions import PnL, RewardFunction
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
+from SAiFE_gym.stochastic_processes.gas_cost_models import GasCostModel
 
 
 # ---------------------------------------------------------------------------
@@ -66,6 +67,7 @@ def get_amm_env(
     swap_fee_rate: float = 0.0,
     reward_function: RewardFunction = None,
     seed: int = SEED,
+    gas_cost_model: GasCostModel = None,
 ) -> AMMEnvironment:
     """Build an AMMEnvironment for LP training / evaluation.
 
@@ -84,6 +86,8 @@ def get_amm_env(
                           (e.g. 0.001 = 0.1%). Cost = rate * W * |α_new - α_current|.
         reward_function:  Defaults to PnL.
         seed:             Random seed.
+        gas_cost_model:   Optional stochastic gas process; overrides gas_cost.
+                          Its batch size and timestep must match the environment.
 
     Returns:
         Configured AMMEnvironment ready for reset / step.
@@ -124,6 +128,7 @@ def get_amm_env(
         gas_cost=gas_cost,
         swap_fee_rate=swap_fee_rate,
         seed=seed + 2,
+        gas_cost_model=gas_cost_model,
     )
     return AMMEnvironment(
         terminal_time=terminal_time,
@@ -174,7 +179,8 @@ def _validate_separate_eval_env(env: AMMEnvironment, eval_env: AMMEnvironment):
         ("reward_function", env.reward_function, eval_env.reward_function),
     ]
     for name in (
-        "midprice_model", "arrival_model", "price_impact_model", "fee_accounting_model"
+        "midprice_model", "arrival_model", "price_impact_model", "fee_accounting_model",
+        "gas_cost_model",
     ):
         components.append((
             name, getattr(env.model_dynamics, name),
@@ -238,8 +244,8 @@ def get_ppo_learner_and_callback(
                   Scales roughly as O(obs_dim * log(obs_dim)) with state
                   dimension.  Practical guideline for this environment:
                     obs_dim=2  (mbt reduced)  →   500k –   2M
-                    obs_dim=9  (SAiFE)        →    2M  –   5M   (with VecNormalize)
-                    obs_dim=9  (no normalise) →    5M  –  20M
+                    obs_dim=10 (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=10 (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(..., callback=callback) to train.
@@ -606,6 +612,7 @@ def create_policy_behavior_plot(
         6: HAS_POSITION_KEY
         7: PORTFOLIO_VALUE_RATIO_KEY
         8: UNCLAIMED_FEE_VALUE_RATIO_KEY
+        9: GAS_COST_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -619,6 +626,7 @@ def create_policy_behavior_plot(
         np.ones(n_points),
         np.ones(n_points),
         np.zeros(n_points),
+        np.full(n_points, gas_cost),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -693,6 +701,7 @@ def create_time_behavior_plot(
         np.ones(n_total),
         np.ones(n_total),
         np.zeros(n_total),
+        np.full(n_total, gas_cost),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
