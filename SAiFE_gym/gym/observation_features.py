@@ -2,7 +2,6 @@ import numpy as np
 
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
-    BOUNDARY_PROXIMITY_KEY,
     HAS_POSITION_KEY,
     INITIAL_WEALTH_KEY,
     LP_LIQUIDITY_KEY,
@@ -26,7 +25,6 @@ SB3_DERIVED_OBS_KEYS = {
     MISPRICING_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_UPPER_OFFSET_KEY,
-    BOUNDARY_PROXIMITY_KEY,
     POSITION_WIDTH_KEY,
     POOL_SQRT_PRICE_KEY,
     HAS_POSITION_KEY,
@@ -53,7 +51,6 @@ def compute_sb3_observation_features(state_dict: dict) -> dict:
         POOL_SQRT_PRICE_KEY: pool_price,
         LP_LOWER_OFFSET_KEY: lower_offset,
         LP_UPPER_OFFSET_KEY: upper_offset,
-        BOUNDARY_PROXIMITY_KEY: np.minimum(lower_offset, upper_offset),
         POSITION_WIDTH_KEY: lower_offset + upper_offset,
         HAS_POSITION_KEY: (state_dict[LP_LIQUIDITY_KEY] > 0.0).astype(np.float64),
         PORTFOLIO_VALUE_RATIO_KEY: state_dict[PORTFOLIO_VALUE_KEY] / initial_wealth,

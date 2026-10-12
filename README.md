@@ -94,15 +94,20 @@ Reset restores the initial gas cost. `reset(seed=...)` also replays the RNG
 stream; resets without a seed continue that stream. Gas uses environment seed
 plus 4, independently of the existing market streams.
 
-Raw, Gymnasium, and default SB3 observations include `gas_cost`. SB3 appends
-`GAS_COST_KEY` as the tenth feature, in token1 units; the existing `VecNormalize`
-wrapper normalizes it when enabled. For saved policies using the previous
-nine-feature default, pass `obs_keys=[k for k in DEFAULT_OBS_KEYS if k != GAS_COST_KEY]`
-to `StableBaselinesAMMEnvironment`, using the policy's original normalization
-statistics. Import the adapter and `DEFAULT_OBS_KEYS` from
-`SAiFE_gym.gym.StableBaselinesAMMEnvironment` and `GAS_COST_KEY` from
-`SAiFE_gym.gym.index_names`. Stochastic gas is configured through Python;
-the training CLI continues to use fixed gas.
+Raw, Gymnasium, and default SB3 observations include `gas_cost`. The default
+SB3 observation vector has nine features, in order: `mispricing`,
+`lp_lower_offset`, `lp_upper_offset`, `position_width`, `time`, `has_position`,
+`portfolio_value_ratio`, `unclaimed_fee_value_ratio`, and `gas_cost`.
+`GAS_COST_KEY` is the ninth feature (index 8), in token1 units; the existing
+`VecNormalize` wrapper normalizes it when enabled. Stochastic gas is configured
+through Python; the training CLI continues to use fixed gas.
+
+The derived `boundary_proximity` observation has been removed completely.
+Saved policies and normalization statistics that include it require their
+original code version or retraining with fresh normalization statistics.
+This also applies to older nine-feature policies that included
+`boundary_proximity` but omitted gas: their column meanings differ from the
+current nine-feature layout despite having the same dimension.
 
 ## Domain-Randomized PPO
 

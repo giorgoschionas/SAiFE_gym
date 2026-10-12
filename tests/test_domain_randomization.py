@@ -690,7 +690,7 @@ def test_default_sb3_observation_includes_gas_cost():
     obs = sb3_env.reset()
 
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
-    assert obs.shape[1] == 10
+    assert obs.shape[1] == 9
     np.testing.assert_array_equal(
         obs[:, DEFAULT_OBS_KEYS.index(GAS_COST_KEY)],
         env.state[GAS_COST_KEY].astype(np.float32),

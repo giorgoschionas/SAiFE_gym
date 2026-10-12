@@ -16,7 +16,6 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
 )
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
-    BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     GAS_COST_KEY,
     HAS_POSITION_KEY,
@@ -101,15 +100,18 @@ def create_sb3_env(
 # ---------------------------------------------------------------------------
 
 class TestReset:
-    def test_default_obs_keys_include_directional_offsets(self):
-        assert LP_LOWER_OFFSET_KEY in DEFAULT_OBS_KEYS
-        assert LP_UPPER_OFFSET_KEY in DEFAULT_OBS_KEYS
-        assert DEFAULT_OBS_KEYS.index(LP_LOWER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
-            BOUNDARY_PROXIMITY_KEY
-        )
-        assert DEFAULT_OBS_KEYS.index(LP_UPPER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
-            BOUNDARY_PROXIMITY_KEY
-        )
+    def test_default_obs_keys_order(self):
+        assert DEFAULT_OBS_KEYS == [
+            MISPRICING_KEY,
+            LP_LOWER_OFFSET_KEY,
+            LP_UPPER_OFFSET_KEY,
+            POSITION_WIDTH_KEY,
+            TIME_KEY,
+            HAS_POSITION_KEY,
+            PORTFOLIO_VALUE_RATIO_KEY,
+            UNCLAIMED_FEE_VALUE_RATIO_KEY,
+            GAS_COST_KEY,
+        ]
 
     def test_shape_single_trajectory(self):
         env = create_sb3_env(num_trajectories=1)
@@ -373,10 +375,6 @@ class TestObservationFeatures:
         np.testing.assert_allclose(features[POOL_SQRT_PRICE_KEY], pool_price)
         np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
         np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
-        np.testing.assert_allclose(
-            features[BOUNDARY_PROXIMITY_KEY],
-            np.minimum(lower_offset, upper_offset),
-        )
         np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
         np.testing.assert_allclose(
             features[HAS_POSITION_KEY],
