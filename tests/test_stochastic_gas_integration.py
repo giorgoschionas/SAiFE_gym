@@ -181,7 +181,7 @@ def test_sb3_default_gas_feature_and_autoreset():
     assert DEFAULT_OBS_KEYS[-1] == GAS_COST_KEY
     env = StableBaselinesAMMEnvironment(make_env(make_gas()))
     obs = env.reset()
-    assert obs.shape == (3, 9)
+    assert obs.shape == (3, 8)
     np.testing.assert_array_equal(obs[:, -1], np.full(3, 5.0))
     for _ in range(4):
         obs, _, done, infos = env.step(actions(hold=True))

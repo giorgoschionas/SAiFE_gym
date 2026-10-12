@@ -16,7 +16,6 @@ from SAiFE_gym.gym.index_names import (
     MISPRICING_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
-    POSITION_WIDTH_KEY,
     TIME_KEY,
     UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
@@ -29,7 +28,6 @@ DEFAULT_OBS_KEYS = [
     MISPRICING_KEY,            # adverse selection signal
     LP_LOWER_OFFSET_KEY,       # distance from current tick to lower bound
     LP_UPPER_OFFSET_KEY,       # distance from current tick to upper bound
-    POSITION_WIDTH_KEY,        # lower_offset + upper_offset — position concentration
     # LP_LIQUIDITY_KEY,        # not directly actionable for hold/rebalance
     # LP_COLLECTED_FEES0_KEY,  # cumulative, not actionable
     # LP_COLLECTED_FEES1_KEY,  # cumulative, not actionable
@@ -39,7 +37,7 @@ DEFAULT_OBS_KEYS = [
     PORTFOLIO_VALUE_RATIO_KEY, # wealth scaled by initial capital
     UNCLAIMED_FEE_VALUE_RATIO_KEY, # pending fee value scaled by initial capital
     GAS_COST_KEY,              # current rebalance gas cost in token1 units
-]  # obs_dim = 9
+]  # obs_dim = 8
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}
 

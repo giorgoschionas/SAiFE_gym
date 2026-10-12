@@ -32,7 +32,6 @@ from SAiFE_gym.gym.index_names import (
     POOL_SQRT_PRICE_KEY,
     PORTFOLIO_VALUE_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
-    POSITION_WIDTH_KEY,
     TIME_KEY,
     UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
@@ -105,7 +104,6 @@ class TestReset:
             MISPRICING_KEY,
             LP_LOWER_OFFSET_KEY,
             LP_UPPER_OFFSET_KEY,
-            POSITION_WIDTH_KEY,
             TIME_KEY,
             HAS_POSITION_KEY,
             PORTFOLIO_VALUE_RATIO_KEY,
@@ -375,7 +373,6 @@ class TestObservationFeatures:
         np.testing.assert_allclose(features[POOL_SQRT_PRICE_KEY], pool_price)
         np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
         np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
-        np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
         np.testing.assert_allclose(
             features[HAS_POSITION_KEY],
             (state[LP_LIQUIDITY_KEY] > 0.0).astype(np.float64),

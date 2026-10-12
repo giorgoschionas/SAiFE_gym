@@ -244,8 +244,8 @@ def get_ppo_learner_and_callback(
                   Scales roughly as O(obs_dim * log(obs_dim)) with state
                   dimension.  Practical guideline for this environment:
                     obs_dim=2  (mbt reduced)  →   500k –   2M
-                    obs_dim=9  (SAiFE)        →    2M  –   5M   (with VecNormalize)
-                    obs_dim=9  (no normalise) →    5M  –  20M
+                    obs_dim=8  (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=8  (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(..., callback=callback) to train.
@@ -606,12 +606,11 @@ def create_policy_behavior_plot(
         0: MISPRICING_KEY       ← swept
         1: LP_LOWER_OFFSET_KEY
         2: LP_UPPER_OFFSET_KEY
-        3: POSITION_WIDTH_KEY
-        4: TIME_KEY
-        5: HAS_POSITION_KEY
-        6: PORTFOLIO_VALUE_RATIO_KEY
-        7: UNCLAIMED_FEE_VALUE_RATIO_KEY
-        8: GAS_COST_KEY
+        3: TIME_KEY
+        4: HAS_POSITION_KEY
+        5: PORTFOLIO_VALUE_RATIO_KEY
+        6: UNCLAIMED_FEE_VALUE_RATIO_KEY
+        7: GAS_COST_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -619,7 +618,6 @@ def create_policy_behavior_plot(
         mispricings,
         np.full(n_points, float(tau)),
         np.full(n_points, float(tau)),
-        np.full(n_points, float(2 * tau)),
         np.full(n_points, fixed_time),
         np.ones(n_points),
         np.ones(n_points),
@@ -693,7 +691,6 @@ def create_time_behavior_plot(
         mispricing_rep,
         np.full(n_total, float(tau)),
         np.full(n_total, float(tau)),
-        np.full(n_total, float(2 * tau)),
         time_tiled,
         np.ones(n_total),
         np.ones(n_total),

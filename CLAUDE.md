@@ -351,14 +351,14 @@ When creating `AMMEnvironment`:
   then advances gas once per simulator step, including holds. First deployment
   and holds remain free. Gas uses environment seed plus 4; reset restores its
   initial state, and only explicit seeding restarts the RNG stream.
-- Default SB3 observations have nine features, ordered as `mispricing`,
-  `lp_lower_offset`, `lp_upper_offset`, `position_width`, `time`, `has_position`,
+- Default SB3 observations have eight features, ordered as `mispricing`,
+  `lp_lower_offset`, `lp_upper_offset`, `time`, `has_position`,
   `portfolio_value_ratio`, `unclaimed_fee_value_ratio`, and `gas_cost`.
-  `GAS_COST_KEY` is the ninth feature (index 8), in token1 units. The training
+  `GAS_COST_KEY` is the eighth feature (index 7), in token1 units. The training
   CLI still uses fixed gas; domain randomization varies only midprice volatility
   and arrival rates.
-- `boundary_proximity` has been removed from the SB3 observation interface,
-  including custom `obs_keys`. Saved policies and normalization statistics
-  that include it require their original code version or retraining with fresh
-  normalization statistics. Older nine-feature policies without gas are also
-  incompatible: their column meanings differ from the current nine-feature layout.
+- `boundary_proximity` and `position_width` have been removed from the SB3
+  observation interface, including custom `obs_keys`. Saved policies and
+  normalization statistics that include either feature require their original
+  code version or retraining with fresh normalization statistics. Older nine-
+  and ten-feature defaults are incompatible with the current eight-feature layout.

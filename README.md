@@ -95,19 +95,18 @@ stream; resets without a seed continue that stream. Gas uses environment seed
 plus 4, independently of the existing market streams.
 
 Raw, Gymnasium, and default SB3 observations include `gas_cost`. The default
-SB3 observation vector has nine features, in order: `mispricing`,
-`lp_lower_offset`, `lp_upper_offset`, `position_width`, `time`, `has_position`,
+SB3 observation vector has eight features, in order: `mispricing`,
+`lp_lower_offset`, `lp_upper_offset`, `time`, `has_position`,
 `portfolio_value_ratio`, `unclaimed_fee_value_ratio`, and `gas_cost`.
-`GAS_COST_KEY` is the ninth feature (index 8), in token1 units; the existing
+`GAS_COST_KEY` is the eighth feature (index 7), in token1 units; the existing
 `VecNormalize` wrapper normalizes it when enabled. Stochastic gas is configured
 through Python; the training CLI continues to use fixed gas.
 
-The derived `boundary_proximity` observation has been removed completely.
-Saved policies and normalization statistics that include it require their
-original code version or retraining with fresh normalization statistics.
-This also applies to older nine-feature policies that included
-`boundary_proximity` but omitted gas: their column meanings differ from the
-current nine-feature layout despite having the same dimension.
+The derived `boundary_proximity` and `position_width` observations have been
+removed completely. Saved policies and normalization statistics that include
+either feature require their original code version or retraining with fresh
+normalization statistics. Older nine- and ten-feature defaults are incompatible
+with the current eight-feature layout.
 
 ## Domain-Randomized PPO
 
