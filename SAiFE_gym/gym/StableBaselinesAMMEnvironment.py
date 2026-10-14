@@ -9,15 +9,15 @@ from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.index_names import (
     FEES0_KEY,
     FEES1_KEY,
-    GAS_COST_KEY,
     HAS_POSITION_KEY,
     LP_LOWER_OFFSET_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
+    PENDING_FEE_SHARE_KEY,
     POOL_LIQUIDITY_ARRAY_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
+    RELATIVE_GAS_COST_KEY,
     TIME_KEY,
-    UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
 from SAiFE_gym.gym.observation_features import (
     SB3_DERIVED_OBS_KEYS,
@@ -35,8 +35,8 @@ DEFAULT_OBS_KEYS = [
     TIME_KEY,                  # episode clock
     HAS_POSITION_KEY,          # disambiguates cash/undeployed from active LP ranges
     PORTFOLIO_VALUE_RATIO_KEY, # wealth scaled by initial capital
-    UNCLAIMED_FEE_VALUE_RATIO_KEY, # pending fee value scaled by initial capital
-    GAS_COST_KEY,              # current rebalance gas cost in token1 units
+    PENDING_FEE_SHARE_KEY,     # pending fee value / total portfolio value
+    RELATIVE_GAS_COST_KEY,     # total portfolio value / current rebalance gas cost
 ]  # obs_dim = 8
 
 _ARRAY_KEYS = {POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY}

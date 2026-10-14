@@ -353,12 +353,24 @@ When creating `AMMEnvironment`:
   initial state, and only explicit seeding restarts the RNG stream.
 - Default SB3 observations have eight features, ordered as `mispricing`,
   `lp_lower_offset`, `lp_upper_offset`, `time`, `has_position`,
-  `portfolio_value_ratio`, `unclaimed_fee_value_ratio`, and `gas_cost`.
-  `GAS_COST_KEY` is the eighth feature (index 7), in token1 units. The training
-  CLI still uses fixed gas; domain randomization varies only midprice volatility
-  and arrival rates.
+  `portfolio_value_ratio`, `pending_fee_share`, and `relative_gas_cost`.
+  Pending fee share (index 6) is `(pending_token0_fees * external_midprice +
+  pending_token1_fees) / portfolio_value`, or zero for zero portfolio value.
+  Total portfolio value already includes pending fees. Relative gas cost
+  (index 7) is `portfolio_value / max(gas_cost, 1e-12)`; it measures how many
+  gas charges the portfolio can cover, with no additional cap or logarithm.
+  Raw `GAS_COST_KEY` remains in simulator/Gymnasium state and custom SB3
+  `obs_keys`. The training CLI still uses fixed gas; domain randomization
+  varies only midprice volatility and arrival rates.
 - `boundary_proximity` and `position_width` have been removed from the SB3
   observation interface, including custom `obs_keys`. Saved policies and
   normalization statistics that include either feature require their original
   code version or retraining with fresh normalization statistics. Older nine-
   and ten-feature defaults are incompatible with the current eight-feature layout.
+- The former eight-feature default with `unclaimed_fee_value_ratio` and raw
+  `gas_cost` is also incompatible despite matching the current dimension;
+  its checkpoints and normalization statistics require the original code or
+  retraining with fresh statistics. `unclaimed_fee_value_ratio` has been removed.
+- Policy plotting helpers accept keyword-only `initial_wealth`, defaulting to
+  `experiments.helpers.INITIAL_WEALTH`, to set their neutral portfolio value.
+  They use zero pending fees and `initial_wealth / max(gas_cost, 1e-12)`.

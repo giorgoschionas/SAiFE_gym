@@ -52,10 +52,11 @@ from SAiFE_gym.gym.index_names import (
     HAS_POSITION_KEY,
     LP_TICK_LOWER_KEY,
     LP_TICK_UPPER_KEY,
+    PENDING_FEE_SHARE_KEY,
     POOL_CURRENT_TICK_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
     PORTFOLIO_VALUE_KEY,
-    UNCLAIMED_FEE_VALUE_RATIO_KEY,
+    RELATIVE_GAS_COST_KEY,
 )
 from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty
 from SAiFE_gym.stochastic_processes.arrival_models import (
@@ -677,8 +678,8 @@ def test_train_and_save_separates_environment_seed_from_ppo_seed(
     assert (tmp_path / "nominal_ppo.zip").is_file()
 
 
-def test_default_sb3_observation_includes_gas_cost():
-    assert GAS_COST_KEY in DEFAULT_OBS_KEYS
+def test_default_sb3_observation_includes_relative_gas_cost():
+    assert RELATIVE_GAS_COST_KEY in DEFAULT_OBS_KEYS
 
     env = DomainRandomizedAMMEnvironment(
         create_test_amm_env(),
@@ -692,8 +693,8 @@ def test_default_sb3_observation_includes_gas_cost():
     assert obs.shape == (env.num_trajectories, len(DEFAULT_OBS_KEYS))
     assert obs.shape[1] == 8
     np.testing.assert_array_equal(
-        obs[:, DEFAULT_OBS_KEYS.index(GAS_COST_KEY)],
-        env.state[GAS_COST_KEY].astype(np.float32),
+        obs[:, DEFAULT_OBS_KEYS.index(RELATIVE_GAS_COST_KEY)],
+        (env.state[PORTFOLIO_VALUE_KEY] / 1e-12).astype(np.float32),
     )
     np.testing.assert_array_equal(
         obs[:, DEFAULT_OBS_KEYS.index(HAS_POSITION_KEY)],
@@ -704,7 +705,7 @@ def test_default_sb3_observation_includes_gas_cost():
         np.ones(env.num_trajectories),
     )
     np.testing.assert_array_equal(
-        obs[:, DEFAULT_OBS_KEYS.index(UNCLAIMED_FEE_VALUE_RATIO_KEY)],
+        obs[:, DEFAULT_OBS_KEYS.index(PENDING_FEE_SHARE_KEY)],
         np.zeros(env.num_trajectories),
     )
     assert env.state[GAS_COST_KEY][0] == 0.0

@@ -94,19 +94,39 @@ Reset restores the initial gas cost. `reset(seed=...)` also replays the RNG
 stream; resets without a seed continue that stream. Gas uses environment seed
 plus 4, independently of the existing market streams.
 
-Raw, Gymnasium, and default SB3 observations include `gas_cost`. The default
-SB3 observation vector has eight features, in order: `mispricing`,
+Raw and Gymnasium observations include `gas_cost` in token1 units; it also
+remains available through explicit SB3 `obs_keys`. The default SB3 observation
+vector has eight features, in order: `mispricing`,
 `lp_lower_offset`, `lp_upper_offset`, `time`, `has_position`,
-`portfolio_value_ratio`, `unclaimed_fee_value_ratio`, and `gas_cost`.
-`GAS_COST_KEY` is the eighth feature (index 7), in token1 units; the existing
-`VecNormalize` wrapper normalizes it when enabled. Stochastic gas is configured
-through Python; the training CLI continues to use fixed gas.
+`portfolio_value_ratio`, `pending_fee_share`, and `relative_gas_cost`.
+The last two features are dimensionless:
+
+- `pending_fee_share` (index 6) is pending fee value divided by total portfolio
+  value, or zero when portfolio value is zero. Pending token0 fees are valued
+  at the external midprice and added to pending token1 fees. Total portfolio
+  value already includes these fees.
+- `relative_gas_cost` (index 7) is total portfolio value divided by
+  `max(gas_cost, 1e-12)`. Larger values mean the portfolio can cover more gas
+  charges: a portfolio worth 1,000 with gas cost 2 produces 500. Zero gas gives
+  a large finite value for positive wealth; zero wealth gives zero.
+
+The existing `VecNormalize` wrapper normalizes these features when enabled.
+Stochastic gas is configured through Python; the training CLI continues to
+use fixed gas. Policy plotting helpers accept keyword-only `initial_wealth`
+to set the neutral portfolio value used for the relative gas feature; it
+defaults to `experiments.helpers.INITIAL_WEALTH`, with pending fees set to zero.
 
 The derived `boundary_proximity` and `position_width` observations have been
 removed completely. Saved policies and normalization statistics that include
 either feature require their original code version or retraining with fresh
 normalization statistics. Older nine- and ten-feature defaults are incompatible
 with the current eight-feature layout.
+
+The former eight-feature layout using `unclaimed_fee_value_ratio` and raw
+`gas_cost` is also incompatible, despite having the same dimension. Those
+checkpoints and normalization statistics require their original code version
+or retraining with fresh statistics. The old `unclaimed_fee_value_ratio`
+derived feature has been removed.
 
 ## Domain-Randomized PPO
 

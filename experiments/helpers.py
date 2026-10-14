@@ -591,12 +591,16 @@ def create_policy_behavior_plot(
     save_figure: bool = False,
     figures_dir: str = "./figures",
     filename: str = "policy_behavior.png",
+    *,
+    initial_wealth: float = INITIAL_WEALTH,
 ) -> plt.Figure:
     """Plot tick offsets chosen by RL vs Uniform agent as mispricing varies.
 
     Analogous to mbt's create_inventory_plot(): sweeps mispricing on the
     x-axis (the LP's primary adverse-selection signal) while holding all
-    other observations at neutral values.
+    other observations at neutral values. The synthetic portfolio equals
+    ``initial_wealth`` with no pending fees, so its relative gas cost is
+    ``initial_wealth / max(gas_cost, 1e-12)``.
 
     A converged policy should show a structured response to mispricing
     (e.g. narrowing the range or shifting it defensively when mispricing
@@ -609,8 +613,8 @@ def create_policy_behavior_plot(
         3: TIME_KEY
         4: HAS_POSITION_KEY
         5: PORTFOLIO_VALUE_RATIO_KEY
-        6: UNCLAIMED_FEE_VALUE_RATIO_KEY
-        7: GAS_COST_KEY
+        6: PENDING_FEE_SHARE_KEY
+        7: RELATIVE_GAS_COST_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -622,7 +626,7 @@ def create_policy_behavior_plot(
         np.ones(n_points),
         np.ones(n_points),
         np.zeros(n_points),
-        np.full(n_points, gas_cost),
+        np.full(n_points, initial_wealth / max(gas_cost, 1e-12)),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -673,11 +677,15 @@ def create_time_behavior_plot(
     save_figure: bool = False,
     figures_dir: str = "./figures",
     filename: str = "policy_time_behavior.png",
+    *,
+    initial_wealth: float = INITIAL_WEALTH,
 ) -> plt.Figure:
     """Plot how tick offsets evolve over the episode at fixed mispricing levels.
 
     Analogous to mbt's create_time_plot(). Multiple lines (one per mispricing
     level) show whether the policy adapts its range width over time.
+    The synthetic portfolio equals ``initial_wealth`` with no pending fees,
+    so its relative gas cost is ``initial_wealth / max(gas_cost, 1e-12)``.
     """
     if mispricing_levels is None:
         mispricing_levels = [-0.05, 0.0, 0.05]
@@ -695,7 +703,7 @@ def create_time_behavior_plot(
         np.ones(n_total),
         np.ones(n_total),
         np.zeros(n_total),
-        np.full(n_total, gas_cost),
+        np.full(n_total, initial_wealth / max(gas_cost, 1e-12)),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training

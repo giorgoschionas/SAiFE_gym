@@ -324,3 +324,54 @@ def test_ppo_run_evaluates_twice_and_saves_best_model(
         np.testing.assert_array_equal(results["ep_lengths"], np.full((2, 10), 32))
         assert results["results"].shape == (2, 10)
         assert np.all(np.isfinite(results["results"]))
+
+
+@pytest.mark.parametrize("plot_name", ["create_policy_behavior_plot", "create_time_behavior_plot"])
+@pytest.mark.parametrize("initial_wealth,gas_cost,expected_ratio", [
+    (None, 0.0, 1e18),
+    (1000.0, 2.0, 500.0),
+    (1000.0, 0.0, 1e15),
+])
+def test_behavior_plots_use_portfolio_relative_observations(
+    make_env, monkeypatch, plot_name, initial_wealth, gas_cost, expected_ratio,
+):
+    vec = helpers.wrap_env(make_env())
+    vec.reset()
+    normalize = vec.normalize_obs
+    captured = []
+
+    def record_observations(obs):
+        captured.append(obs.copy())
+        return normalize(obs)
+
+    class PlotPolicy:
+        def predict(self, obs, deterministic=True):
+            assert obs.shape[1] == 8
+            assert np.isfinite(obs).all()
+            return np.tile([-5.0, 5.0], (len(obs), 1)), None
+
+    monkeypatch.setattr(vec, "normalize_obs", record_observations)
+    monkeypatch.setattr(helpers.plt, "show", lambda: None)
+    kwargs = {"gas_cost": gas_cost}
+    if initial_wealth is not None:
+        kwargs["initial_wealth"] = initial_wealth
+    if plot_name == "create_policy_behavior_plot":
+        kwargs["n_points"] = 5
+    else:
+        kwargs["n_time_points"] = 5
+    fig = None
+    try:
+        fig = getattr(helpers, plot_name)(PlotPolicy(), vec, tau=5, **kwargs)
+        assert len(captured) == 1
+        obs = captured[0]
+        assert obs.dtype == np.float32
+        assert obs.shape[1] == 8
+        np.testing.assert_allclose(obs[:, 1:3], 5.0)
+        np.testing.assert_allclose(obs[:, 4:6], 1.0)
+        np.testing.assert_allclose(obs[:, 6], 0.0)
+        np.testing.assert_allclose(obs[:, 7], expected_ratio)
+        assert vec.training
+    finally:
+        if fig is not None:
+            helpers.plt.close(fig)
+        vec.close()
