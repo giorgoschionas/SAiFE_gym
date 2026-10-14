@@ -17,7 +17,16 @@ from SAiFE_gym.gym.domain_randomization import (
     DomainRandomizedAMMEnvironment,
     UniformDomainRandomizationConfig,
 )
-from SAiFE_gym.gym.index_names import GAS_COST_KEY, LP_LIQUIDITY_KEY, PORTFOLIO_VALUE_KEY
+from SAiFE_gym.gym.index_names import (
+    ASSET_PRICE_KEY,
+    GAS_COST_KEY,
+    LP_LIQUIDITY_KEY,
+    LP_UNCLAIMED_FEES0_KEY,
+    LP_UNCLAIMED_FEES1_KEY,
+    PENDING_FEE_SHARE_KEY,
+    PORTFOLIO_VALUE_KEY,
+    RELATIVE_GAS_COST_KEY,
+)
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.gas_cost_models import OrnsteinUhlenbeckGasCostModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
@@ -177,22 +186,51 @@ def test_gymnasium_observations_and_resets(vector):
     np.testing.assert_array_equal(obs[GAS_COST_KEY], np.full((n,) if vector else (), 5.0))
 
 
-def test_sb3_default_gas_feature_and_autoreset():
-    assert DEFAULT_OBS_KEYS[-1] == GAS_COST_KEY
+def test_sb3_relative_gas_feature_and_autoreset():
+    assert DEFAULT_OBS_KEYS[-1] == RELATIVE_GAS_COST_KEY
     env = StableBaselinesAMMEnvironment(make_env(make_gas()))
     obs = env.reset()
-    assert obs.shape == (3, 10)
-    np.testing.assert_array_equal(obs[:, -1], np.full(3, 5.0))
+    assert obs.shape == (3, 8)
+    np.testing.assert_array_equal(obs[:, -1], np.full(3, 20.0))
+    reference = deepcopy(env.env)
     for _ in range(4):
+        state, *_ = reference.step(actions(hold=True))
+        expected = (state[PORTFOLIO_VALUE_KEY] / np.maximum(state[GAS_COST_KEY], 1e-12)).astype(np.float32)
         obs, _, done, infos = env.step(actions(hold=True))
+        step_obs = np.array([info["terminal_observation"] for info in infos]) if done.all() else obs
+        np.testing.assert_array_equal(step_obs[:, -1], expected)
         np.testing.assert_array_equal(
-            obs[:, -1], env.env.state[GAS_COST_KEY].astype(np.float32),
+            obs[:, DEFAULT_OBS_KEYS.index(PENDING_FEE_SHARE_KEY)], np.zeros(3),
         )
     assert done.all()
-    np.testing.assert_array_equal(obs[:, -1], np.full(3, 5.0))
+    np.testing.assert_array_equal(obs[:, -1], np.full(3, 20.0))
     assert not np.array_equal(
         [info["terminal_observation"][-1] for info in infos], obs[:, -1],
     )
+
+
+def test_sb3_ratios_follow_fee_accrual_and_reinvestment(monkeypatch):
+    raw = make_env(gas_cost=2.0)
+    env = StableBaselinesAMMEnvironment(raw)
+    env.reset()
+    # Execute both swap directions after deployment to accrue both fee tokens.
+    monkeypatch.setattr(raw.model_dynamics, "get_arrivals", lambda: np.ones((3, 2), dtype=bool))
+    obs, *_ = env.step(actions())
+    state = raw.state
+    assert np.all(state[LP_UNCLAIMED_FEES0_KEY] > 0.0)
+    assert np.all(state[LP_UNCLAIMED_FEES1_KEY] > 0.0)
+    fee_value = state[LP_UNCLAIMED_FEES0_KEY] * state[ASSET_PRICE_KEY] + state[LP_UNCLAIMED_FEES1_KEY]
+    np.testing.assert_allclose(
+        obs[:, DEFAULT_OBS_KEYS.index(PENDING_FEE_SHARE_KEY)], fee_value / state[PORTFOLIO_VALUE_KEY],
+    )
+    wealth_before_rebalance = state[PORTFOLIO_VALUE_KEY].copy()
+
+    # No new fees on the next step: rebalancing reinvests the full pending bucket.
+    monkeypatch.setattr(raw.model_dynamics, "get_arrivals", lambda: np.zeros((3, 2), dtype=bool))
+    obs, *_ = env.step(actions())
+    np.testing.assert_allclose(raw.state[PORTFOLIO_VALUE_KEY], wealth_before_rebalance - 2.0)
+    np.testing.assert_array_equal(obs[:, DEFAULT_OBS_KEYS.index(PENDING_FEE_SHARE_KEY)], np.zeros(3))
+    np.testing.assert_allclose(obs[:, -1], (wealth_before_rebalance - 2.0) / 2.0)
 
 
 def test_domain_randomization_leaves_gas_parameters_and_rng_independent():

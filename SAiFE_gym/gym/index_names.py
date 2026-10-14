@@ -48,8 +48,7 @@ MISPRICING_KEY      = 'mispricing'       # (asset_price - amm_price) / asset_pri
 LP_LOWER_OFFSET_KEY = 'lp_lower_offset'  # current_tick - lp_tick_lower  (≥ 0 when in-range)
 LP_UPPER_OFFSET_KEY = 'lp_upper_offset'  # lp_tick_upper - current_tick   (≥ 0 when in-range)
 
-BOUNDARY_PROXIMITY_KEY = 'boundary_proximity'  # min(lower_offset, upper_offset) — distance to nearest boundary
-POSITION_WIDTH_KEY = 'position_width'          # lower_offset + upper_offset — position concentration
 HAS_POSITION_KEY = 'has_position'              # 1.0 when LP liquidity is deployed, else 0.0
 PORTFOLIO_VALUE_RATIO_KEY = 'portfolio_value_ratio'  # portfolio_value / initial_wealth
-UNCLAIMED_FEE_VALUE_RATIO_KEY = 'unclaimed_fee_value_ratio'  # unclaimed fee value / initial_wealth
+PENDING_FEE_SHARE_KEY = 'pending_fee_share'  # pending fee value / portfolio_value; 0 when portfolio_value is 0
+RELATIVE_GAS_COST_KEY = 'relative_gas_cost'  # portfolio_value / max(gas_cost, 1e-12)

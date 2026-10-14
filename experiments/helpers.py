@@ -244,8 +244,8 @@ def get_ppo_learner_and_callback(
                   Scales roughly as O(obs_dim * log(obs_dim)) with state
                   dimension.  Practical guideline for this environment:
                     obs_dim=2  (mbt reduced)  →   500k –   2M
-                    obs_dim=10 (SAiFE)        →    2M  –   5M   (with VecNormalize)
-                    obs_dim=10 (no normalise) →    5M  –  20M
+                    obs_dim=8  (SAiFE)        →    2M  –   5M   (with VecNormalize)
+                    obs_dim=8  (no normalise) →    5M  –  20M
 
     Returns:
         (model, callback) — call model.learn(..., callback=callback) to train.
@@ -591,12 +591,16 @@ def create_policy_behavior_plot(
     save_figure: bool = False,
     figures_dir: str = "./figures",
     filename: str = "policy_behavior.png",
+    *,
+    initial_wealth: float = INITIAL_WEALTH,
 ) -> plt.Figure:
     """Plot tick offsets chosen by RL vs Uniform agent as mispricing varies.
 
     Analogous to mbt's create_inventory_plot(): sweeps mispricing on the
     x-axis (the LP's primary adverse-selection signal) while holding all
-    other observations at neutral values.
+    other observations at neutral values. The synthetic portfolio equals
+    ``initial_wealth`` with no pending fees, so its relative gas cost is
+    ``initial_wealth / max(gas_cost, 1e-12)``.
 
     A converged policy should show a structured response to mispricing
     (e.g. narrowing the range or shifting it defensively when mispricing
@@ -606,13 +610,11 @@ def create_policy_behavior_plot(
         0: MISPRICING_KEY       ← swept
         1: LP_LOWER_OFFSET_KEY
         2: LP_UPPER_OFFSET_KEY
-        3: BOUNDARY_PROXIMITY_KEY
-        4: POSITION_WIDTH_KEY
-        5: TIME_KEY
-        6: HAS_POSITION_KEY
-        7: PORTFOLIO_VALUE_RATIO_KEY
-        8: UNCLAIMED_FEE_VALUE_RATIO_KEY
-        9: GAS_COST_KEY
+        3: TIME_KEY
+        4: HAS_POSITION_KEY
+        5: PORTFOLIO_VALUE_RATIO_KEY
+        6: PENDING_FEE_SHARE_KEY
+        7: RELATIVE_GAS_COST_KEY
     """
     mispricings = np.linspace(mispricing_range[0], mispricing_range[1], n_points)
 
@@ -620,13 +622,11 @@ def create_policy_behavior_plot(
         mispricings,
         np.full(n_points, float(tau)),
         np.full(n_points, float(tau)),
-        np.full(n_points, float(tau)),
-        np.full(n_points, float(2 * tau)),
         np.full(n_points, fixed_time),
         np.ones(n_points),
         np.ones(n_points),
         np.zeros(n_points),
-        np.full(n_points, gas_cost),
+        np.full(n_points, initial_wealth / max(gas_cost, 1e-12)),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training
@@ -677,11 +677,15 @@ def create_time_behavior_plot(
     save_figure: bool = False,
     figures_dir: str = "./figures",
     filename: str = "policy_time_behavior.png",
+    *,
+    initial_wealth: float = INITIAL_WEALTH,
 ) -> plt.Figure:
     """Plot how tick offsets evolve over the episode at fixed mispricing levels.
 
     Analogous to mbt's create_time_plot(). Multiple lines (one per mispricing
     level) show whether the policy adapts its range width over time.
+    The synthetic portfolio equals ``initial_wealth`` with no pending fees,
+    so its relative gas cost is ``initial_wealth / max(gas_cost, 1e-12)``.
     """
     if mispricing_levels is None:
         mispricing_levels = [-0.05, 0.0, 0.05]
@@ -695,13 +699,11 @@ def create_time_behavior_plot(
         mispricing_rep,
         np.full(n_total, float(tau)),
         np.full(n_total, float(tau)),
-        np.full(n_total, float(tau)),
-        np.full(n_total, float(2 * tau)),
         time_tiled,
         np.ones(n_total),
         np.ones(n_total),
         np.zeros(n_total),
-        np.full(n_total, gas_cost),
+        np.full(n_total, initial_wealth / max(gas_cost, 1e-12)),
     ]).astype(np.float32)
 
     old_training = vec_normalize.training

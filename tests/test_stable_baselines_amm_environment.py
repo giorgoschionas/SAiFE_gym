@@ -7,6 +7,7 @@ import pytest
 import gymnasium
 
 from stable_baselines3 import PPO
+from stable_baselines3.common.vec_env import VecNormalize
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
@@ -16,7 +17,6 @@ from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (
 )
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
-    BOUNDARY_PROXIMITY_KEY,
     FEES0_KEY,
     GAS_COST_KEY,
     HAS_POSITION_KEY,
@@ -29,13 +29,13 @@ from SAiFE_gym.gym.index_names import (
     LP_UNCLAIMED_FEES1_KEY,
     LP_UPPER_OFFSET_KEY,
     MISPRICING_KEY,
+    PENDING_FEE_SHARE_KEY,
     POOL_CURRENT_TICK_KEY,
     POOL_SQRT_PRICE_KEY,
     PORTFOLIO_VALUE_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
-    POSITION_WIDTH_KEY,
+    RELATIVE_GAS_COST_KEY,
     TIME_KEY,
-    UNCLAIMED_FEE_VALUE_RATIO_KEY,
 )
 from SAiFE_gym.gym.observation_features import (
     SB3_DERIVED_OBS_KEYS,
@@ -101,15 +101,17 @@ def create_sb3_env(
 # ---------------------------------------------------------------------------
 
 class TestReset:
-    def test_default_obs_keys_include_directional_offsets(self):
-        assert LP_LOWER_OFFSET_KEY in DEFAULT_OBS_KEYS
-        assert LP_UPPER_OFFSET_KEY in DEFAULT_OBS_KEYS
-        assert DEFAULT_OBS_KEYS.index(LP_LOWER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
-            BOUNDARY_PROXIMITY_KEY
-        )
-        assert DEFAULT_OBS_KEYS.index(LP_UPPER_OFFSET_KEY) < DEFAULT_OBS_KEYS.index(
-            BOUNDARY_PROXIMITY_KEY
-        )
+    def test_default_obs_keys_order(self):
+        assert DEFAULT_OBS_KEYS == [
+            MISPRICING_KEY,
+            LP_LOWER_OFFSET_KEY,
+            LP_UPPER_OFFSET_KEY,
+            TIME_KEY,
+            HAS_POSITION_KEY,
+            PORTFOLIO_VALUE_RATIO_KEY,
+            PENDING_FEE_SHARE_KEY,
+            RELATIVE_GAS_COST_KEY,
+        ]
 
     def test_shape_single_trajectory(self):
         env = create_sb3_env(num_trajectories=1)
@@ -121,7 +123,7 @@ class TestReset:
         obs = env.reset()
         assert obs.shape == (3, len(DEFAULT_OBS_KEYS))
         np.testing.assert_array_equal(
-            obs[:, DEFAULT_OBS_KEYS.index(GAS_COST_KEY)], np.full(3, 20.0),
+            obs[:, DEFAULT_OBS_KEYS.index(RELATIVE_GAS_COST_KEY)], np.full(3, 50_000.0),
         )
 
     def test_dtype(self):
@@ -333,6 +335,10 @@ class TestTerminalObs:
 # ---------------------------------------------------------------------------
 
 class TestCustomObsKeys:
+    def test_raw_gas_cost_remains_available(self):
+        env = create_sb3_env(num_trajectories=3, obs_keys=[GAS_COST_KEY])
+        np.testing.assert_array_equal(env.reset(), np.full((3, 1), 20.0))
+
     def test_custom_keys_change_dim(self):
         custom_keys = [POOL_SQRT_PRICE_KEY, TIME_KEY]
         env = create_sb3_env(num_trajectories=1, obs_keys=custom_keys)
@@ -374,11 +380,6 @@ class TestObservationFeatures:
         np.testing.assert_allclose(features[LP_LOWER_OFFSET_KEY], lower_offset)
         np.testing.assert_allclose(features[LP_UPPER_OFFSET_KEY], upper_offset)
         np.testing.assert_allclose(
-            features[BOUNDARY_PROXIMITY_KEY],
-            np.minimum(lower_offset, upper_offset),
-        )
-        np.testing.assert_allclose(features[POSITION_WIDTH_KEY], lower_offset + upper_offset)
-        np.testing.assert_allclose(
             features[HAS_POSITION_KEY],
             (state[LP_LIQUIDITY_KEY] > 0.0).astype(np.float64),
         )
@@ -387,9 +388,55 @@ class TestObservationFeatures:
             state[PORTFOLIO_VALUE_KEY] / initial_wealth,
         )
         np.testing.assert_allclose(
-            features[UNCLAIMED_FEE_VALUE_RATIO_KEY],
-            unclaimed_fee_value / initial_wealth,
+            features[PENDING_FEE_SHARE_KEY],
+            unclaimed_fee_value / state[PORTFOLIO_VALUE_KEY],
         )
+        np.testing.assert_allclose(
+            features[RELATIVE_GAS_COST_KEY],
+            state[PORTFOLIO_VALUE_KEY] / state[GAS_COST_KEY],
+        )
+
+    @pytest.mark.parametrize("num_trajectories", [1, 6])
+    def test_portfolio_relative_ratios_and_normalization(self, num_trajectories):
+        env = create_sb3_env(num_trajectories=num_trajectories)
+        env.reset()
+        state = env.env.state
+        # Cover both fee tokens, free/tiny gas, bankruptcy, and tiny positive wealth.
+        state[PORTFOLIO_VALUE_KEY] = np.array([1000.0, 250.0, 400.0, 0.0, 0.0, 1e-14])[:num_trajectories]
+        state[GAS_COST_KEY] = np.array([2.0, 0.0, 1e-15, 5.0, 0.0, 2.0])[:num_trajectories]
+        state[ASSET_PRICE_KEY] = np.array([100.0, 10.0, 200.0, 100.0, 100.0, 100.0])[:num_trajectories]
+        state[LP_UNCLAIMED_FEES0_KEY] = np.array([0.5, 1.0, 0.0, 0.0, 0.0, 0.0])[:num_trajectories]
+        state[LP_UNCLAIMED_FEES1_KEY] = np.array([50.0, 15.0, 40.0, 0.0, 0.0, 1e-14])[:num_trajectories]
+
+        with np.errstate(divide="raise", invalid="raise", over="raise"):
+            features = compute_sb3_observation_features(state)
+            np.testing.assert_allclose(
+                features[PENDING_FEE_SHARE_KEY],
+                np.array([0.1, 0.1, 0.1, 0.0, 0.0, 1.0])[:num_trajectories],
+            )
+            np.testing.assert_allclose(
+                features[RELATIVE_GAS_COST_KEY],
+                np.array([500.0, 2.5e14, 4e14, 0.0, 0.0, 5e-15])[:num_trajectories],
+                atol=0.0,
+            )
+            obs = env._flatten_obs(state)
+            assert obs.dtype == np.float32
+            assert np.isfinite(obs).all()
+            np.testing.assert_allclose(
+                obs[:, DEFAULT_OBS_KEYS.index(PENDING_FEE_SHARE_KEY)],
+                features[PENDING_FEE_SHARE_KEY],
+            )
+            np.testing.assert_allclose(
+                obs[:, DEFAULT_OBS_KEYS.index(RELATIVE_GAS_COST_KEY)],
+                features[RELATIVE_GAS_COST_KEY],
+                atol=0.0,
+            )
+            normalizer = VecNormalize(env, norm_reward=False)
+            normalizer.obs_rms.update(obs)
+            normalized = normalizer.normalize_obs(obs)
+            assert normalized.shape == (num_trajectories, 8)
+            assert np.isfinite(normalized).all()
+            normalizer.close()
 
 
 # ---------------------------------------------------------------------------
