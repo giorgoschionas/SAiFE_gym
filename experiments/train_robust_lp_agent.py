@@ -79,7 +79,8 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
     LiquidityDepthUniswapV3PriceImpact,
 )
 from SAiFE_gym.gym.lp_actions import (  # noqa: E402
-    CATEGORICAL_ENCODING, STRUCTURED_ENCODING, CategoricalLPActionCodec,
+    CATEGORICAL_ENCODING, CENTER_HALF_WIDTH_ENCODING, STRUCTURED_ENCODING,
+    CenterHalfWidthActionGrid, categorical_action_codec, action_grid_from_metadata,
     decode_policy_actions, validate_policy_metadata,
 )
 
@@ -138,7 +139,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         ),
     )
     parser.add_argument("--tau", type=int, default=50)
-    parser.add_argument("--tick-stride", type=int, default=5)
+    parser.add_argument("--tick-stride", type=int, default=5,
+                        help="Endpoint-grid stride; unused with explicit center/half-width grids.")
+    parser.add_argument("--center-magnitudes", type=int, nargs="+",
+                        help="Opt-in RL center magnitudes in ticks; expands to both signs plus zero.")
+    parser.add_argument("--half-widths", type=int, nargs="+",
+                        help="Positive RL half-widths in ticks; requires --center-magnitudes.")
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.
@@ -651,14 +657,41 @@ def zero_agent_decision_diagnostics(args: argparse.Namespace) -> dict[str, float
     }
 
 
+def configured_action_grid(args: argparse.Namespace) -> CenterHalfWidthActionGrid | None:
+    """Resolve paired explicit grids, including validation of saved run metadata."""
+    magnitudes = getattr(args, "center_magnitudes", None)
+    widths = getattr(args, "half_widths", None)
+    if (magnitudes is None) != (widths is None):
+        raise ValueError("--center-magnitudes and --half-widths must be supplied together")
+    grid = None if magnitudes is None else CenterHalfWidthActionGrid(magnitudes, widths)
+    saved = getattr(args, "lp_action_config", None)
+    if saved is not None:
+        saved_grid = action_grid_from_metadata(saved)
+        if grid is None:
+            grid = saved_grid
+        expected = categorical_action_codec(args.tau, args.tick_stride, action_grid=grid).metadata
+        if saved != expected:
+            raise ValueError("Saved run action metadata does not match the configured action grid")
+    if getattr(args, "action_encoding", None) == CENTER_HALF_WIDTH_ENCODING and grid is None:
+        raise ValueError("Center/half-width encoding requires explicit grid metadata")
+    return grid
+
+
 def configure_action_encoding(args: argparse.Namespace) -> None:
-    args.action_encoding = CATEGORICAL_ENCODING
-    args.action_count = int(CategoricalLPActionCodec(args.tau, args.tick_stride).action_space.n)
+    grid = configured_action_grid(args)
+    codec = categorical_action_codec(args.tau, args.tick_stride, action_grid=grid)
+    args.action_encoding = codec.encoding
+    args.action_count = int(codec.action_space.n)
+    args.lp_action_config = codec.metadata
+    if grid is not None:
+        args.center_magnitudes = list(grid.center_magnitudes)
+        args.half_widths = list(grid.half_widths)
 
 
 def validate_policy_action_encoding(model, args: argparse.Namespace) -> None:
     """Never interpret a saved head using a different action grid/encoding."""
-    actual = (
+    saved = getattr(model, "lp_action_config", None)
+    actual = saved["action_encoding"] if saved is not None else (
         CATEGORICAL_ENCODING if isinstance(model.action_space, spaces.Discrete)
         else STRUCTURED_ENCODING if isinstance(model.action_space, spaces.MultiDiscrete)
         else "raw"
@@ -666,10 +699,11 @@ def validate_policy_action_encoding(model, args: argparse.Namespace) -> None:
     expected = getattr(args, "action_encoding", actual)
     if expected != actual:
         raise ValueError(f"Saved action encoding {expected!r} does not match policy {actual!r}")
+    grid = configured_action_grid(args)
     probe = np.zeros(model.action_space.shape, dtype=model.action_space.dtype)
-    decode_policy_actions(probe, model.action_space, args.tau, args.tick_stride)
-    validate_policy_metadata(model, args.tau, args.tick_stride)
-    if actual == CATEGORICAL_ENCODING and getattr(args, "action_count", model.action_space.n) != model.action_space.n:
+    decode_policy_actions(probe, model.action_space, args.tau, args.tick_stride, action_grid=grid)
+    validate_policy_metadata(model, args.tau, args.tick_stride, action_grid=grid)
+    if isinstance(model.action_space, spaces.Discrete) and getattr(args, "action_count", model.action_space.n) != model.action_space.n:
         raise ValueError("Saved action count does not match policy action space")
 
 
@@ -677,7 +711,8 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
     if env.model_dynamics.tau != args.tau:
         raise ValueError("Training environment tau must match the configured action grid")
     configure_action_encoding(args)
-    vec_env = wrap_env(env, normalise_obs=args.normalise_obs, tick_stride=args.tick_stride)
+    vec_env = wrap_env(env, normalise_obs=args.normalise_obs, tick_stride=args.tick_stride,
+                       action_grid=configured_action_grid(args))
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
     ppo_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
     rollout_size = ppo_rollout_steps(args) * args.num_trajectories
@@ -697,7 +732,7 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         gamma=1.0,
         seed=args.seed,
     )
-    model.lp_action_config = CategoricalLPActionCodec(args.tau, args.tick_stride).metadata
+    model.lp_action_config = dict(args.lp_action_config)
     return model, ppo_env, vec_normalize
 
 
@@ -851,6 +886,7 @@ def evaluate_ppo(
     env_factory: Optional[Callable] = None,
 ) -> dict:
     validate_policy_action_encoding(model, args)
+    action_grid = configured_action_grid(args)
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
     decision_behavior = AgentDecisionAccumulator(
@@ -874,6 +910,7 @@ def evaluate_ppo(
                 policy_action, _ = model.predict(model_obs, deterministic=True)
                 action = decode_policy_actions(
                     policy_action, model.action_space, args.tau, args.tick_stride,
+                    action_grid=action_grid,
                 )
                 decision_behavior.record_decision(obs, action)
             else:
@@ -1208,12 +1245,12 @@ def main() -> int:
     validate_and_derive_decision_timing(args)
     resolve_train_domains_per_reset(args)
     validate_evaluation_configuration(args)
+    configure_action_encoding(args)
     args.evaluation_grid_version = EVALUATION_GRID_VERSION
     args.behavior_diagnostics_schema_version = (
         BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION
     )
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
-    configure_action_encoding(args)
     save_json(run_dir / "config.json", vars(args))
 
     domain_randomized_env = make_domain_randomized_env(args)

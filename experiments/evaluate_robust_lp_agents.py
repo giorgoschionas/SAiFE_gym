@@ -85,6 +85,12 @@ def load_config(run_dir):
     missing = REQUIRED_CONFIG - config.keys()
     if missing:
         raise ValueError(f"missing configuration fields in {run_dir}: {sorted(missing)}")
+    if config["action_encoding"] == training.CENTER_HALF_WIDTH_ENCODING:
+        args = argparse.Namespace(**config)
+        grid = training.configured_action_grid(args)
+        codec = training.categorical_action_codec(args.tau, args.tick_stride, action_grid=grid)
+        if config.get("action_count") != codec.action_space.n:
+            raise ValueError(f"Saved action count does not match the center/half-width grid in {run_dir}")
     configured_evaluation_grid(config)  # Validate the historical axes and bounds layout.
     for name in ("train_sigma_range", "train_arrival_rate_range"):
         bounds = config[name]
@@ -281,7 +287,10 @@ def evaluate_job(job):
             normalization_env = training.wrap_env(
                 env_factory(args, params, job["regime_seed"]), normalise_obs=False,
                 tick_stride=args.tick_stride,
-                action_encoding="categorical" if args.action_encoding == training.CATEGORICAL_ENCODING else "raw",
+                action_encoding="categorical" if args.action_encoding in (
+                    training.CATEGORICAL_ENCODING, training.CENTER_HALF_WIDTH_ENCODING,
+                ) else "raw",
+                action_grid=training.configured_action_grid(args),
             )
             normalizer = VecNormalize.load(str(run_dir / f"{label}_vecnormalize.pkl"), normalization_env)
             normalizer.training = False

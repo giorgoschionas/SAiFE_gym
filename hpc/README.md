@@ -153,7 +153,12 @@ at most 10 agent decisions. The simulator uses forced hold actions between
 agent decisions.
 
 With the default `TAU=50` and `tick_stride=5`, the PPO action space is
-`MultiDiscrete([21, 10, 2])`.
+`Discrete(211)`: one hold and 210 endpoint pairs. The training script also
+supports opt-in `--center-magnitudes` and `--half-widths` lists (see the root
+README). Centers expand symmetrically and include zero. The example magnitudes
+`50 100 150 200` and widths `50 100 150 200 250 300` yield `Discrete(55)` and
+require `--tau 500` or greater. Explicit grids are checked against `tau` and
+are never clipped; `--tick-stride` does not alter them.
 
 Override parameters at submission time when needed:
 

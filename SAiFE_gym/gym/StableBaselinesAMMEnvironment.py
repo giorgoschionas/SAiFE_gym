@@ -6,7 +6,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.lp_actions import CategoricalLPActionCodec, HOLD_COMMAND
+from SAiFE_gym.gym.lp_actions import CenterHalfWidthActionGrid, categorical_action_codec, HOLD_COMMAND
 from SAiFE_gym.gym.index_names import (
     FEES0_KEY,
     FEES1_KEY,
@@ -48,6 +48,8 @@ class StableBaselinesAMMEnvironment(VecEnv):
     Wraps AMMEnvironment to expose a stable-baselines3 VecEnv interface.
 
     Uses one categorical ID per LP decision by default (ID 0 holds).
+    Supply action_grid for explicit center/half-width choices. tick_stride
+    applies only to the default endpoint-pair encoding.
     Set action_encoding="raw" for legacy Box commands.
 
     Responsibilities:
@@ -64,6 +66,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
         *,
         tick_stride: int = 1,
         action_encoding: str = "categorical",
+        action_grid: CenterHalfWidthActionGrid | None = None,
     ):
         self.env = amm_env  # must be set before super().__init__() calls get_attr()
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
@@ -72,9 +75,12 @@ class StableBaselinesAMMEnvironment(VecEnv):
         if action_encoding not in ("categorical", "raw"):
             raise ValueError("action_encoding must be 'categorical' or 'raw'")
         self.action_encoding = action_encoding
+        if action_grid is not None and action_encoding != "categorical":
+            raise ValueError("action_grid requires categorical action encoding")
+        self.action_grid = action_grid
         self.tick_stride = tick_stride
         self.action_codec = (
-            CategoricalLPActionCodec(amm_env.model_dynamics.tau, tick_stride)
+            categorical_action_codec(amm_env.model_dynamics.tau, tick_stride, action_grid=action_grid)
             if action_encoding == "categorical" else None
         )
         self.actions = np.tile(HOLD_COMMAND, (amm_env.num_trajectories, 1))

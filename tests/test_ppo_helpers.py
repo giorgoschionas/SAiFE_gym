@@ -5,7 +5,7 @@ from pathlib import Path
 
 import numpy as np
 from gymnasium import spaces
-from SAiFE_gym.gym.lp_actions import CategoricalLPActionCodec
+from SAiFE_gym.gym.lp_actions import CategoricalLPActionCodec, CenterHalfWidthActionGrid
 import pytest
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
@@ -65,6 +65,21 @@ def raw_env(vec):
     while hasattr(vec, "venv"):
         vec = vec.venv
     return vec.env
+
+
+def test_explicit_grid_is_shared_by_training_callback_and_comparison(make_env, make_learner):
+    env = make_env(n_steps=4)
+    grid = CenterHalfWidthActionGrid([1, 2], [1, 2, 3])
+    model, callback = make_learner(env, action_grid=grid)
+    assert model.action_space == spaces.Discrete(16)
+    assert callback.eval_env.action_space == model.action_space
+    assert model.lp_action_config["centers"] == list(grid.centers)
+    callback.eval_env.reset()
+    callback.eval_env.step(callback.eval_env.action_space.sample() * np.ones(2, dtype=int))
+    adapter = helpers.StableBaselinesAMMEnvironment(env, action_encoding="raw")
+    result = helpers.compare_rl_vs_uniform(model, env, adapter, n_eval_episodes=1,
+                                           vec_normalize=model.get_env())
+    assert set(result) == {"rl", "uniform"}
 
 
 def assert_equal(actual, expected):

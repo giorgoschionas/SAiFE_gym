@@ -197,6 +197,26 @@ endpoints there are `1 + m*(m-1)/2` IDs, ordered by lower then upper offset.
 includes `+tau`, even if the stride does not divide the window exactly.
 `DecisionStrideVecEnv` applies the chosen ID once and then forces hold ID 0.
 
+The SB3 adapter and PPO helpers optionally accept `action_grid`, an immutable
+`CenterHalfWidthActionGrid(center_magnitudes, half_widths)`. Magnitudes expand
+symmetrically with zero included once; both input lists are sorted and
+deduplicated. Explicit grids expose one hold plus every center/half-width pair,
+ordered by center then width, and decode vectorially to `[c-w, c+w, -1]`.
+The grid must fit the existing environment `tau`; setup raises if
+`tau < max(center_magnitudes) + max(half_widths)`. No clipping or automatic
+tau changes are performed. `tick_stride` applies only to endpoint encoding;
+raw adapters reject explicit grids. Native conditional actions and baseline
+behavior remain unchanged.
+
+Robust training opts in with paired `--center-magnitudes` and `--half-widths`
+arguments. Magnitudes `[50,100,150,200]` and widths `[50,100,150,200,250,300]`
+give `Discrete(55)` and require `tau >= 500`. Saved encoding
+`categorical_center_half_width_v1` records exact signed centers, half-widths,
+enumeration order, tau, and action count in `lp_action_config` and run configs.
+Evaluation and plotting must use the recorded grid; never infer this encoding
+from `Discrete(n)` alone. Existing endpoint and legacy MultiDiscrete decoders
+remain supported.
+
 Use the shared `CategoricalLPActionCodec` to decode predictions. Training,
 evaluation, diagnostics, and plots must agree on the grid. Training helpers
 save `lp_action_config` in policies; robust run configs also record

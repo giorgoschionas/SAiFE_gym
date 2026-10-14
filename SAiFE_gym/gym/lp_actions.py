@@ -4,13 +4,53 @@ The public decision is Hold | Rebalance(lower, upper). Raw three-column
 commands are an execution/compatibility format, not three independent choices.
 """
 
+from collections.abc import Sequence
+from dataclasses import dataclass
+
 import gymnasium as gym
 import numpy as np
 
 
 CATEGORICAL_ENCODING = "categorical_endpoint_pairs_v1"
+CENTER_HALF_WIDTH_ENCODING = "categorical_center_half_width_v1"
 STRUCTURED_ENCODING = "structured_center_half_width_v1"
 HOLD_COMMAND = np.array([0.0, 1.0, 1.0], dtype=np.float32)
+
+
+def _canonical_ticks(values, name: str, minimum: int) -> tuple[int, ...]:
+    try:
+        values = tuple(values)
+    except TypeError as exc:
+        raise ValueError(f"{name} must be a nonempty sequence of integers") from exc
+    if not values or any(
+        isinstance(v, (bool, np.bool_)) or not isinstance(v, (int, np.integer))
+        or v < minimum for v in values
+    ):
+        raise ValueError(f"{name} must contain integers >= {minimum}")
+    return tuple(sorted({int(v) for v in values}))
+
+
+@dataclass(frozen=True)
+class CenterHalfWidthActionGrid:
+    """Explicit RL grid in ticks; centers are symmetric and always include zero."""
+
+    center_magnitudes: Sequence[int]
+    half_widths: Sequence[int]
+
+    def __post_init__(self):
+        magnitudes = _canonical_ticks(self.center_magnitudes, "center_magnitudes", 0)
+        object.__setattr__(self, "center_magnitudes", tuple(sorted({0, *magnitudes})))
+        object.__setattr__(self, "half_widths", _canonical_ticks(
+            self.half_widths, "half_widths", 1,
+        ))
+
+    @property
+    def centers(self) -> tuple[int, ...]:
+        return tuple(sorted({0, *self.center_magnitudes, *(-c for c in self.center_magnitudes)}))
+
+    @property
+    def required_tau(self) -> int:
+        return max(self.center_magnitudes) + max(self.half_widths)
 
 
 def _validate_action_table_args(tau: int, tick_stride: int) -> tuple[int, int]:
@@ -189,23 +229,90 @@ class CategoricalLPActionCodec:
         return self.action_table[indices].copy()
 
 
-def validate_policy_metadata(model, tau: int, tick_stride: int):
+class CenterHalfWidthLPActionCodec(CategoricalLPActionCodec):
+    """Hold once, then every explicit center/half-width pair without clipping."""
+
+    encoding = CENTER_HALF_WIDTH_ENCODING
+
+    def __init__(self, tau: int, action_grid: CenterHalfWidthActionGrid):
+        self.tau, _ = _validate_action_table_args(tau, 1)
+        if not isinstance(action_grid, CenterHalfWidthActionGrid):
+            raise ValueError("action_grid must be a CenterHalfWidthActionGrid")
+        self.action_grid = action_grid
+        if self.tau < action_grid.required_tau:
+            raise ValueError(
+                f"Center/half-width grid requires tau >= {action_grid.required_tau}; "
+                f"got tau={self.tau}. The grid will not be clipped."
+            )
+        if action_grid.required_tau > np.iinfo(np.int64).max:
+            raise ValueError("Grid endpoints exceed the supported int64 tick range")
+        # Commands use float32 throughout the existing execution interface.
+        # Reject grids whose endpoints could change during that conversion.
+        centers = np.repeat(np.asarray(action_grid.centers, dtype=np.int64), len(action_grid.half_widths))
+        widths = np.tile(np.asarray(action_grid.half_widths, dtype=np.int64), len(action_grid.centers))
+        ranges = np.column_stack((centers - widths, centers + widths, -np.ones_like(centers)))
+        commands = ranges.astype(np.float32)
+        if not np.array_equal(commands.astype(np.float64), ranges):
+            raise ValueError("Grid endpoints must be exactly representable as float32 commands")
+        self.action_table = np.vstack((HOLD_COMMAND, commands))
+        self.action_table.setflags(write=False)
+        self.action_space = gym.spaces.Discrete(len(self.action_table))
+
+    @property
+    def metadata(self):
+        return dict(
+            action_encoding=self.encoding, tau=self.tau,
+            centers=list(self.action_grid.centers), half_widths=list(self.action_grid.half_widths),
+            enumeration_order="center_then_half_width", action_count=int(self.action_space.n),
+        )
+
+
+def categorical_action_codec(
+    tau: int, tick_stride: int = 1, *, action_grid: CenterHalfWidthActionGrid | None = None,
+) -> CategoricalLPActionCodec:
+    """Select an explicit grid or the unchanged default endpoint encoding."""
+    if action_grid is not None:
+        return CenterHalfWidthLPActionCodec(tau, action_grid)
+    return CategoricalLPActionCodec(tau, tick_stride)
+
+
+def action_grid_from_metadata(metadata) -> CenterHalfWidthActionGrid | None:
+    """Restore explicit grids only when the saved encoding identifies them."""
+    if metadata is None or metadata.get("action_encoding") != CENTER_HALF_WIDTH_ENCODING:
+        return None
+    try:
+        centers = metadata["centers"]
+        grid = CenterHalfWidthActionGrid([c for c in centers if c >= 0], metadata["half_widths"])
+        expected = CenterHalfWidthLPActionCodec(metadata["tau"], grid).metadata
+        if metadata != expected:
+            raise ValueError("Noncanonical center/half-width metadata")
+        return grid
+    except (KeyError, TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("Invalid saved center/half-width action metadata") from exc
+
+
+def validate_policy_metadata(model, tau: int, tick_stride: int, *, action_grid=None):
     """Check saved grid parameters even when two different grids have equal counts."""
     saved = getattr(model, "lp_action_config", None)
+    if saved is None and action_grid is not None:
+        raise ValueError("Center/half-width policies require saved action metadata")
     if saved is not None:
-        expected = CategoricalLPActionCodec(tau, tick_stride).metadata
+        expected = categorical_action_codec(tau, tick_stride, action_grid=action_grid).metadata
         if saved != expected:
-            raise ValueError("Saved policy action metadata does not match the configured endpoint grid")
+            raise ValueError("Saved policy action metadata does not match the configured action grid")
 
 
-def decode_policy_actions(actions, action_space, tau: int, tick_stride: int = 1):
+def decode_policy_actions(actions, action_space, tau: int, tick_stride: int = 1, *, action_grid=None):
     """Decode current categorical or explicitly recognized historical policies."""
-    tau, tick_stride = _validate_action_table_args(tau, tick_stride)
     if isinstance(action_space, gym.spaces.Discrete):
-        codec = CategoricalLPActionCodec(tau, tick_stride)
+        codec = categorical_action_codec(tau, tick_stride, action_grid=action_grid)
         if action_space != codec.action_space:
-            raise ValueError("Policy action space does not match the configured endpoint grid")
+            kind = "center/half-width" if action_grid is not None else "endpoint"
+            raise ValueError(f"Policy action space does not match the configured {kind} grid")
         return codec.decode(actions)
+    if action_grid is not None:
+        raise ValueError("Center/half-width grids require a Discrete policy action space")
+    tau, tick_stride = _validate_action_table_args(tau, tick_stride)
     if isinstance(action_space, gym.spaces.MultiDiscrete):
         centers = _offset_grid(tau, tick_stride)
         widths = _half_width_grid(tau, tick_stride)

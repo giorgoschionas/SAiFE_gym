@@ -94,6 +94,54 @@ is `1 + m*(m-1)/2`. `tau=5, tick_stride=1` gives 56 actions;
 `tau=50, tick_stride=5` gives 211. The grid includes both `-tau` and `+tau`,
 appending `+tau` if the stride does not land on it. Each ID has a unique meaning.
 
+For an explicit center/half-width grid during RL training, opt in on the same
+adapter:
+
+```python
+from SAiFE_gym.gym.lp_actions import CenterHalfWidthActionGrid
+
+grid = CenterHalfWidthActionGrid(
+    center_magnitudes=[50, 100, 150, 200],
+    half_widths=[50, 100, 150, 200, 250, 300],
+)
+raw_env = get_amm_env(num_trajectories=10, tau=500)
+training_env = StableBaselinesAMMEnvironment(raw_env, action_grid=grid)
+assert training_env.action_space.n == 55
+model = PPO("MlpPolicy", training_env)
+model.lp_action_config = training_env.action_codec.metadata  # Save with the model.
+```
+
+Center magnitudes expand to `[-200, -150, -100, -50, 0, 50, 100, 150, 200]`.
+Zero is always included once; inputs are sorted and deduplicated. Magnitudes
+must be nonnegative integers and half-widths positive integers. ID `0` holds;
+remaining IDs enumerate centers first, then widths, decoding to
+`[center - half_width, center + half_width]` relative to the current pool tick.
+The count is `1 + len(centers) * len(half_widths)`. Each pair has a unique range.
+`tick_stride` does not affect this explicit grid.
+
+The adapter requires `tau >= max(center_magnitudes) + max(half_widths)` and
+rejects incompatible grids at setup. It never enlarges `tau` or clips ranges.
+The native environment and baseline strategies retain their `tau` behavior;
+the simulator's tracked tick window must still cover placements and price movement.
+Holding preserves the existing absolute position bounds.
+
+The robust training script accepts the same opt-in configuration:
+
+```bash
+python experiments/train_robust_lp_agent.py \
+  --tau 500 \
+  --center-magnitudes 50 100 150 200 \
+  --half-widths 50 100 150 200 250 300
+```
+
+Supply both grid arguments together. Without them, the existing endpoint-pair
+encoding remains the default. General PPO helpers also accept `action_grid`.
+Helpers save the `categorical_center_half_width_v1` encoding, exact signed
+centers, widths, and enumeration order with policies and run configurations.
+Evaluation and plots restore that mapping and reject incompatible metadata,
+including different grids with the same number of actions. Standard SB3 PPO
+learns one categorical distribution over the combinations; it needs no custom policy.
+
 For compatibility, `command_space` and `batched_command_space` expose the old
 `[lower_offset, upper_offset, hold_flag]` Box. `step_command(commands)` and
 legacy array inputs to `step` retain integer rounding/clipping and the flag
@@ -105,10 +153,11 @@ New training helpers and robust runs record the categorical encoding and grid
 parameters in saved policy metadata; robust run configurations record them too.
 Evaluation retains support for historical MultiDiscrete policies using their
 original decoder. A new categorical policy must be trained from scratch.
-The new training grid offers 210 ranges, compared with the 120 distinct ranges
+The default robust training grid offers 210 ranges, compared with the 120 distinct ranges
 reachable through the previous center/half-width mapping. Policy range plots
 leave gaps on hold decisions because no range is selected; for externally
-created saved policies without grid metadata, pass `tick_stride` explicitly.
+created endpoint-pair policies without grid metadata, pass `tick_stride` explicitly.
+Explicit center/half-width policies require their saved grid metadata.
 
 ## Stochastic Gas Costs
 
