@@ -134,9 +134,10 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 Both the single-training and seed-sweep launchers default to
 `TOTAL_TIMESTEPS=10000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
 and `TAU=50`.
-Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
-it does not force every position to have width 200. These values can still be
-overridden through exported environment variables.
+Here, `TAU` bounds both range endpoints relative to the current pool tick.
+With `TAU=50` and `TICK_STRIDE=5`, PPO chooses one of 211 categorical actions:
+hold, or one of 210 valid endpoint pairs. These values can still be overridden
+through exported environment variables.
 
 Both launchers default to `NOMINAL_SIGMA=0.03` and
 `NOMINAL_ARRIVAL_RATE=300.0` for nominal training and convergence validation.

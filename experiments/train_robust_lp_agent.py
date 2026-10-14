@@ -20,6 +20,7 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import numpy as np
+from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
 from stable_baselines3.common.vec_env import VecEnv, VecNormalize
@@ -77,7 +78,10 @@ from SAiFE_gym.stochastic_processes.midprice_models import (  # noqa: E402
 from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
     LiquidityDepthUniswapV3PriceImpact,
 )
-from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
+from SAiFE_gym.gym.lp_actions import (  # noqa: E402
+    CATEGORICAL_ENCODING, STRUCTURED_ENCODING, CategoricalLPActionCodec,
+    decode_policy_actions, validate_policy_metadata,
+)
 
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
@@ -465,7 +469,11 @@ class DecisionStrideVecEnv(VecEnv):
             raise ValueError(f"stride must be >= 1, got {stride}")
         self._wrapped = vec_env
         self.stride = int(stride)
-        self._hold = np.tile(FORCED_HOLD_ACTION, (vec_env.num_envs, 1))
+        self._hold = (
+            np.zeros(vec_env.num_envs, dtype=np.int64)
+            if isinstance(vec_env.action_space, spaces.Discrete)
+            else np.tile(FORCED_HOLD_ACTION, (vec_env.num_envs, 1))
+        )
         self._pending_action: Optional[np.ndarray] = None
         super().__init__(
             vec_env.num_envs,
@@ -477,7 +485,7 @@ class DecisionStrideVecEnv(VecEnv):
         return self._wrapped.reset()
 
     def step_async(self, actions: np.ndarray) -> None:
-        self._pending_action = np.asarray(actions, dtype=np.float32)
+        self._pending_action = np.asarray(actions).copy()
 
     def step_wait(self) -> VecEnvStepReturn:
         if self._pending_action is None:
@@ -643,11 +651,35 @@ def zero_agent_decision_diagnostics(args: argparse.Namespace) -> dict[str, float
     }
 
 
+def configure_action_encoding(args: argparse.Namespace) -> None:
+    args.action_encoding = CATEGORICAL_ENCODING
+    args.action_count = int(CategoricalLPActionCodec(args.tau, args.tick_stride).action_space.n)
+
+
+def validate_policy_action_encoding(model, args: argparse.Namespace) -> None:
+    """Never interpret a saved head using a different action grid/encoding."""
+    actual = (
+        CATEGORICAL_ENCODING if isinstance(model.action_space, spaces.Discrete)
+        else STRUCTURED_ENCODING if isinstance(model.action_space, spaces.MultiDiscrete)
+        else "raw"
+    )
+    expected = getattr(args, "action_encoding", actual)
+    if expected != actual:
+        raise ValueError(f"Saved action encoding {expected!r} does not match policy {actual!r}")
+    probe = np.zeros(model.action_space.shape, dtype=model.action_space.dtype)
+    decode_policy_actions(probe, model.action_space, args.tau, args.tick_stride)
+    validate_policy_metadata(model, args.tau, args.tick_stride)
+    if actual == CATEGORICAL_ENCODING and getattr(args, "action_count", model.action_space.n) != model.action_space.n:
+        raise ValueError("Saved action count does not match policy action space")
+
+
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
-    vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
+    if env.model_dynamics.tau != args.tau:
+        raise ValueError("Training environment tau must match the configured action grid")
+    configure_action_encoding(args)
+    vec_env = wrap_env(env, normalise_obs=args.normalise_obs, tick_stride=args.tick_stride)
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
-    decision_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
-    ppo_env = StructuredMultiDiscreteVecEnv(decision_env, args.tau, args.tick_stride)
+    ppo_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
     rollout_size = ppo_rollout_steps(args) * args.num_trajectories
     batch_size = min(max(64, rollout_size // 16), rollout_size)
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
@@ -665,6 +697,7 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         gamma=1.0,
         seed=args.seed,
     )
+    model.lp_action_config = CategoricalLPActionCodec(args.tau, args.tick_stride).metadata
     return model, ppo_env, vec_normalize
 
 
@@ -817,6 +850,7 @@ def evaluate_ppo(
     *,
     env_factory: Optional[Callable] = None,
 ) -> dict:
+    validate_policy_action_encoding(model, args)
     objective_values = []
     behavior = PolicyBehaviorAccumulator()
     decision_behavior = AgentDecisionAccumulator(
@@ -826,12 +860,7 @@ def evaluate_ppo(
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
-        sb3_env = StableBaselinesAMMEnvironment(env)
-        action_wrapper = StructuredMultiDiscreteVecEnv(
-            sb3_env,
-            args.tau,
-            args.tick_stride,
-        )
+        sb3_env = StableBaselinesAMMEnvironment(env, action_encoding="raw")
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
         behavior.begin_episode(env.num_trajectories)
@@ -842,8 +871,10 @@ def evaluate_ppo(
             if step_idx % args.decision_stride == 0:
                 flat_obs = sb3_env._flatten_obs(obs)
                 model_obs = normalize_obs(flat_obs, vec_normalize)
-                structured_action, _ = model.predict(model_obs, deterministic=True)
-                action = action_wrapper.unscale(structured_action)
+                policy_action, _ = model.predict(model_obs, deterministic=True)
+                action = decode_policy_actions(
+                    policy_action, model.action_space, args.tau, args.tick_stride,
+                )
                 decision_behavior.record_decision(obs, action)
             else:
                 action = hold_action
@@ -1182,6 +1213,7 @@ def main() -> int:
         BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION
     )
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
+    configure_action_encoding(args)
     save_json(run_dir / "config.json", vars(args))
 
     domain_randomized_env = make_domain_randomized_env(args)

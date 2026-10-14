@@ -193,7 +193,7 @@ class DomainRandomizedAMMEnvironment:
         info["domain_parameters"] = params.to_dict()
         return obs, info
 
-    def step(self, action: np.ndarray):
+    def step(self, action):
         return self.env.step(action)
 
     def seed(self, seed: int = None):

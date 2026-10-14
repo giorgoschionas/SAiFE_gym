@@ -58,7 +58,7 @@ class GymnasiumAMMEnvironment(gymnasium.Env):
 
     Wrap an AMMEnvironment (optionally domain-randomized) with exactly one
     trajectory. Scalar observation fields are zero-dimensional arrays; per-tick
-    fields have shape ``(num_ticks,)``. Actions have shape ``(3,)``. Reward and
+    fields have shape ``(num_ticks,)``. Actions are tagged Hold/Rebalance decisions. Reward and
     termination flags are Python scalars. Call reset after an episode ends.
     """
 
@@ -87,8 +87,11 @@ class GymnasiumAMMEnvironment(gymnasium.Env):
     def step(self, action):
         if self._needs_reset:
             raise gymnasium.error.ResetNeeded("Call reset before starting a new episode")
-        action = _action_array(action, self.action_space.shape)
-        state, rewards, terminated, truncated, info = self.amm_env.step(action[None, :])
+        if not isinstance(action, tuple):
+            action = _action_array(action, self.amm_env.command_space.shape)
+        elif not self.action_space.contains(action):
+            raise ValueError("expected a valid Hold/Rebalance decision")
+        state, rewards, terminated, truncated, info = self.amm_env.step(action)
         terminated, truncated = bool(terminated[0]), bool(truncated[0])
         self._needs_reset = terminated or truncated
         return (
@@ -161,7 +164,9 @@ class GymnasiumAMMVectorEnv(VectorEnv):
     def step(self, actions):
         if self._needs_reset:
             raise gymnasium.error.ResetNeeded("Call reset before stepping the environment")
-        actions = _action_array(actions, self.action_space.shape)
+        if isinstance(actions, np.ndarray):
+            actions = _action_array(actions, self.amm_env.batched_command_space.shape)
+        actions = self.amm_env.normalize_action(actions)
         if self._autoreset_pending:
             obs, info = self.reset()
             return (

@@ -176,7 +176,7 @@ class TestDiscreteActionWrapper:
 class TestDiscreteActionVecEnv:
     def test_vec_env_exposes_discrete_space_and_maps_actions(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = DiscreteActionVecEnv(sb_env, tau=5)
 
         assert isinstance(wrapped.action_space, gymnasium.spaces.Discrete)
@@ -189,7 +189,7 @@ class TestDiscreteActionVecEnv:
 
     def test_vec_env_step_smoke(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = DiscreteActionVecEnv(sb_env, tau=5)
 
         obs = wrapped.reset()
@@ -240,7 +240,7 @@ class TestDecisionStrideVecEnv:
 class TestStructuredMultiDiscreteVecEnv:
     def test_exposes_center_width_hold_space(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
 
         assert isinstance(wrapped.action_space, gymnasium.spaces.MultiDiscrete)
@@ -248,7 +248,7 @@ class TestStructuredMultiDiscreteVecEnv:
 
     def test_tick_stride_exposes_coarser_center_width_space(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5, tick_stride=2)
 
         np.testing.assert_array_equal(wrapped.center_offsets, np.array([-5, -3, -1, 1, 3, 5]))
@@ -257,7 +257,7 @@ class TestStructuredMultiDiscreteVecEnv:
 
     def test_unscale_maps_center_width_hold_to_internal_action(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
 
         actions = np.array([
@@ -273,7 +273,7 @@ class TestStructuredMultiDiscreteVecEnv:
 
     def test_unscale_maps_strided_actions_to_internal_action(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5, tick_stride=2)
 
         actions = np.array([
@@ -290,14 +290,14 @@ class TestStructuredMultiDiscreteVecEnv:
     @pytest.mark.parametrize("tau,tick_stride", [(0, 1), (5, 0)])
     def test_invalid_stride_arguments_raise(self, tau, tick_stride):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
 
         with pytest.raises(ValueError):
             StructuredMultiDiscreteVecEnv(sb_env, tau=tau, tick_stride=tick_stride)
 
     def test_step_async_maps_structured_actions(self):
         amm_env = create_test_amm_env(num_trajectories=2, tau=5)
-        sb_env = StableBaselinesAMMEnvironment(amm_env)
+        sb_env = StableBaselinesAMMEnvironment(amm_env, action_encoding="raw")
         wrapped = StructuredMultiDiscreteVecEnv(sb_env, tau=5)
 
         wrapped.reset()

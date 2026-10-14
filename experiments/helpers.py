@@ -21,6 +21,9 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
+from SAiFE_gym.gym.lp_actions import (
+    CategoricalLPActionCodec, decode_policy_actions, validate_policy_metadata,
+)
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
@@ -75,7 +78,7 @@ def get_amm_env(
         num_trajectories: Parallel trajectories (acts as vectorised batch size).
         terminal_time:    Episode length.
         n_steps:          Number of discrete steps per episode.
-        tau:              LP position half-width in ticks (action range ±tau).
+        tau:              Maximum absolute tick offset of either range endpoint.
         volatility:       Brownian motion volatility of the external mid-price.
         arrival_rate:     Baseline Poisson order arrival rate (α₁ for both sides).
         alpha3:           Arbitrage / toxicity coefficient (α₃). Higher values
@@ -145,10 +148,11 @@ def get_amm_env(
 # SB3 wrapping
 # ---------------------------------------------------------------------------
 
-def wrap_env(env: AMMEnvironment, normalise_obs: bool = True) -> VecMonitor:
+def wrap_env(env: AMMEnvironment, normalise_obs: bool = True, *,
+             tick_stride: int = 1, action_encoding: str = "categorical") -> VecMonitor:
     """Wrap AMMEnvironment for SB3 training.
 
-    Pipeline: AMMEnvironment → StableBaselinesAMMEnvironment (Dict→flat obs)
+    Pipeline: AMMEnvironment → StableBaselinesAMMEnvironment (categorical actions, flat obs)
               → VecMonitor (episode stats) → VecNormalize (running mean/std).
 
     VecNormalize is strongly recommended when features span very different
@@ -161,7 +165,9 @@ def wrap_env(env: AMMEnvironment, normalise_obs: bool = True) -> VecMonitor:
                        Disable only when loading a pre-trained model that
                        already carries its own normalisation stats.
     """
-    vec = VecMonitor(StableBaselinesAMMEnvironment(env))
+    vec = VecMonitor(StableBaselinesAMMEnvironment(
+        env, tick_stride=tick_stride, action_encoding=action_encoding,
+    ))
     if normalise_obs:
         vec = VecNormalize(vec, norm_obs=True, norm_reward=False, clip_obs=10.0)
     return vec
@@ -206,6 +212,7 @@ def get_ppo_learner_and_callback(
     *,
     eval_env: AMMEnvironment = None,
     eval_seed: int = SEED + 10_000,
+    tick_stride: int = 1,
 ):
     """Build a PPO model and EvalCallback for the given environment.
 
@@ -260,11 +267,12 @@ def get_ppo_learner_and_callback(
             ) from exc
     _validate_separate_eval_env(env, eval_env)
 
-    training_vec = wrap_env(env, normalise_obs=normalise_obs)
-    eval_vec = wrap_env(eval_env, normalise_obs=normalise_obs)
+    training_vec = wrap_env(env, normalise_obs=normalise_obs, tick_stride=tick_stride)
+    eval_vec = wrap_env(eval_env, normalise_obs=normalise_obs, tick_stride=tick_stride)
     if (
         training_vec.observation_space != eval_vec.observation_space
         or training_vec.action_space != eval_vec.action_space
+        or env.model_dynamics.tau != eval_env.model_dynamics.tau
     ):
         raise ValueError("Training and evaluation SB3 observation/action spaces must match.")
     eval_env.reset(seed=eval_seed)
@@ -301,6 +309,7 @@ def get_ppo_learner_and_callback(
         eval_freq=env.n_steps * 10,  # callbacks count batch steps, not transitions
     )
     model = PPO(**ppo_params)
+    model.lp_action_config = CategoricalLPActionCodec(env.model_dynamics.tau, tick_stride).metadata
     callback = EvalCallback(**callback_params)
     return model, callback
 
@@ -394,7 +403,13 @@ def compare_rl_vs_uniform(
             'mean': scalar mean final wealth
             'std':  scalar std of final wealth
     """
-    rl_agent = SbAgent(model, num_trajectories=env.num_trajectories)
+    validate_policy_metadata(model, env.model_dynamics.tau, sb3_env.tick_stride)
+    rl_agent = SbAgent(
+        model, num_trajectories=env.num_trajectories,
+        action_decoder=lambda actions: decode_policy_actions(
+            actions, model.action_space, env.model_dynamics.tau, sb3_env.tick_stride,
+        ),
+    )
     uniform_agent = UniformAllocationAgent(env)
     flatten = sb3_env._flatten_obs
 
@@ -578,6 +593,18 @@ def plot_convergence_curve(
     return fig
 
 
+def _plot_action_bounds(model, actions, tau, tick_stride):
+    """Hold has no chosen bounds; represent it as a gap in range plots."""
+    if tick_stride is None:
+        tick_stride = getattr(model, "lp_action_config", {}).get("tick_stride", 1)
+    validate_policy_metadata(model, tau, tick_stride)
+    commands = decode_policy_actions(actions, model.action_space, tau, tick_stride)
+    bounds = commands[..., :2].astype(float).copy()
+    if commands.shape[-1] == 3:
+        bounds[commands[..., 2] > 0] = np.nan
+    return bounds
+
+
 def create_policy_behavior_plot(
     model: PPO,
     vec_normalize: VecNormalize,
@@ -593,6 +620,7 @@ def create_policy_behavior_plot(
     filename: str = "policy_behavior.png",
     *,
     initial_wealth: float = INITIAL_WEALTH,
+    tick_stride: int | None = None,
 ) -> plt.Figure:
     """Plot tick offsets chosen by RL vs Uniform agent as mispricing varies.
 
@@ -634,7 +662,8 @@ def create_policy_behavior_plot(
     norm_obs = vec_normalize.normalize_obs(raw_obs)
     vec_normalize.training = old_training
 
-    rl_actions, _ = model.predict(norm_obs, deterministic=True)  # (n_points, 2)
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)
+    rl_actions = _plot_action_bounds(model, rl_actions, tau, tick_stride)
     rl_lower, rl_upper = rl_actions[:, 0], rl_actions[:, 1]
 
     fig, (ax_lo, ax_hi) = plt.subplots(1, 2, figsize=(12, 5))
@@ -679,6 +708,7 @@ def create_time_behavior_plot(
     filename: str = "policy_time_behavior.png",
     *,
     initial_wealth: float = INITIAL_WEALTH,
+    tick_stride: int | None = None,
 ) -> plt.Figure:
     """Plot how tick offsets evolve over the episode at fixed mispricing levels.
 
@@ -711,7 +741,8 @@ def create_time_behavior_plot(
     norm_obs = vec_normalize.normalize_obs(raw_obs)
     vec_normalize.training = old_training
 
-    rl_actions, _ = model.predict(norm_obs, deterministic=True)       # (n_total, 2)
+    rl_actions, _ = model.predict(norm_obs, deterministic=True)
+    rl_actions = _plot_action_bounds(model, rl_actions, tau, tick_stride)
     rl_actions = rl_actions.reshape(n_levels, n_time_points, 2)       # (levels, time, 2)
 
     level_colors = plt.cm.RdYlGn(np.linspace(0.15, 0.85, n_levels))

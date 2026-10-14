@@ -4,6 +4,8 @@ from copy import deepcopy
 from pathlib import Path
 
 import numpy as np
+from gymnasium import spaces
+from SAiFE_gym.gym.lp_actions import CategoricalLPActionCodec
 import pytest
 from stable_baselines3.common.logger import configure
 from stable_baselines3.common.vec_env import VecNormalize
@@ -167,7 +169,9 @@ def test_real_evaluation_does_not_change_training_or_next_transition(
     control_vec = helpers.wrap_env(deepcopy(env), normalise_obs=normalise_obs)
     try:
         assert_equal(training_vec.reset(), control_vec.reset())
-        action = np.tile([-2, 3, -1], (num_trajectories, 1))
+        table = CategoricalLPActionCodec(5).action_table
+        action_id = np.flatnonzero(np.all(table == [-2, 3, -1], axis=1))[0]
+        action = np.full(num_trajectories, action_id, dtype=np.int64)
         transition = training_vec.step(action)
         assert_equal(transition, control_vec.step(action))
         model._last_obs = transition[0].copy()
@@ -198,7 +202,7 @@ def test_real_evaluation_does_not_change_training_or_next_transition(
         else:
             assert not isinstance(callback.eval_env, VecNormalize)
 
-        next_action = np.tile([-2, 3, 1], (num_trajectories, 1))
+        next_action = np.zeros(num_trajectories, dtype=np.int64)
         assert_equal(training_vec.step(next_action), control_vec.step(next_action))
         assert_equal(snapshot(env), snapshot(raw_env(control_vec)))
     finally:
@@ -252,6 +256,17 @@ def test_incompatible_actions_rejected_before_reset(make_env, make_learner):
     assert_equal(snapshot(evaluation), before)
 
 
+def test_equal_action_counts_with_different_endpoints_are_rejected(make_env, make_learner):
+    # Both grids have two endpoints: one range plus hold, with different bounds.
+    env = make_env(tau=1)
+    evaluation = make_env(tau=2)
+    before = snapshot(evaluation)
+    assert CategoricalLPActionCodec(1, 10).action_space == CategoricalLPActionCodec(2, 10).action_space
+    with pytest.raises(ValueError, match="observation/action spaces must match"):
+        make_learner(env, eval_env=evaluation, tick_stride=10)
+    assert_equal(snapshot(evaluation), before)
+
+
 def test_copy_failure_explains_explicit_environment_escape_hatch(make_env, make_learner):
     class UncopyablePnL(PnL):
         def __deepcopy__(self, memo):
@@ -283,7 +298,7 @@ def test_evaluation_seed_zero_is_reproducible_and_stream_advances(
             vec = callback.eval_env
             vec.reset()
             for _ in range(3):
-                vec.step(np.tile([-1, 1, 1], (vec.num_envs, 1)))
+                vec.step(np.zeros(vec.num_envs, dtype=np.int64))
                 path.append(raw_env(vec).state[ASSET_PRICE_KEY].copy())
     assert_equal(paths[0], paths[1])
     assert not np.array_equal(paths[0], paths[2])
@@ -345,6 +360,8 @@ def test_behavior_plots_use_portfolio_relative_observations(
         return normalize(obs)
 
     class PlotPolicy:
+        action_space = spaces.Box(-5, 5, shape=(2,))
+
         def predict(self, obs, deterministic=True):
             assert obs.shape[1] == 8
             assert np.isfinite(obs).all()

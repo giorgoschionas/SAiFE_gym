@@ -48,6 +48,7 @@ class InventoryEvaluationEnvironment(AMMEnvironment):
         # rewards keep the original full-state snapshot behavior.
         if type(self.reward_function) is not RunningInventoryPenalty:
             return super().step(action)
+        action = self.normalize_action(action)
         # dt uses both current and next TIME_KEY in RunningInventoryPenalty.
         from SAiFE_gym.gym.index_names import TIME_KEY
         current = {

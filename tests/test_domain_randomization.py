@@ -73,7 +73,6 @@ from SAiFE_gym.stochastic_processes.midprice_models import (
 from SAiFE_gym.stochastic_processes.price_impact_models import (
     LiquidityDepthUniswapV3PriceImpact,
 )
-from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv
 
 
 def create_test_amm_env(
@@ -556,9 +555,7 @@ def test_default_domain_stream_separation_survives_ppo_reseeding(seed, num_domai
         create_test_amm_env(seed=99), UniformDomainRandomizationConfig(),
         seed=99, num_domains=num_domains,
     )
-    train_env = StructuredMultiDiscreteVecEnv(
-        StableBaselinesAMMEnvironment(env), tau=5,
-    )
+    train_env = StableBaselinesAMMEnvironment(env)
     model = PPO(
         "MlpPolicy", train_env, n_steps=5, batch_size=10,
         n_epochs=1, verbose=0, seed=seed,
@@ -822,19 +819,15 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
 
     env = make_fixed_env(args, params, seed=123)
     state, _ = env.reset(seed=123)
-    ppo_env = StructuredMultiDiscreteVecEnv(
-        StableBaselinesAMMEnvironment(env),
-        args.tau,
-        args.tick_stride,
-    )
+    ppo_env = StableBaselinesAMMEnvironment(env, tick_stride=args.tick_stride)
 
     assert env.initial_wealth == 1_000.0
     assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
     assert env.model_dynamics.tau == 50
     assert args.tick_stride == 5
-    np.testing.assert_array_equal(env.action_space.low, [-50.0, -49.0, -1.0])
-    np.testing.assert_array_equal(env.action_space.high, [49.0, 50.0, 1.0])
-    np.testing.assert_array_equal(ppo_env.action_space.nvec, [21, 10, 2])
+    np.testing.assert_array_equal(env.command_space.low, [-50.0, -49.0, -1.0])
+    np.testing.assert_array_equal(env.command_space.high, [49.0, 50.0, 1.0])
+    assert ppo_env.action_space.n == 211
     np.testing.assert_array_equal(state[PORTFOLIO_VALUE_KEY], [1_000.0, 1_000.0])
     np.testing.assert_array_equal(
         state[LP_TICK_LOWER_KEY],
@@ -1443,7 +1436,7 @@ def test_ppo_smoke_learns_on_domain_randomized_env():
     )
     env = DomainRandomizedAMMEnvironment(create_test_amm_env(), config, seed=5)
     sb3_env = StableBaselinesAMMEnvironment(env)
-    train_env = StructuredMultiDiscreteVecEnv(sb3_env, tau=5)
+    train_env = sb3_env
     model = PPO(
         "MlpPolicy",
         train_env,
@@ -1455,5 +1448,5 @@ def test_ppo_smoke_learns_on_domain_randomized_env():
         seed=5,
     )
 
-    np.testing.assert_array_equal(model.action_space.nvec, np.array([11, 5, 2]))
+    assert model.action_space.n == 56
     model.learn(total_timesteps=10)

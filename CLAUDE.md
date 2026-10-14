@@ -106,9 +106,12 @@ The environment follows a standard RL cycle with AMM-specific components:
 ### Environment Interfaces
 
 - Preserve `AMMEnvironment`'s batched returns, including for one trajectory.
-  Its `action_space`/`single_action_space` describes one `(3,)` command;
-  `batched_action_space` describes `(num_trajectories, 3)` commands. Raw `step`
-  accepts `(3,)` only for one trajectory, plus existing batched commands.
+  Its `action_space`/`single_action_space` is conditional Hold/Rebalance;
+  `batched_action_space` describes a tuple of decisions. `command_space` and
+  `batched_command_space` expose legacy `(3,)` and `(num_trajectories, 3)`
+  commands. `step` accepts both formats; `step_command` explicitly accepts raw
+  commands. Conditional decisions are validated at the API boundary; the
+  simulator and categorical decoding remain vectorized.
 - `GymnasiumAMMEnvironment` in `gym/GymnasiumAMMEnvironment.py` adapts one
   trajectory to `gymnasium.Env`: unbatched Dict observations, scalar reward,
   boolean flags, and explicit reset. Apply standard Gymnasium wrappers here.
@@ -122,8 +125,9 @@ The environment follows a standard RL cycle with AMM-specific components:
   They accept raw or domain-randomized AMM environments and support no rendering.
 - `StableBaselinesAMMEnvironment` remains the SB3 adapter with the existing
   float32 feature vector and same-step autoreset. Preserve this interface for
-  `experiments/train_robust_lp_agent.py`, including observation ordering,
-  normalization, and structured action mappings.
+  `experiments/train_robust_lp_agent.py`, including observation ordering and
+  normalization. Its default action space is categorical; use explicit
+  `action_encoding="raw"` for legacy Box/structured wrappers.
 - `DiscreteActionWrapper` is a native batched action converter; it does not
   convert the raw simulator's returns into a single Gymnasium Env API.
 
@@ -173,34 +177,44 @@ space to accommodate roundoff at the configured terminal horizon.
 
 **Critical Note**: `POOL_SQRT_PRICE_KEY` stores √P (not P), following Uniswap V3 convention. Convert with `price = sqrt_price ** 2`.
 
-### Action Space - 3D Offset Format
+### Action Space - Conditional Decisions and Categorical Training
 
-`AMMEnvironment.action_space` is the low-level simulator command space, not the
-canonical discrete LP decision space. The raw 3D Box is useful for direct model
-execution and continuous-control agents, but it contains redundant hold
-commands because offsets are ignored whenever `hold_flag > 0`. Use
-`SAiFE_gym.wrappers.DiscreteActionWrapper` or `DiscreteActionVecEnv` when an
-agent should see one unique hold action plus finite rebalance ranges.
+`AMMEnvironment.action_space` is `LPActionSpace`, a Gymnasium `OneOf` from
+`gym/lp_actions.py`:
 
-**Action format**: `[lower_offset, upper_offset, hold_flag]` - tick offsets relative to current tick plus a hold/rebalance flag.
+- Hold: `(0, ())`, constructed by `hold_action()`, with no range parameters.
+- Rebalance: `(1, [lower, upper])`, constructed by `rebalance_action(lower, upper)`.
+  Bounds are integer offsets from the current pool tick and must satisfy
+  `-tau <= lower < upper <= tau`. Invalid conditional decisions raise errors.
+- Multiple trajectories use a tuple of decisions. All wealth is deployed on a
+  rebalance; there is no position-size dimension.
 
-**Action space**: `Box(low=[-tau, -tau+1, -1.0], high=[tau-1, tau, 1.0], shape=(3,))`
+`StableBaselinesAMMEnvironment` defaults to `Discrete` with one unique hold ID
+(`0`) and every valid pair of endpoints on the configured tick grid. For `m`
+endpoints there are `1 + m*(m-1)/2` IDs, ordered by lower then upper offset.
+`tick_stride=1` and the core default `tau=5` give 56 IDs. Robust training uses
+`tau=50, tick_stride=5`, giving 211 IDs (210 ranges plus hold). The grid always
+includes `+tau`, even if the stride does not divide the window exactly.
+`DecisionStrideVecEnv` applies the chosen ID once and then forces hold ID 0.
 
-| Index | Name | Bounds | Description |
-|-------|------|--------|-------------|
-| `[0]` | `lower_offset` | `[-tau, tau-1]` | Tick offset of position lower bound from current tick |
-| `[1]` | `upper_offset` | `[-tau+1, tau]` | Tick offset of position upper bound from current tick |
-| `[2]` | `hold_flag` | `[-1.0, 1.0]` | `<= 0` → rebalance; `> 0` → hold current position |
+Use the shared `CategoricalLPActionCodec` to decode predictions. Training,
+evaluation, diagnostics, and plots must agree on the grid. Training helpers
+save `lp_action_config` in policies; robust run configs also record
+`action_encoding="categorical_endpoint_pairs_v1"`, `tau`, `tick_stride`, and
+`action_count`. Reject incompatible metadata even when action counts match.
+Legacy MultiDiscrete models remain evaluable using the original decoder;
+new categorical training needs fresh policies. Hold has no plotted bounds.
 
-**Key Concept:**
-- **Tau (τ)**: Hyperparameter defining the maximum tick window on each side of current price
-- Constraint: `lower_offset < upper_offset` (enforced by `validate_action`)
-- `hold_flag` allows the agent to stay idle (no rebalance, no gas cost) for a step
-
-**`validate_action` behaviour** (applied to `action[:, :2]` only):
-- Rounds offsets to integers (continuous actions from PPO snap to tick grid)
-- Clips to box bounds
-- Enforces `lower_offset < upper_offset`: if violated, sets `upper = lower + 1` then re-clips
+The low-level model still executes `[lower_offset, upper_offset, hold_flag]`.
+It is exposed as `command_space`, with
+`Box(low=[-tau, -tau+1, -1], high=[tau-1, tau, 1], shape=(3,))`.
+`hold_flag <= 0` rebalances and `hold_flag > 0` holds. `step_command` and legacy
+raw inputs to `step` preserve the existing behavior: offsets round to integers,
+clip to bounds, and invalid order is repaired with `upper = lower + 1`.
+`None` and legacy two-column batches remain accepted by the native environment.
+These redundant raw commands are a compatibility interface, not the semantic
+LP decision space. The SB3 adapter's explicit `action_encoding="raw"` supports
+legacy continuous agents and the retained discrete/structured wrappers.
 
 
 ### Swap Price Impact and Fee Accounting
@@ -332,7 +346,7 @@ When creating `UniswapV3ModelDynamics`:
 - **Optional**: Specify `exponential_value` (default 1.0001 for Uniswap V3 tick spacing)
 - **Optional**: Inject `price_impact_model`; defaults to `OneTickUniswapV3PriceImpact`
 - **Optional**: Inject `fee_accounting_model`; defaults to `UniswapV3FeeAccounting`
-- The action space is automatically set to `Box(shape=(3,))` with bounds described above
+- Model dynamics exposes raw `Box(shape=(3,))` commands; the environment exposes conditional LP decisions, as described above
 - Example: with `tau=5`, the full raw range `[-5, +5)` covers 10 tick intervals
   between 11 boundaries. In general, `[-tau, +tau)` covers `2 * tau` intervals.
 

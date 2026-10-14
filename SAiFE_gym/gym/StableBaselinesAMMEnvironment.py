@@ -6,6 +6,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
+from SAiFE_gym.gym.lp_actions import CategoricalLPActionCodec, HOLD_COMMAND
 from SAiFE_gym.gym.index_names import (
     FEES0_KEY,
     FEES1_KEY,
@@ -46,6 +47,9 @@ class StableBaselinesAMMEnvironment(VecEnv):
     """
     Wraps AMMEnvironment to expose a stable-baselines3 VecEnv interface.
 
+    Uses one categorical ID per LP decision by default (ID 0 holds).
+    Set action_encoding="raw" for legacy Box commands.
+
     Responsibilities:
     - Flattens the Dict observation into a float32 array of shape (num_trajectories, obs_dim)
     - Implements auto-reset: when all trajectories are done, resets internally and
@@ -57,12 +61,23 @@ class StableBaselinesAMMEnvironment(VecEnv):
         amm_env: AMMEnvironment,
         obs_keys: Optional[List[str]] = None,
         store_terminal_observation_info: bool = True,
+        *,
+        tick_stride: int = 1,
+        action_encoding: str = "categorical",
     ):
         self.env = amm_env  # must be set before super().__init__() calls get_attr()
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
         self.obs_dim = len(self.obs_keys)
         self.store_terminal_observation_info = store_terminal_observation_info
-        self.actions = np.zeros((amm_env.num_trajectories, amm_env.action_space.shape[0]), dtype=np.float32)
+        if action_encoding not in ("categorical", "raw"):
+            raise ValueError("action_encoding must be 'categorical' or 'raw'")
+        self.action_encoding = action_encoding
+        self.tick_stride = tick_stride
+        self.action_codec = (
+            CategoricalLPActionCodec(amm_env.model_dynamics.tau, tick_stride)
+            if action_encoding == "categorical" else None
+        )
+        self.actions = np.tile(HOLD_COMMAND, (amm_env.num_trajectories, 1))
 
         for k in self.obs_keys:
             if k in _ARRAY_KEYS:
@@ -73,12 +88,9 @@ class StableBaselinesAMMEnvironment(VecEnv):
         flat_obs_space = gymnasium.spaces.Box(
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
-        old_act = amm_env.action_space
-        gymnasium_act_space = gymnasium.spaces.Box(
-            low=old_act.low.astype(np.float32),
-            high=old_act.high.astype(np.float32),
-            shape=old_act.shape,
-            dtype=np.float32,
+        gymnasium_act_space = (
+            self.action_codec.action_space if action_encoding == "categorical"
+            else amm_env.command_space
         )
         super().__init__(amm_env.num_trajectories, flat_obs_space, gymnasium_act_space)
 
@@ -116,8 +128,17 @@ class StableBaselinesAMMEnvironment(VecEnv):
         obs, _ = self.env.reset()
         return self._flatten_obs(obs)
 
+    def decode_actions(self, actions):
+        """Decode predictions to raw commands without advancing the simulator."""
+        if self.action_encoding == "categorical":
+            return self.action_codec.decode(actions)
+        return np.asarray(actions)
+
     def step_async(self, actions: np.ndarray) -> None:
-        self.actions = actions
+        actions = np.asarray(actions)
+        if self.action_encoding == "categorical" and actions.shape != (self.num_envs,):
+            raise ValueError(f"expected action IDs with shape ({self.num_envs},), got {actions.shape}")
+        self.actions = self.decode_actions(actions)
 
     def step_wait(self) -> VecEnvStepReturn:
         state_dict, rewards, terminated, truncated, raw_info = self.env.step(self.actions)

@@ -1,6 +1,7 @@
 import gymnasium
 import numpy as np
 from gymnasium.vector.utils import batch_space
+from SAiFE_gym.gym.lp_actions import LPActionSpace, normalize_lp_actions
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 from SAiFE_gym.stochastic_processes.midprice_models import BrownianMotionMidpriceModel
 from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
@@ -72,13 +73,14 @@ class AMMEnvironment(gymnasium.Env):
         # Create reward function (default to PnL which works with both array and dict states)
         self.reward_function = reward_function if reward_function else PnL()
 
-        # Define observation and low-level command action spaces.
-        # Use SAiFE_gym.wrappers for canonical discrete LP decision spaces.
+        # Conditional LP decisions are separate from raw execution commands.
         self.single_observation_space = self._create_single_observation_space()
         self.observation_space = batch_space(
             self.single_observation_space, self.num_trajectories
         )
-        self.action_space = self.model_dynamics.get_action_space()
+        self.command_space = self.model_dynamics.get_action_space()
+        self.batched_command_space = batch_space(self.command_space, self.num_trajectories)
+        self.action_space = LPActionSpace(self.model_dynamics.tau)
         self.single_action_space = self.action_space
         self.batched_action_space = batch_space(self.action_space, self.num_trajectories)
 
@@ -199,31 +201,20 @@ class AMMEnvironment(gymnasium.Env):
         return self.model_dynamics.state, {}
 
 
-    def step(self, action: np.ndarray):
+    def step(self, action):
         """Execute one step across the trajectory batch.
 
-        Actions have shape ``(num_trajectories, 3)``. A ``(3,)`` command is
-        also accepted for a single trajectory. Legacy two-column batched
-        rebalance actions and ``None`` remain supported.
+        Accept Hold/Rebalance decisions (one tagged tuple per trajectory).
+        Legacy raw commands of shape ``(num_trajectories, 3)`` or ``(3,)``
+        for one trajectory, two-column batched rebalances, and ``None``
+        remain supported. Raw commands retain rounding and clipping.
 
         Returns:
             (obs, rewards, terminated, truncated, info), with batched arrays.
             terminated: episode reached its natural end (trading horizon elapsed).
             truncated: always False (no external time-limit truncation).
         """
-        if action is not None:
-            action = np.asarray(action)
-            if self.num_trajectories == 1 and action.shape == (3,):
-                action = action.reshape(1, 3)
-            if (
-                action.ndim != 2
-                or action.shape[0] != self.num_trajectories
-                or action.shape[1] not in (2, 3)
-            ):
-                raise ValueError(
-                    f"expected batched action shape ({self.num_trajectories}, 3) "
-                    f"(or legacy ({self.num_trajectories}, 2)), got {action.shape}"
-                )
+        action = self.normalize_action(action)
         current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
 
         # Update state
@@ -238,6 +229,14 @@ class AMMEnvironment(gymnasium.Env):
         # Calculate post-step info dict
         info = self._calculate_infos(next_state, action, rewards)
         return next_state, rewards, terminated, truncated, info
+
+    def normalize_action(self, action):
+        """Convert the public conditional or legacy interface to raw commands."""
+        return normalize_lp_actions(action, self.num_trajectories, self.single_action_space)
+
+    def step_command(self, command):
+        """Explicit compatibility entry point for raw array commands or None."""
+        return self.step(None if command is None else np.asarray(command))
 
     def _compute_derived_obs(self):
         """Compute portfolio_value, lp_alpha, and lp_token0_amount, store in state dict."""

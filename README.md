@@ -50,6 +50,66 @@ for _ in range(env.n_steps):
 print("Episode rewards:", cumulative_rewards)
 ```
 
+## LP action interfaces
+
+The default LP action space is conditional: **Hold** has no parameters;
+**Rebalance(lower, upper)** selects two integer tick offsets relative to the
+current pool tick, with `-tau <= lower < upper <= tau`. Rebalancing deploys
+all available wealth. There is no position-size action.
+
+```python
+from SAiFE_gym.gym.lp_actions import hold_action, rebalance_action
+
+# One trajectory: a single tagged decision.
+env = get_amm_env(num_trajectories=1, tau=5)
+env.reset()
+env.step(rebalance_action(-2, 3))  # (1, array([-2, 3]))
+env.step(hold_action())           # (0, ())
+
+# Multiple trajectories: one decision per trajectory.
+env = get_amm_env(num_trajectories=2, tau=5)
+env.reset()
+env.step((hold_action(), rebalance_action(-5, 5)))
+```
+
+`action_space` / `single_action_space` describes one conditional decision;
+`batched_action_space` describes the whole trajectory batch. The single and
+vector Gymnasium adapters expose the corresponding conditional spaces.
+
+**Stable-Baselines3 uses one categorical action ID**, with standard policies:
+
+```python
+from stable_baselines3 import PPO
+from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
+
+raw_env = get_amm_env(num_trajectories=10, tau=50)
+training_env = StableBaselinesAMMEnvironment(raw_env, tick_stride=5)
+assert training_env.action_space.n == 211
+model = PPO("MlpPolicy", training_env)
+```
+
+ID `0` holds. Remaining IDs enumerate all valid lower/upper endpoint pairs,
+ordered by lower offset and then upper offset. With `m` endpoints, the count
+is `1 + m*(m-1)/2`. `tau=5, tick_stride=1` gives 56 actions;
+`tau=50, tick_stride=5` gives 211. The grid includes both `-tau` and `+tau`,
+appending `+tau` if the stride does not land on it. Each ID has a unique meaning.
+
+For compatibility, `command_space` and `batched_command_space` expose the old
+`[lower_offset, upper_offset, hold_flag]` Box. `step_command(commands)` and
+legacy array inputs to `step` retain integer rounding/clipping and the flag
+convention (`<= 0`: rebalance, `> 0`: hold). The SB3 adapter accepts
+`action_encoding="raw"` for existing continuous policies or legacy action
+wrappers. Conditional inputs instead reject invalid/non-integer ranges.
+
+New training helpers and robust runs record the categorical encoding and grid
+parameters in saved policy metadata; robust run configurations record them too.
+Evaluation retains support for historical MultiDiscrete policies using their
+original decoder. A new categorical policy must be trained from scratch.
+The new training grid offers 210 ranges, compared with the 120 distinct ranges
+reachable through the previous center/half-width mapping. Policy range plots
+leave gaps on hold decisions because no range is selected; for externally
+created saved policies without grid metadata, pass `tick_stride` explicitly.
+
 ## Stochastic Gas Costs
 
 Gas is a cost per LP rebalance in token1 units. By default it is the fixed
@@ -145,7 +205,7 @@ The robust training environment uses:
 - `LiquidityDepthUniswapV3PriceImpact` with token1-notional trade sizes
 - `RunningInventoryPenalty`
 - `DecisionStrideVecEnv`
-- `StructuredMultiDiscreteVecEnv`
+- Categorical `StableBaselinesAMMEnvironment` (`Discrete(211)` by default)
 - SB3 `VecNormalize` unless `--no-normalise-obs` is passed
 
 Important script defaults (also used by the HPC training launchers):
@@ -156,8 +216,8 @@ Important script defaults (also used by the HPC training launchers):
 | `--num-trajectories` | `100` | Vectorized paths per episode |
 | `--n-steps` | `1000` | Simulator steps per episode |
 | `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
-| `--tau` | `50` | Maximum center offset and half-width in ticks |
-| `--tick-stride` | `5` | Structured action grid spacing |
+| `--tau` | `50` | Maximum absolute tick offset of either range endpoint |
+| `--tick-stride` | `5` | Categorical endpoint grid spacing |
 | `--alpha3` | `4000.0` | arbitrage arrival rate (per-unit of mispricing) |
 | `--initial-wealth` | `1000.0` | LP starting capital in token1 units |
 | `--inventory-phi` | `0.4` | Running token0 inventory penalty coefficient |

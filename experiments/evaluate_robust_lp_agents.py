@@ -81,6 +81,7 @@ def parse_args(argv=None):
 
 def load_config(run_dir):
     config = json.loads((run_dir / "config.json").read_text())
+    config.setdefault("action_encoding", training.STRUCTURED_ENCODING)
     missing = REQUIRED_CONFIG - config.keys()
     if missing:
         raise ValueError(f"missing configuration fields in {run_dir}: {sorted(missing)}")
@@ -274,10 +275,13 @@ def evaluate_job(job):
     model = None
     if policy != "periodic_rebalance":
         model = PPO.load(str(run_dir / f"{policy}.zip"), device="cpu")
+        training.validate_policy_action_encoding(model, args)
         if args.normalise_obs:
             label = policy.removesuffix("_ppo")
             normalization_env = training.wrap_env(
                 env_factory(args, params, job["regime_seed"]), normalise_obs=False,
+                tick_stride=args.tick_stride,
+                action_encoding="categorical" if args.action_encoding == training.CATEGORICAL_ENCODING else "raw",
             )
             normalizer = VecNormalize.load(str(run_dir / f"{label}_vecnormalize.pkl"), normalization_env)
             normalizer.training = False

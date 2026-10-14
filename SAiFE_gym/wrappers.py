@@ -5,46 +5,11 @@ import numpy as np
 from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn
 
-
-def _validate_action_table_args(tau: int, tick_stride: int) -> tuple[int, int]:
-    tau = int(tau)
-    tick_stride = int(tick_stride)
-    if tau < 1:
-        raise ValueError(f"tau must be >= 1, got {tau}")
-    if tick_stride < 1:
-        raise ValueError(f"tick_stride must be >= 1, got {tick_stride}")
-    return tau, tick_stride
-
-
-def _offset_grid(tau: int, tick_stride: int) -> np.ndarray:
-    offsets = list(range(-tau, tau + 1, tick_stride))
-    if offsets[-1] != tau:
-        offsets.append(tau)
-    return np.asarray(offsets, dtype=np.float32)
-
-
-def _half_width_grid(tau: int, tick_stride: int) -> np.ndarray:
-    widths = list(range(tick_stride, tau + 1, tick_stride))
-    if not widths or widths[-1] != tau:
-        widths.append(tau)
-    return np.asarray(widths, dtype=np.float32)
-
-
-def build_discrete_action_table(tau: int, tick_stride: int = 1) -> np.ndarray:
-    """Map discrete action ids to internal ``[lower, upper, hold_flag]`` actions.
-
-    Action id 0 is the dedicated hold/no-op action. All remaining rows rebalance
-    into valid ``lower_offset < upper_offset`` ranges sampled from the tick grid.
-    """
-    tau, tick_stride = _validate_action_table_args(tau, tick_stride)
-    actions = [[0.0, 1.0, 1.0]]
-    offsets = _offset_grid(tau, tick_stride)
-
-    for i, lower in enumerate(offsets):
-        for upper in offsets[i + 1:]:
-            actions.append([lower, upper, -1.0])
-
-    return np.asarray(actions, dtype=np.float32)
+from SAiFE_gym.gym.lp_actions import (
+    CategoricalLPActionCodec,
+    _validate_action_table_args, _offset_grid, _half_width_grid,
+    build_discrete_action_table, decode_policy_actions,
+)
 
 
 class DiscreteActionWrapper(gymnasium.ActionWrapper):
@@ -57,7 +22,8 @@ class DiscreteActionWrapper(gymnasium.ActionWrapper):
 
     def __init__(self, env: gymnasium.Env, tau: int, tick_stride: int = 1):
         super().__init__(env)
-        self.action_table = build_discrete_action_table(tau, tick_stride)
+        self.action_codec = CategoricalLPActionCodec(tau, tick_stride)
+        self.action_table = self.action_codec.action_table
         self.num_actions = len(self.action_table)
         self.num_trajectories = int(getattr(env, "num_trajectories", 1))
 
@@ -69,35 +35,38 @@ class DiscreteActionWrapper(gymnasium.ActionWrapper):
             )
 
     def action(self, action: int | np.ndarray) -> np.ndarray:
-        indices = np.asarray(action, dtype=np.int64)
+        indices = np.asarray(action)
         if self.num_trajectories == 1:
             indices = indices.reshape(-1)
             if indices.size != 1:
                 raise ValueError(f"expected one action id, got shape {np.asarray(action).shape}")
-            return self.action_table[indices[0]].reshape(1, 3).astype(np.float32)
+            return self.action_codec.decode(indices[0]).reshape(1, 3)
 
         if indices.shape != (self.num_trajectories,):
             raise ValueError(
                 f"expected action shape ({self.num_trajectories},), got {indices.shape}"
             )
-        return self.action_table[indices].astype(np.float32)
+        return self.action_codec.decode(indices)
 
 
 class DiscreteActionVecEnv(VecEnv):
     """Expose a discrete action space for SB3 VecEnv AMM training."""
 
     def __init__(self, vec_env: VecEnv, tau: int, tick_stride: int = 1):
+        if not isinstance(vec_env.action_space, gymnasium.spaces.Box):
+            raise ValueError("Legacy action wrappers require a raw Box adapter (action_encoding=\"raw\")")
         self._wrapped = vec_env
-        self.action_table = build_discrete_action_table(tau, tick_stride)
+        self.action_codec = CategoricalLPActionCodec(tau, tick_stride)
+        self.action_table = self.action_codec.action_table
         self.num_actions = len(self.action_table)
         action_space = gymnasium.spaces.Discrete(self.num_actions)
         super().__init__(vec_env.num_envs, vec_env.observation_space, action_space)
 
     def unscale(self, actions: int | np.ndarray) -> np.ndarray:
-        indices = np.asarray(actions, dtype=np.int64)
+        indices = np.asarray(actions)
         if indices.ndim == 0:
             indices = indices.reshape(1)
-        return self.action_table[indices].astype(np.float32)
+        return self.action_codec.decode(indices)
 
     def reset(self) -> VecEnvObs:
         return self._wrapped.reset()
@@ -150,6 +119,8 @@ class StructuredMultiDiscreteVecEnv(VecEnv):
     """
 
     def __init__(self, vec_env: VecEnv, tau: int, tick_stride: int = 1):
+        if not isinstance(vec_env.action_space, gymnasium.spaces.Box):
+            raise ValueError("Legacy action wrappers require a raw Box adapter (action_encoding=\"raw\")")
         self._wrapped = vec_env
         self.tau, self.tick_stride = _validate_action_table_args(tau, tick_stride)
         self.center_offsets = _offset_grid(self.tau, self.tick_stride)
@@ -163,14 +134,7 @@ class StructuredMultiDiscreteVecEnv(VecEnv):
 
     def unscale(self, actions: np.ndarray) -> np.ndarray:
         """Map MultiDiscrete indices to ``[lower, upper, hold_flag]`` actions."""
-        actions = np.asarray(actions, dtype=np.int64)
-        center = self.center_offsets[actions[..., 0]]
-        half_width = self.half_widths[actions[..., 1]]
-        hold_flag = np.where(actions[..., 2] == 0, -1.0, 1.0).astype(np.float32)
-
-        lower = np.clip(center - half_width, -self.tau, self.tau - 1).astype(np.float32)
-        upper = np.clip(center + half_width, -self.tau + 1, self.tau).astype(np.float32)
-        return np.stack([lower, upper, hold_flag], axis=-1)
+        return decode_policy_actions(actions, self.action_space, self.tau, self.tick_stride)
 
     def reset(self) -> VecEnvObs:
         return self._wrapped.reset()

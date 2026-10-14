@@ -188,7 +188,7 @@ def test_gymnasium_observations_and_resets(vector):
 
 def test_sb3_relative_gas_feature_and_autoreset():
     assert DEFAULT_OBS_KEYS[-1] == RELATIVE_GAS_COST_KEY
-    env = StableBaselinesAMMEnvironment(make_env(make_gas()))
+    env = StableBaselinesAMMEnvironment(make_env(make_gas()), action_encoding="raw")
     obs = env.reset()
     assert obs.shape == (3, 8)
     np.testing.assert_array_equal(obs[:, -1], np.full(3, 20.0))
@@ -211,7 +211,7 @@ def test_sb3_relative_gas_feature_and_autoreset():
 
 def test_sb3_ratios_follow_fee_accrual_and_reinvestment(monkeypatch):
     raw = make_env(gas_cost=2.0)
-    env = StableBaselinesAMMEnvironment(raw)
+    env = StableBaselinesAMMEnvironment(raw, action_encoding="raw")
     env.reset()
     # Execute both swap directions after deployment to accrue both fee tokens.
     monkeypatch.setattr(raw.model_dynamics, "get_arrivals", lambda: np.ones((3, 2), dtype=bool))

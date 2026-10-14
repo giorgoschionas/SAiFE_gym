@@ -91,8 +91,9 @@ def test_raw_observation_membership_through_terminal_step(n, n_steps):
 def test_raw_sampled_actions_and_legacy_batched_actions(n):
     env = _make_raw(n)
     assert env.single_action_space is env.action_space
-    assert env.action_space.shape == (3,)
-    assert env.batched_action_space.shape == (n, 3)
+    assert isinstance(env.action_space, gym.spaces.OneOf)
+    assert env.command_space.shape == (3,)
+    assert env.batched_command_space.shape == (n, 3)
     env.reset(seed=0)
     action = env.action_space.sample() if n == 1 else env.batched_action_space.sample()
     obs, rewards, _, _, info = env.step(action)
@@ -198,8 +199,9 @@ def test_vector_adapter_matches_raw_and_autoresets_on_next_step(n):
     reference = _make_raw(n)
     assert env.metadata["autoreset_mode"] is AutoresetMode.NEXT_STEP
     assert env.num_envs == n
-    assert env.single_action_space.shape == (3,)
-    assert env.action_space.shape == (n, 3)
+    assert isinstance(env.single_action_space, gym.spaces.OneOf)
+    assert isinstance(env.action_space, gym.spaces.Tuple)
+    assert len(env.action_space.spaces) == n
     with pytest.raises(gym.error.ResetNeeded):
         env.step(env.action_space.sample())
     obs, _ = env.reset(seed=0)

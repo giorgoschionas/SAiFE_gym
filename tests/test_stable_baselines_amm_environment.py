@@ -87,12 +87,14 @@ def create_sb3_env(
     n_steps: int = 5,
     obs_keys=None,
     store_terminal_observation_info: bool = True,
+    action_encoding: str = "raw",
 ) -> StableBaselinesAMMEnvironment:
     amm_env = create_test_amm_env(num_trajectories=num_trajectories, n_steps=n_steps)
     return StableBaselinesAMMEnvironment(
         amm_env,
         obs_keys=obs_keys,
         store_terminal_observation_info=store_terminal_observation_info,
+        action_encoding=action_encoding,
     )
 
 
