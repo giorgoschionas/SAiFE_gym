@@ -239,13 +239,25 @@ derived feature has been removed.
 
 ## Domain-Randomized PPO
 
-`experiments/train_robust_lp_agent.py` trains two PPO policies with the same
+By default, `experiments/train_robust_lp_agent.py` trains two PPO policies with the same
 architecture and evaluation grid:
 
 - `nominal_ppo` trains on the fixed nominal domain.
 - `domain_randomized_ppo` wraps the fixed AMM environment with
   `DomainRandomizedAMMEnvironment`, sampling episode domains from
   `UniformDomainRandomizationConfig`.
+
+Use `--training-mode nominal` to train only `nominal_ppo`, and
+`--evaluation-scope nominal` to evaluate only the configured nominal market.
+These options are independent; their defaults remain `both` and `grid`.
+Nominal evaluation saves three rows for a nominal-only run: PPO, periodic
+rebalancing, and cash. The nominal regime is labeled `in_distribution`.
+
+For a paired comparison of the original 211-action endpoint grid and the
+55-action center/half-width grid, use
+[`hpc/sbatch_nominal_action_grids_cpu.sh`](hpc/sbatch_nominal_action_grids_cpu.sh).
+It trains one nominal agent per Slurm array task, with seed 42 and 10 million
+simulator transitions each. See the [submission instructions](hpc/README.md#nominal-action-grid-comparison).
 
 The robust training environment uses:
 

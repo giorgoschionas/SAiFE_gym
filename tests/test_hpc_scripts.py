@@ -16,6 +16,7 @@ JOBS = (
     "sbatch_train_robust_lp_agent_cpu.sh",
     "sbatch_robust_lp_seed_sweep_cpu.sh",
     "sbatch_aggregate_domain_randomized_seed_sweep.sh",
+    "sbatch_nominal_action_grids_cpu.sh",
 )
 DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
 
@@ -76,6 +77,7 @@ def cluster(tmp_path):
         "SLURM_JOB_PARTITION": "test_partition",
         "SLURM_JOB_NUM_NODES": "1",
         "SLURM_NTASKS": "16",
+        "SLURM_CPUS_PER_TASK": "16",
     }
 
     def run(script, overrides=None, *, cwd=None, staged=False):
@@ -143,6 +145,10 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
         if "smoke" in script:
             assert "--smoke-test" in call["args"]
             assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/smoke"
+        elif "nominal_action_grids" in script:
+            assert option(call, "--output-dir") == "experiments/results/nominal_action_grids/endpoint_pairs/seed_42"
+            assert option(call, "--seed") == "42"
+            assert option(call, "--total-timesteps") == "10000000"
         else:
             suffix = "seed_sweep/seed_43" if "seed_sweep" in script else "full"
             assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/{suffix}"
@@ -243,3 +249,77 @@ def test_setup_creates_environment_using_its_checkout_from_another_directory(clu
     assert all(call["cwd"] == str(project) for call in calls)
     assert (project / "logs").is_dir()
     assert (project / DEFAULT_RESULTS).is_dir()
+
+
+@pytest.mark.parametrize("task_id,configuration,tau", [
+    (0, "endpoint_pairs", "50"), (1, "center_half_width", "500"),
+])
+def test_nominal_grid_tasks_share_market_budget_and_seeds(cluster, task_id, configuration, tau):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_grids_cpu.sh", {
+        "SLURM_ARRAY_TASK_ID": task_id, "SLURM_NTASKS": "1", "SLURM_CPUS_PER_TASK": "8",
+        "TAU": "999",  # The two experimental grids are fixed by task, not inherited.
+    }, staged=True)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 1
+    call = calls[0]
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert call["env"][key] == "8"
+    expected = {
+        "--training-mode": "nominal", "--evaluation-scope": "nominal",
+        "--tau": tau, "--tick-stride": "5",
+        "--total-timesteps": "10000000", "--num-trajectories": "100",
+        "--n-steps": "1000", "--decision-stride": "100", "--terminal-time": "1.0",
+        "--seed": "42", "--evaluation-seed": "100042", "--n-eval-episodes": "10",
+        "--nominal-sigma": "0.03", "--nominal-arrival-rate": "300.0",
+        "--nominal-gas-cost": "2.0", "--initial-wealth": "1000.0",
+        "--inventory-phi": "0.4", "--alpha3": "4000.0", "--arrival-alpha2": "0.0",
+        "--kernel-beta": "0.5", "--kernel-window": "10", "--liquidity-scale": "1000000",
+        "--trade-size-notional": "250", "--price-impact-depth-window": "10",
+        "--price-impact-min-depth": "1e-12", "--learning-rate": "3e-4",
+        "--periodic-width": "50", "--periodic-rebalance-every": "100",
+        "--convergence-eval-every-rollouts": "10", "--convergence-n-eval-episodes": "1",
+        "--output-dir": f"experiments/results/nominal_action_grids/{configuration}/seed_42",
+    }
+    for flag, value in expected.items():
+        assert option(call, flag) == value
+    if task_id == 0:
+        assert "--center-magnitudes" not in call["args"]
+        assert "--half-widths" not in call["args"]
+    else:
+        start = call["args"].index("--center-magnitudes") + 1
+        assert call["args"][start:start + 4] == ["50", "100", "150", "200"]
+        start = call["args"].index("--half-widths") + 1
+        assert call["args"][start:start + 6] == ["50", "100", "150", "200", "250", "300"]
+
+
+@pytest.mark.parametrize("task_id", [None, "", "2", "-1", "invalid"])
+def test_nominal_grid_rejects_missing_or_invalid_task_before_python(cluster, task_id):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_grids_cpu.sh", {"SLURM_ARRAY_TASK_ID": task_id})
+    assert result.returncode != 0
+    assert "SLURM_ARRAY_TASK_ID" in result.stderr
+    assert not calls
+
+
+def test_nominal_grid_shared_overrides_and_output_root(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_grids_cpu.sh", {
+        "SLURM_ARRAY_TASK_ID": "1", "OUTPUT_DIR": "custom comparison",
+        "SEED": "43", "TOTAL_TIMESTEPS": "200", "NUM_TRAJECTORIES": "2",
+        "NOMINAL_SIGMA": "0.04", "NOMINAL_ARRIVAL_RATE": "350", "EVALUATION_SEED": "2468",
+    })
+    assert result.returncode == 0, result.stderr
+    call, = calls
+    assert option(call, "--output-dir") == "custom comparison/center_half_width/seed_43"
+    for flag, value in {
+        "--seed": "43", "--total-timesteps": "200", "--num-trajectories": "2",
+        "--nominal-sigma": "0.04", "--nominal-arrival-rate": "350", "--evaluation-seed": "2468",
+    }.items():
+        assert option(call, flag) == value
+
+
+def test_nominal_grid_slurm_resources():
+    script = (HPC / "sbatch_nominal_action_grids_cpu.sh").read_text()
+    for directive in ("--ntasks=1", "--cpus-per-task=16", "--array=0-1", "-t 2-00:00:00"):
+        assert f"#SBATCH {directive}\n" in script

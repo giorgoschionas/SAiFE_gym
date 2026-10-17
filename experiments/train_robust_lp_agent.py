@@ -118,7 +118,15 @@ def constant_trade_size_sampler(trade_notional: float):
 
 def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Train and evaluate domain-randomized LP PPO."
+        description="Train and evaluate nominal and optionally domain-randomized LP PPO."
+    )
+    parser.add_argument(
+        "--training-mode", choices=("both", "nominal"), default="both",
+        help="Train both PPO agents (default), or only the fixed nominal agent.",
+    )
+    parser.add_argument(
+        "--evaluation-scope", choices=("grid", "nominal"), default="grid",
+        help="Evaluate the full market grid (default), or only the nominal market.",
     )
     parser.add_argument(
         "--output-dir",
@@ -1084,7 +1092,7 @@ def summarize_running_inventory_objective(
 
 
 def evaluation_regimes(args: argparse.Namespace) -> list[EvaluationRegime]:
-    """Return the full grid, preserving the original regimes' seed indices."""
+    """Return the selected regimes, preserving full-grid historical ordering."""
     return [
         EvaluationRegime(
             evaluation_set=evaluation_set,
@@ -1243,7 +1251,8 @@ def main() -> int:
     args = parse_args()
     apply_smoke_overrides(args)
     validate_and_derive_decision_timing(args)
-    resolve_train_domains_per_reset(args)
+    if args.training_mode == "both":
+        resolve_train_domains_per_reset(args)
     validate_evaluation_configuration(args)
     configure_action_encoding(args)
     args.evaluation_grid_version = EVALUATION_GRID_VERSION
@@ -1253,10 +1262,12 @@ def main() -> int:
     run_dir = make_run_dir(args.output_dir, args.smoke_test)
     save_json(run_dir / "config.json", vars(args))
 
-    domain_randomized_env = make_domain_randomized_env(args)
-    domain_randomized_model, domain_randomized_vecnormalize = train_and_save(
-        "domain_randomized", domain_randomized_env, args, run_dir
-    )
+    trained_policies = {}
+    if args.training_mode == "both":
+        domain_randomized_env = make_domain_randomized_env(args)
+        trained_policies["domain_randomized_ppo"] = train_and_save(
+            "domain_randomized", domain_randomized_env, args, run_dir
+        )
 
     nominal_params = DomainParameters(
         sigma=args.nominal_sigma,
@@ -1264,7 +1275,7 @@ def main() -> int:
     )
     nominal_environment_seed = args.seed + 20_000
     nominal_env = make_fixed_env(args, nominal_params, seed=nominal_environment_seed)
-    nominal_model, nominal_vecnormalize = train_and_save(
+    trained_policies["nominal_ppo"] = train_and_save(
         "nominal",
         nominal_env,
         args,
@@ -1276,28 +1287,18 @@ def main() -> int:
     for regime_idx, regime in enumerate(evaluation_regimes(args)):
         params = regime.parameters
         regime_seed = evaluation_regime_seed(args, regime_idx)
-        rows.append(
-            evaluate_ppo(
-                "domain_randomized_ppo",
-                domain_randomized_model,
-                domain_randomized_vecnormalize,
-                params,
-                regime.evaluation_set,
-                args,
-                regime_seed,
+        for policy_name, (model, vecnormalize) in trained_policies.items():
+            rows.append(
+                evaluate_ppo(
+                    policy_name,
+                    model,
+                    vecnormalize,
+                    params,
+                    regime.evaluation_set,
+                    args,
+                    regime_seed,
+                )
             )
-        )
-        rows.append(
-            evaluate_ppo(
-                "nominal_ppo",
-                nominal_model,
-                nominal_vecnormalize,
-                params,
-                regime.evaluation_set,
-                args,
-                regime_seed,
-            )
-        )
         rows.append(
             evaluate_periodic_rebalance(
                 params,
@@ -1317,7 +1318,7 @@ def main() -> int:
     save_csv(run_dir / "evaluation_grid.csv", rows)
     save_json(run_dir / "summary.json", summary)
 
-    print(f"Saved domain-randomized PPO run artifacts to: {run_dir}")
+    print(f"Saved PPO run artifacts (training_mode={args.training_mode}) to: {run_dir}")
     print(json.dumps(summary, indent=2, sort_keys=True))
     return 0
 

@@ -217,6 +217,16 @@ Evaluation and plotting must use the recorded grid; never infer this encoding
 from `Discrete(n)` alone. Existing endpoint and legacy MultiDiscrete decoders
 remain supported.
 
+`experiments/train_robust_lp_agent.py` supports `--training-mode nominal`
+to train only the fixed nominal PPO agent and `--evaluation-scope nominal`
+to evaluate only the configured nominal market. Defaults remain `both` and
+`grid`; saved configs record both options. The shared evaluation-grid helper
+returns one `in_distribution` regime for nominal scope. The Slurm launcher
+`hpc/sbatch_nominal_action_grids_cpu.sh` assigns the original 211-action grid
+and the 55-action explicit grid to tasks 0 and 1, sharing nominal market
+settings, training seed 42, and 10M simulator transitions per agent. Outputs
+live under `experiments/results/nominal_action_grids/<configuration>/seed_42/`.
+
 Use the shared `CategoricalLPActionCodec` to decode predictions. Training,
 evaluation, diagnostics, and plots must agree on the grid. Training helpers
 save `lp_action_config` in policies; robust run configs also record

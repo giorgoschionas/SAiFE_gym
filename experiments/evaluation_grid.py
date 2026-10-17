@@ -60,6 +60,8 @@ def configured_evaluation_grid(
     Training explicitly requests the current version. Aggregation reads the
     saved version, defaulting to the legacy layout when the marker is absent.
     Original regimes come first to preserve their index-based evaluation seeds.
+    Nominal scope uses one regime at the nominal parameters; historical configs
+    without a scope continue to use the full grid.
     """
     grid_version = (
         config.get("evaluation_grid_version", 1) if version is None else version
@@ -70,6 +72,17 @@ def configured_evaluation_grid(
         or grid_version not in (1, EVALUATION_GRID_VERSION)
     ):
         raise ValueError(f"unsupported evaluation_grid_version: {grid_version!r}")
+
+    scope = config.get("evaluation_scope", "grid")
+    if scope == "nominal":
+        nominal = []
+        for name in ("nominal_sigma", "nominal_arrival_rate"):
+            if name not in config:
+                raise ValueError(f"missing required {name}")
+            nominal.append(_numeric_values({name: [config[name]]}, name)[0])
+        return [("in_distribution", *nominal)]
+    if scope != "grid":
+        raise ValueError(f"unsupported evaluation_scope: {scope!r}")
 
     in_sigma = _axis(config, "eval_in_distribution_sigma_values")
     in_arrival = _axis(config, "eval_in_distribution_arrival_rate_values")

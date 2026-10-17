@@ -96,3 +96,27 @@ def test_invalid_training_bounds_are_rejected(bounds):
     config["train_sigma_range"] = bounds
     with pytest.raises(ValueError, match="train_sigma_range"):
         configured_evaluation_grid(config)
+
+
+def test_nominal_scope_uses_nominal_parameters_without_grid_axes_or_randomization_bounds():
+    config = dict(evaluation_scope="nominal", nominal_sigma=.06, nominal_arrival_rate=500.)
+    assert configured_evaluation_grid(config) == [("in_distribution", .06, 500.)]
+
+
+@pytest.mark.parametrize("field", ["nominal_sigma", "nominal_arrival_rate"])
+@pytest.mark.parametrize("value", [None, True, "0.03", -.1, float("nan"), float("inf")])
+def test_nominal_scope_rejects_invalid_market_parameters(field, value):
+    config = dict(evaluation_scope="nominal", nominal_sigma=.03, nominal_arrival_rate=300.)
+    config[field] = value
+    with pytest.raises(ValueError, match=field):
+        configured_evaluation_grid(config)
+
+
+def test_nominal_scope_requires_both_market_parameters():
+    with pytest.raises(ValueError, match="missing required nominal_arrival_rate"):
+        configured_evaluation_grid(dict(evaluation_scope="nominal", nominal_sigma=.03))
+
+
+def test_unknown_evaluation_scope_is_rejected():
+    with pytest.raises(ValueError, match="evaluation_scope"):
+        configured_evaluation_grid({**grid_config(), "evaluation_scope": "unknown"})

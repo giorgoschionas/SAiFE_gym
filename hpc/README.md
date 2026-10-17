@@ -1,6 +1,6 @@
-# Slurm jobs for domain-randomized LP PPO
+# Slurm jobs for nominal and domain-randomized LP PPO
 
-These templates run the domain-randomized PPO experiment on a Slurm cluster.
+These templates run LP PPO experiments on a Slurm cluster.
 They use Python 3.12 and the checkout's `requirements.txt`. Adapt paths,
 optional Python module loading, partitions, time limits, and resource requests
 to your allocation. Submit from the checkout root, with `logs/` already created
@@ -52,10 +52,11 @@ See the [Slurm sbatch documentation](https://slurm.schedmd.com/sbatch.html).
 The launchers keep `--export=ALL` so your exported settings reach the jobs.
 Avoid `--export=NONE` when relying on this configuration.
 
-The jobs preserve their single-node resource requests: 16 tasks for training
-and each sweep replicate, two for the smoke job, and one for aggregation.
-Their thread limits follow `SLURM_NTASKS`. Adjust resources and time limits
-with `sbatch` options as required by your allocation.
+The existing robust jobs request 16 tasks for training and each sweep replicate,
+two for the smoke job, and one for aggregation; their thread limits follow
+`SLURM_NTASKS`. The nominal action-grid comparison requests one task with 16
+CPUs per array element and uses `SLURM_CPUS_PER_TASK` for thread limits.
+Adjust resources and time limits with `sbatch` options as required by your allocation.
 
 New outputs default to these directories inside the checkout:
 
@@ -65,6 +66,7 @@ New outputs default to these directories inside the checkout:
 | Full training | `experiments/results/domain_randomized_ppo/full` |
 | Seed sweep | `experiments/results/domain_randomized_ppo/seed_sweep/seed_<seed>` |
 | Aggregation | `experiments/results/domain_randomized_ppo/seed_sweep/aggregate` |
+| Nominal action grids | `experiments/results/nominal_action_grids/<configuration>/seed_42` |
 
 Set `OUTPUT_DIR` to override a job's destination. For a sweep it is the parent
 directory, with `seed_<seed>` appended by each array task. Set aggregation's
@@ -121,6 +123,77 @@ Check that the job finishes successfully and saves both PPO models and an
 `evaluation_grid.csv` containing 16 rows. This verifies module loading,
 environment activation, and training on your actual compute nodes.
 All submission examples assume `logs/` exists before calling `sbatch`.
+
+## Nominal action-grid comparison
+
+Submit both nominal agents from the checkout root after the environment setup:
+
+```bash
+mkdir -p logs
+sbatch hpc/sbatch_nominal_action_grids_cpu.sh
+```
+
+The array has two tasks, each requesting one process, 16 CPUs, and 48 hours:
+
+| Task | Configuration | Grid | Actions including Hold |
+|---|---|---|---:|
+| 0 | `endpoint_pairs` | `tau=50`, `tick_stride=5`, endpoints −50 through +50 | 211 |
+| 1 | `center_half_width` | `tau=500`, centers −200 through +200 by 50, half-widths 50 through 300 by 50 | 55 |
+
+Both are learnable categorical PPO policies with approximately uniform initial
+action probabilities. The comparison includes different range coverage: the
+second grid reaches offsets ±500, while the first reaches ±50. The action
+grids are fixed by array task; an inherited `TAU` does not change them.
+
+Shared defaults are training seed `42`, evaluation seed `100042`, 10 million
+simulator transitions per agent, 100 trajectories, 1,000 simulator steps per
+episode, and decision stride 100. This is 100,000 aggregate PPO decision
+timesteps per agent, with 10 decisions per trajectory per episode. All other
+PPO settings, including observation normalization, use the nominal trainer.
+
+The nominal market uses volatility `0.03`, baseline arrival rate `300`, fixed
+gas cost `2`, initial wealth `1000`, arbitrage coefficient `4000`, and inventory
+penalty coefficient `0.4`. Initial price is `100`, GBM drift is zero, horizon
+is `1`, fee tier is `0.003`, liquidity scale is `1e6`, trade notional is `250`,
+and price-impact depth window is `10`. Training uses the liquidity-kernel
+arrival and liquidity-depth impact models, with no domain randomization.
+
+Each job evaluates the final policy, periodic rebalancing (half-width 50 every
+100 steps), and cash on the nominal market, using the same evaluation seeds
+across jobs. Final evaluation runs 10 vectorized episodes of 100 trajectories.
+Convergence checks run every 10 rollouts and after the final update.
+
+Outputs are fresh `run_<timestamp>/` directories beneath
+`experiments/results/nominal_action_grids/<configuration>/seed_42/`, containing:
+
+- `nominal_ppo.zip` and `nominal_vecnormalize.pkl` for inference.
+- `config.json`, including training/evaluation modes and exact `lp_action_config`.
+- `nominal_convergence.csv`, `evaluation_grid.csv` (three rows), and `summary.json`.
+
+Compare objective, PnL, inventory penalty, fee income, gas spending, range
+widths, and time in range across the runs. Use `agent_hold_decision_fraction`
+and `agent_rebalance_decision_fraction` for policy decisions; the unprefixed
+fractions also count the forced holds between decisions. These are two runs
+with one shared training seed; the existing domain-randomized seed-sweep
+aggregator is intended for its original multi-seed experiment.
+
+Common settings can be overridden for both tasks at submission, for example:
+
+```bash
+TOTAL_TIMESTEPS=1000000 OUTPUT_DIR=experiments/results/nominal_action_grids_pilot \
+  sbatch hpc/sbatch_nominal_action_grids_cpu.sh
+```
+
+For tiny checks in an activated Python environment, run each configuration with
+`--smoke-test`; this reduces the budget and episode size, preserving each grid:
+
+```bash
+python experiments/train_robust_lp_agent.py --training-mode nominal --evaluation-scope nominal \
+  --smoke-test --decision-stride 2 --output-dir /tmp/saife_nominal_endpoint_smoke
+python experiments/train_robust_lp_agent.py --training-mode nominal --evaluation-scope nominal \
+  --smoke-test --decision-stride 2 --tau 500 --center-magnitudes 50 100 150 200 \
+  --half-widths 50 100 150 200 250 300 --output-dir /tmp/saife_nominal_center_smoke
+```
 
 ## Full training
 
