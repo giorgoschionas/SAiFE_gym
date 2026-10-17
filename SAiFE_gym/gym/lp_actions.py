@@ -1,7 +1,8 @@
-"""LP decisions and their stable categorical/raw execution encodings.
+"""LP decisions and their categorical, factorized, and raw encodings.
 
 The public decision is Hold | Rebalance(lower, upper). Raw three-column
-commands are an execution/compatibility format, not three independent choices.
+commands are an execution/compatibility format. The factorized policy uses
+explicit grid indices, separately from those raw commands.
 """
 
 from collections.abc import Sequence
@@ -13,6 +14,7 @@ import numpy as np
 
 CATEGORICAL_ENCODING = "categorical_endpoint_pairs_v1"
 CENTER_HALF_WIDTH_ENCODING = "categorical_center_half_width_v1"
+MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING = "multidiscrete_center_half_width_v1"
 STRUCTURED_ENCODING = "structured_center_half_width_v1"
 HOLD_COMMAND = np.array([0.0, 1.0, 1.0], dtype=np.float32)
 
@@ -276,14 +278,67 @@ def categorical_action_codec(
     return CategoricalLPActionCodec(tau, tick_stride)
 
 
+class MultiDiscreteCenterHalfWidthLPActionCodec:
+    """Independent center, half-width and Hold heads over an exact explicit grid."""
+
+    encoding = MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING
+
+    def __init__(self, tau: int, action_grid: CenterHalfWidthActionGrid):
+        # Share all bounds/precision validation and the economic action ordering.
+        self.economic_codec = CenterHalfWidthLPActionCodec(tau, action_grid)
+        self.action_grid = action_grid
+        self.action_space = gym.spaces.MultiDiscrete(
+            [len(action_grid.centers), len(action_grid.half_widths), 2], dtype=np.int64,
+        )
+
+    @property
+    def metadata(self):
+        return dict(
+            action_encoding=self.encoding, tau=self.economic_codec.tau,
+            centers=list(self.action_grid.centers), half_widths=list(self.action_grid.half_widths),
+            component_order=["center_index", "half_width_index", "hold"],
+            hold_value=1, rebalance_value=0, nvec=self.action_space.nvec.tolist(),
+            action_count=int(np.prod(self.action_space.nvec)),
+            economic_action_count=int(self.economic_codec.action_space.n),
+        )
+
+    def economic_action_ids(self, actions):
+        indices = np.asarray(actions)
+        if (indices.dtype.kind not in "iu" or indices.shape[-1:] != (3,)
+                or np.any(indices < 0) or np.any(indices >= self.action_space.nvec)):
+            raise ValueError("Invalid MultiDiscrete center/half-width action indices")
+        return np.where(indices[..., 2] == 1, 0,
+                        1 + indices[..., 0] * len(self.action_grid.half_widths) + indices[..., 1])
+
+    def decode(self, actions):
+        return self.economic_codec.decode(self.economic_action_ids(actions))
+
+
+def policy_action_codec(tau: int, tick_stride: int = 1, *, action_grid=None,
+                        policy_action_space: str = "discrete"):
+    if policy_action_space == "multidiscrete":
+        if action_grid is None:
+            raise ValueError("MultiDiscrete requires an explicit center/half-width grid")
+        return MultiDiscreteCenterHalfWidthLPActionCodec(tau, action_grid)
+    if policy_action_space != "discrete":
+        raise ValueError(f"Unsupported policy action space: {policy_action_space}")
+    return categorical_action_codec(tau, tick_stride, action_grid=action_grid)
+
+
 def action_grid_from_metadata(metadata) -> CenterHalfWidthActionGrid | None:
     """Restore explicit grids only when the saved encoding identifies them."""
-    if metadata is None or metadata.get("action_encoding") != CENTER_HALF_WIDTH_ENCODING:
+    if metadata is None or metadata.get("action_encoding") not in (
+        CENTER_HALF_WIDTH_ENCODING, MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING,
+    ):
         return None
     try:
         centers = metadata["centers"]
         grid = CenterHalfWidthActionGrid([c for c in centers if c >= 0], metadata["half_widths"])
-        expected = CenterHalfWidthLPActionCodec(metadata["tau"], grid).metadata
+        expected = policy_action_codec(
+            metadata["tau"], action_grid=grid,
+            policy_action_space="multidiscrete" if metadata["action_encoding"] ==
+            MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING else "discrete",
+        ).metadata
         if metadata != expected:
             raise ValueError("Noncanonical center/half-width metadata")
         return grid
@@ -297,13 +352,17 @@ def validate_policy_metadata(model, tau: int, tick_stride: int, *, action_grid=N
     if saved is None and action_grid is not None:
         raise ValueError("Center/half-width policies require saved action metadata")
     if saved is not None:
-        expected = categorical_action_codec(tau, tick_stride, action_grid=action_grid).metadata
+        expected = policy_action_codec(
+            tau, tick_stride, action_grid=action_grid,
+            policy_action_space="multidiscrete" if action_grid is not None and
+            isinstance(getattr(model, "action_space", None), gym.spaces.MultiDiscrete) else "discrete",
+        ).metadata
         if saved != expected:
             raise ValueError("Saved policy action metadata does not match the configured action grid")
 
 
 def decode_policy_actions(actions, action_space, tau: int, tick_stride: int = 1, *, action_grid=None):
-    """Decode current categorical or explicitly recognized historical policies."""
+    """Decode explicit grids, categorical endpoints, or historical policies."""
     if isinstance(action_space, gym.spaces.Discrete):
         codec = categorical_action_codec(tau, tick_stride, action_grid=action_grid)
         if action_space != codec.action_space:
@@ -311,7 +370,10 @@ def decode_policy_actions(actions, action_space, tau: int, tick_stride: int = 1,
             raise ValueError(f"Policy action space does not match the configured {kind} grid")
         return codec.decode(actions)
     if action_grid is not None:
-        raise ValueError("Center/half-width grids require a Discrete policy action space")
+        codec = MultiDiscreteCenterHalfWidthLPActionCodec(tau, action_grid)
+        if action_space != codec.action_space:
+            raise ValueError("Policy action space does not match the configured center/half-width grid")
+        return codec.decode(actions)
     tau, tick_stride = _validate_action_table_args(tau, tick_stride)
     if isinstance(action_space, gym.spaces.MultiDiscrete):
         centers = _offset_grid(tau, tick_stride)

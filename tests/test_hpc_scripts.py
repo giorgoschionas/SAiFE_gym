@@ -17,6 +17,7 @@ JOBS = (
     "sbatch_robust_lp_seed_sweep_cpu.sh",
     "sbatch_aggregate_domain_randomized_seed_sweep.sh",
     "sbatch_nominal_action_grids_cpu.sh",
+    "sbatch_nominal_action_encodings_cpu.sh",
 )
 DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
 
@@ -145,6 +146,10 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
         if "smoke" in script:
             assert "--smoke-test" in call["args"]
             assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/smoke"
+        elif "nominal_action_encodings" in script:
+            assert option(call, "--output-dir") == "experiments/results/nominal_action_encodings/discrete/seed_42"
+            assert option(call, "--seed") == "42"
+            assert "Python interpreter:" in result.stdout
         elif "nominal_action_grids" in script:
             assert option(call, "--output-dir") == "experiments/results/nominal_action_grids/endpoint_pairs/seed_42"
             assert option(call, "--seed") == "42"
@@ -323,3 +328,72 @@ def test_nominal_grid_slurm_resources():
     script = (HPC / "sbatch_nominal_action_grids_cpu.sh").read_text()
     for directive in ("--ntasks=1", "--cpus-per-task=16", "--array=0-1", "-t 2-00:00:00"):
         assert f"#SBATCH {directive}\n" in script
+
+
+@pytest.mark.parametrize("task_id", range(10))
+def test_nominal_encoding_pairs(cluster, task_id):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_encodings_cpu.sh", {"SLURM_ARRAY_TASK_ID": task_id}, staged=True)
+    assert result.returncode == 0, result.stderr
+    call, = calls
+    encoding = "discrete" if task_id % 2 == 0 else "multidiscrete"
+    seed = 42 + task_id // 2
+    for flag, value in {
+        "--seed": str(seed), "--policy-action-space": encoding,
+        "--training-mode": "nominal", "--evaluation-scope": "nominal",
+        "--output-dir": f"experiments/results/nominal_action_encodings/{encoding}/seed_{seed}",
+        "--total-timesteps": "10000000", "--num-trajectories": "100", "--n-steps": "1000",
+        "--decision-stride": "100", "--tau": "500", "--evaluation-seed": "200042",
+        "--convergence-evaluation-seed": "100042", "--n-eval-episodes": "10",
+        "--convergence-n-eval-episodes": "1", "--convergence-eval-every-rollouts": "10",
+        "--learning-rate": "3e-4", "--initial-wealth": "1000.0", "--inventory-phi": "0.4",
+        "--nominal-sigma": "0.03", "--nominal-arrival-rate": "300.0", "--nominal-gas-cost": "2.0",
+    }.items():
+        assert option(call, flag) == value
+    for flag, values in {
+        "--center-magnitudes": ["50", "100", "150", "200"],
+        "--half-widths": ["50", "100", "150", "200", "250", "300"],
+        "--evaluation-action-modes": ["deterministic", "stochastic"],
+    }.items():
+        start = call["args"].index(flag) + 1
+        assert call["args"][start:start + len(values)] == values
+    assert "--record-learning-diagnostics" in call["args"]
+    assert "PPO decision budget: 100000" in result.stdout
+
+
+@pytest.mark.parametrize("task_id", [None, "", "10", "-1", "09", "invalid"])
+def test_nominal_encodings_reject_invalid_task(cluster, task_id):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_encodings_cpu.sh", {"SLURM_ARRAY_TASK_ID": task_id})
+    assert result.returncode != 0
+    assert "SLURM_ARRAY_TASK_ID" in result.stderr
+    assert not calls
+
+
+def test_nominal_encodings_smoke_overrides(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run("sbatch_nominal_action_encodings_cpu.sh", {
+        "SLURM_ARRAY_TASK_ID": "9", "OUTPUT_DIR": "smoke with spaces", "TOTAL_TIMESTEPS": "24",
+        "NUM_TRAJECTORIES": "2", "N_STEPS": "6", "DECISION_STRIDE": "2",
+        "N_EVAL_EPISODES": "1", "EVALUATION_SEED": "44", "CONVERGENCE_EVALUATION_SEED": "55",
+        "CONVERGENCE_EVAL_EVERY_ROLLOUTS": "1", "CONVERGENCE_N_EVAL_EPISODES": "2",
+        "NOMINAL_SIGMA": "0.04", "NOMINAL_ARRIVAL_RATE": "350", "SLURM_CPUS_PER_TASK": "2",
+    })
+    assert result.returncode == 0, result.stderr
+    call, = calls
+    for flag, value in {
+        "--output-dir": "smoke with spaces/multidiscrete/seed_46", "--total-timesteps": "24",
+        "--num-trajectories": "2", "--n-steps": "6", "--decision-stride": "2",
+        "--n-eval-episodes": "1", "--evaluation-seed": "44", "--convergence-evaluation-seed": "55",
+        "--convergence-eval-every-rollouts": "1", "--convergence-n-eval-episodes": "2",
+        "--nominal-sigma": "0.04", "--nominal-arrival-rate": "350",
+    }.items():
+        assert option(call, flag) == value
+    assert call["env"]["OMP_NUM_THREADS"] == "2"
+
+
+def test_nominal_encodings_resources_and_shell_syntax():
+    script = HPC / "sbatch_nominal_action_encodings_cpu.sh"
+    for directive in ("--ntasks=1", "--cpus-per-task=16", "--array=0-9", "-t 2-00:00:00"):
+        assert f"#SBATCH {directive}\n" in script.read_text()
+    subprocess.run(["bash", "-n", str(script)], check=True)

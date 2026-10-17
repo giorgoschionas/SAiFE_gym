@@ -66,7 +66,9 @@ class PolicyBehaviorAccumulator:
     counts rebalance decisions made while a live position already exists.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, record_paths: bool = False) -> None:
+        self.record_paths = record_paths
+        self.path_records = []
         self.num_paths = 0
         self.action_decisions = 0
         self.hold_actions = 0
@@ -94,6 +96,14 @@ class PolicyBehaviorAccumulator:
             raise RuntimeError("finish the current episode before beginning another")
         self._deployed_step_counts = np.zeros(num_trajectories, dtype=np.int64)
         self._in_range_step_counts = np.zeros(num_trajectories, dtype=np.int64)
+        if self.record_paths:
+            self._paths = {key: np.zeros(num_trajectories) for key in (
+                "objective", "pnl", "inventory_penalty", "fee_income_token1", "gas_spend",
+                "rebalance_count", "rebalances_after_deployment", "maximum_drawdown",
+                "maximum_drawdown_fraction",
+            )}
+            self._peak_value = None
+            self._path_steps = 0
 
     def before_step(self, state: dict, action: np.ndarray) -> BehaviorStepSnapshot:
         num_trajectories = self._require_active_episode()
@@ -127,6 +137,12 @@ class PolicyBehaviorAccumulator:
             (num_trajectories,),
         )
         charged = rebalance & has_position
+        if self.record_paths:
+            self._paths["gas_spend"] += np.where(charged, np.minimum(gas_cost, portfolio_value), 0)
+            self._paths["rebalance_count"] += rebalance
+            self._paths["rebalances_after_deployment"] += charged
+            if self._peak_value is None:
+                self._peak_value = portfolio_value.copy()
         self.gas_spend_total += float(
             np.sum(np.minimum(gas_cost[charged], portfolio_value[charged]))
         )
@@ -190,6 +206,17 @@ class PolicyBehaviorAccumulator:
         )
         self._deployed_step_counts += deployed
         self._in_range_step_counts += in_range
+        if self.record_paths:
+            self._paths["objective"] += rewards
+            self._paths["pnl"] += pnl
+            self._paths["inventory_penalty"] += pnl - rewards
+            self._paths["fee_income_token1"] += fee0_delta * asset_price + fee1_delta
+            self._peak_value = np.maximum(self._peak_value, next_portfolio_value)
+            drawdown = self._peak_value - next_portfolio_value
+            self._paths["maximum_drawdown"] = np.maximum(self._paths["maximum_drawdown"], drawdown)
+            relative = np.divide(drawdown, self._peak_value, out=np.zeros_like(drawdown), where=self._peak_value > 0)
+            self._paths["maximum_drawdown_fraction"] = np.maximum(self._paths["maximum_drawdown_fraction"], relative)
+            self._path_steps += 1
 
     def finish_episode(self, final_state: dict) -> None:
         num_trajectories = self._require_active_episode()
@@ -215,6 +242,18 @@ class PolicyBehaviorAccumulator:
                 )
             )
 
+        if self.record_paths:
+            self._paths["in_range_steps"] = self._in_range_step_counts.copy()
+            self._paths["deployed_steps"] = self._deployed_step_counts.copy()
+            self._paths["time_in_range_fraction"] = self._in_range_step_counts / self._path_steps
+            self._paths["in_range_fraction_when_deployed"] = np.divide(
+                self._in_range_step_counts, self._deployed_step_counts,
+                out=np.zeros(num_trajectories), where=self._deployed_step_counts > 0,
+            )
+            self.path_records.extend(
+                {key: float(values[i]) for key, values in self._paths.items()}
+                for i in range(num_trajectories)
+            )
         self._deployed_step_counts = None
         self._in_range_step_counts = None
 

@@ -227,7 +227,28 @@ and the 55-action explicit grid to tasks 0 and 1, sharing nominal market
 settings, training seed 42, and 10M simulator transitions per agent. Outputs
 live under `experiments/results/nominal_action_grids/<configuration>/seed_42/`.
 
-Use the shared `CategoricalLPActionCodec` to decode predictions. Training,
+The training CLI also accepts `--policy-action-space multidiscrete` with an
+explicit grid. `MultiDiscreteCenterHalfWidthLPActionCodec` uses the same exact
+range validation and `MultiDiscrete([number_of_centers, number_of_widths, 2])`,
+ordered `[center_index, half_width_index, hold]`; `hold=1` maps every alias to
+`HOLD_COMMAND`. Its encoding `multidiscrete_center_half_width_v1` records the
+component order, Hold convention, nvec, encoded count and economic count.
+The example grid has 108 combinations and 55 economic actions. The adapter
+uses `action_encoding="multidiscrete"`; decision stride forces integer
+`[0, 0, 1]` between decisions. Historical clipped MultiDiscrete decoding is
+unchanged and must not be inferred for this explicit encoding.
+
+`hpc/sbatch_nominal_action_encodings_cpu.sh` compares the explicit Discrete and
+MultiDiscrete encodings in ten tasks: even/odd tasks pair seeds 42–46. It uses
+10M simulator transitions per run and both deterministic and stochastic
+evaluation. Validation seed 100042 is separate from final seed 200042.
+`--record-learning-diagnostics` enables initial evaluations, per-rollout
+sampling/economic-entropy records, optimizer metrics, and final per-path data.
+Convergence rows name policy/normalization checkpoints and distinguish
+before-update rollout evaluations from after-update final validation.
+See `hpc/README.md` for submission, smoke overrides, and artifact definitions.
+
+Use the shared `decode_policy_actions` and `policy_action_codec` helpers to decode predictions. Training,
 evaluation, diagnostics, and plots must agree on the grid. Training helpers
 save `lp_action_config` in policies; robust run configs also record
 `action_encoding="categorical_endpoint_pairs_v1"`, `tau`, `tick_stride`, and

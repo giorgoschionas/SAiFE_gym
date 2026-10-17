@@ -22,7 +22,7 @@ from stable_baselines3.common.vec_env import VecMonitor, VecNormalize
 from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
 from SAiFE_gym.gym.lp_actions import (
-    CenterHalfWidthActionGrid, categorical_action_codec, action_grid_from_metadata,
+    CenterHalfWidthActionGrid, policy_action_codec, action_grid_from_metadata,
     decode_policy_actions, validate_policy_metadata,
 )
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
@@ -216,6 +216,7 @@ def get_ppo_learner_and_callback(
     *,
     eval_env: AMMEnvironment = None,
     eval_seed: int = SEED + 10_000,
+    policy_action_space: str = "discrete",
     tick_stride: int = 1,
     action_grid: CenterHalfWidthActionGrid | None = None,
 ):
@@ -275,8 +276,11 @@ def get_ppo_learner_and_callback(
             ) from exc
     _validate_separate_eval_env(env, eval_env)
 
-    training_vec = wrap_env(env, normalise_obs=normalise_obs, tick_stride=tick_stride, action_grid=action_grid)
-    eval_vec = wrap_env(eval_env, normalise_obs=normalise_obs, tick_stride=tick_stride, action_grid=action_grid)
+    action_encoding = "multidiscrete" if policy_action_space == "multidiscrete" else "categorical"
+    policy_action_codec(env.model_dynamics.tau, tick_stride, action_grid=action_grid,
+                        policy_action_space=policy_action_space)
+    training_vec = wrap_env(env, normalise_obs=normalise_obs, tick_stride=tick_stride, action_grid=action_grid, action_encoding=action_encoding)
+    eval_vec = wrap_env(eval_env, normalise_obs=normalise_obs, tick_stride=tick_stride, action_grid=action_grid, action_encoding=action_encoding)
     if (
         training_vec.observation_space != eval_vec.observation_space
         or training_vec.action_space != eval_vec.action_space
@@ -317,8 +321,9 @@ def get_ppo_learner_and_callback(
         eval_freq=env.n_steps * 10,  # callbacks count batch steps, not transitions
     )
     model = PPO(**ppo_params)
-    model.lp_action_config = categorical_action_codec(
+    model.lp_action_config = policy_action_codec(
         env.model_dynamics.tau, tick_stride, action_grid=action_grid,
+        policy_action_space=policy_action_space,
     ).metadata
     callback = EvalCallback(**callback_params)
     return model, callback

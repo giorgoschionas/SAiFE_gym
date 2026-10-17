@@ -6,7 +6,7 @@ from stable_baselines3.common.vec_env import VecEnv
 from stable_baselines3.common.vec_env.base_vec_env import VecEnvIndices, VecEnvObs, VecEnvStepReturn
 
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
-from SAiFE_gym.gym.lp_actions import CenterHalfWidthActionGrid, categorical_action_codec, HOLD_COMMAND
+from SAiFE_gym.gym.lp_actions import CenterHalfWidthActionGrid, policy_action_codec, HOLD_COMMAND
 from SAiFE_gym.gym.index_names import (
     FEES0_KEY,
     FEES1_KEY,
@@ -72,16 +72,17 @@ class StableBaselinesAMMEnvironment(VecEnv):
         self.obs_keys = obs_keys if obs_keys is not None else DEFAULT_OBS_KEYS
         self.obs_dim = len(self.obs_keys)
         self.store_terminal_observation_info = store_terminal_observation_info
-        if action_encoding not in ("categorical", "raw"):
-            raise ValueError("action_encoding must be 'categorical' or 'raw'")
+        if action_encoding not in ("categorical", "multidiscrete", "raw"):
+            raise ValueError("action_encoding must be 'categorical', 'multidiscrete' or 'raw'")
         self.action_encoding = action_encoding
-        if action_grid is not None and action_encoding != "categorical":
-            raise ValueError("action_grid requires categorical action encoding")
+        if action_grid is not None and action_encoding == "raw":
+            raise ValueError("action_grid requires categorical or multidiscrete action encoding")
         self.action_grid = action_grid
         self.tick_stride = tick_stride
         self.action_codec = (
-            categorical_action_codec(amm_env.model_dynamics.tau, tick_stride, action_grid=action_grid)
-            if action_encoding == "categorical" else None
+            policy_action_codec(amm_env.model_dynamics.tau, tick_stride, action_grid=action_grid,
+                                policy_action_space="multidiscrete" if action_encoding == "multidiscrete" else "discrete")
+            if action_encoding != "raw" else None
         )
         self.actions = np.tile(HOLD_COMMAND, (amm_env.num_trajectories, 1))
 
@@ -95,7 +96,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
             low=-np.inf, high=np.inf, shape=(self.obs_dim,), dtype=np.float32
         )
         gymnasium_act_space = (
-            self.action_codec.action_space if action_encoding == "categorical"
+            self.action_codec.action_space if self.action_codec is not None
             else amm_env.command_space
         )
         super().__init__(amm_env.num_trajectories, flat_obs_space, gymnasium_act_space)
@@ -136,7 +137,7 @@ class StableBaselinesAMMEnvironment(VecEnv):
 
     def decode_actions(self, actions):
         """Decode predictions to raw commands without advancing the simulator."""
-        if self.action_encoding == "categorical":
+        if self.action_codec is not None:
             return self.action_codec.decode(actions)
         return np.asarray(actions)
 
@@ -144,6 +145,8 @@ class StableBaselinesAMMEnvironment(VecEnv):
         actions = np.asarray(actions)
         if self.action_encoding == "categorical" and actions.shape != (self.num_envs,):
             raise ValueError(f"expected action IDs with shape ({self.num_envs},), got {actions.shape}")
+        if self.action_encoding == "multidiscrete" and actions.shape != (self.num_envs, 3):
+            raise ValueError(f"expected MultiDiscrete actions with shape ({self.num_envs}, 3)")
         self.actions = self.decode_actions(actions)
 
     def step_wait(self) -> VecEnvStepReturn:

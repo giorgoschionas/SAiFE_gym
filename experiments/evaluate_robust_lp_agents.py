@@ -85,11 +85,12 @@ def load_config(run_dir):
     missing = REQUIRED_CONFIG - config.keys()
     if missing:
         raise ValueError(f"missing configuration fields in {run_dir}: {sorted(missing)}")
-    if config["action_encoding"] == training.CENTER_HALF_WIDTH_ENCODING:
+    if config["action_encoding"] in (training.CENTER_HALF_WIDTH_ENCODING, training.MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING):
         args = argparse.Namespace(**config)
         grid = training.configured_action_grid(args)
-        codec = training.categorical_action_codec(args.tau, args.tick_stride, action_grid=grid)
-        if config.get("action_count") != codec.action_space.n:
+        codec = training.policy_action_codec(args.tau, args.tick_stride, action_grid=grid,
+                                             policy_action_space=training.configured_policy_action_space(args))
+        if config.get("action_count") != codec.metadata["action_count"]:
             raise ValueError(f"Saved action count does not match the center/half-width grid in {run_dir}")
     configured_evaluation_grid(config)  # Validate the historical axes and bounds layout.
     for name in ("train_sigma_range", "train_arrival_rate_range"):
@@ -189,11 +190,11 @@ def read_episode_checkpoint(job):
     path = Path(job["episode_path"])
     if not path.exists():
         return []
-    text_fields = {"policy", "evaluation_set", "source_run_dir"}
+    text_fields = {"policy", "evaluation_set", "source_run_dir", "evaluation_action_mode"}
     integer_fields = {
         "source_training_seed", "evaluation_seed", "n_steps", "num_trajectories",
         "n_evaluation_paths", "decision_stride", "periodic_rebalance_every",
-        "regime_seed", "episode_seed", "episode_offset", "episode_index",
+        "regime_seed", "episode_seed", "episode_offset", "episode_index", "action_sampling_seed",
     }
     rows = []
     with path.open(newline="") as handle:
@@ -287,9 +288,7 @@ def evaluate_job(job):
             normalization_env = training.wrap_env(
                 env_factory(args, params, job["regime_seed"]), normalise_obs=False,
                 tick_stride=args.tick_stride,
-                action_encoding="categorical" if args.action_encoding in (
-                    training.CATEGORICAL_ENCODING, training.CENTER_HALF_WIDTH_ENCODING,
-                ) else "raw",
+                action_encoding=training.adapter_action_encoding(args),
                 action_grid=training.configured_action_grid(args),
             )
             normalizer = VecNormalize.load(str(run_dir / f"{label}_vecnormalize.pkl"), normalization_env)

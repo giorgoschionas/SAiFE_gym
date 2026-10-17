@@ -51,7 +51,8 @@ def _state(
     }
 
 
-def test_accumulator_reports_vectorized_policy_behavior_and_reward_decomposition():
+@pytest.mark.parametrize("record_paths", [False, True])
+def test_accumulator_reports_vectorized_policy_behavior_and_reward_decomposition(record_paths):
     initial = _state(
         portfolio_value=(100.0, 100.0),
         liquidity=(0.0, 0.0),
@@ -83,7 +84,7 @@ def test_accumulator_reports_vectorized_policy_behavior_and_reward_decomposition
         current_tick=(0, 0),
     )
 
-    accumulator = PolicyBehaviorAccumulator()
+    accumulator = PolicyBehaviorAccumulator(record_paths=record_paths)
     accumulator.begin_episode(2)
 
     first_action = np.array([
@@ -128,6 +129,18 @@ def test_accumulator_reports_vectorized_policy_behavior_and_reward_decomposition
         diagnostics["mean_pnl_per_path"]
         - diagnostics["mean_inventory_penalty_per_path"]
     ) == -52.5
+    if record_paths:
+        deployed, cash = accumulator.path_records
+        assert deployed == dict(
+            objective=-105., pnl=-100., inventory_penalty=5., fee_income_token1=102.,
+            gas_spend=5., rebalance_count=2., rebalances_after_deployment=1.,
+            maximum_drawdown=100., maximum_drawdown_fraction=1.,
+            in_range_steps=1., deployed_steps=1., time_in_range_fraction=.5,
+            in_range_fraction_when_deployed=1.,
+        )
+        assert all(value == 0 for value in cash.values())
+    else:
+        assert accumulator.path_records == []
 
 
 def test_cash_diagnostics_identify_never_deployed_hold_policy():

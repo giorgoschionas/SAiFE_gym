@@ -55,7 +55,7 @@ Avoid `--export=NONE` when relying on this configuration.
 The existing robust jobs request 16 tasks for training and each sweep replicate,
 two for the smoke job, and one for aggregation; their thread limits follow
 `SLURM_NTASKS`. The nominal action-grid comparison requests one task with 16
-CPUs per array element and uses `SLURM_CPUS_PER_TASK` for thread limits.
+CPUs per array element, as does the nominal action-encoding comparison, and uses `SLURM_CPUS_PER_TASK` for thread limits.
 Adjust resources and time limits with `sbatch` options as required by your allocation.
 
 New outputs default to these directories inside the checkout:
@@ -67,6 +67,7 @@ New outputs default to these directories inside the checkout:
 | Seed sweep | `experiments/results/domain_randomized_ppo/seed_sweep/seed_<seed>` |
 | Aggregation | `experiments/results/domain_randomized_ppo/seed_sweep/aggregate` |
 | Nominal action grids | `experiments/results/nominal_action_grids/<configuration>/seed_42` |
+| Nominal action encodings | `experiments/results/nominal_action_encodings/{discrete,multidiscrete}/seed_<seed>` |
 
 Set `OUTPUT_DIR` to override a job's destination. For a sweep it is the parent
 directory, with `seed_<seed>` appended by each array task. Set aggregation's
@@ -555,3 +556,117 @@ scancel <job_id>
 
 Run artifacts are written under `experiments/results/domain_randomized_ppo/...` inside the project directory.
 Slurm output/error files are written under `logs/`; the setup script creates that directory.
+
+
+## Paired flat and MultiDiscrete nominal PPO experiment
+
+`sbatch_nominal_action_encodings_cpu.sh` trains ten agents: seeds 42–46 for
+both `Discrete(55)` and `MultiDiscrete([9, 6, 2])`. Array tasks `2*k` and
+`2*k+1` share seed `42+k`; even tasks use Discrete and odd tasks MultiDiscrete.
+Each task is one process with 16 CPUs and a 48-hour limit.
+
+Both encodings use centers `[-200,-150,-100,-50,0,50,100,150,200]`, half-widths
+`[50,100,150,200,250,300]`, and `tau=500`, without clipping. They represent the
+same 54 rebalance ranges plus Hold. The MultiDiscrete components are
+`[center_index, half_width_index, hold]`, where `hold=1` always means Hold:
+108 encoded combinations, 55 distinct economic actions. Its saved encoding is
+`multidiscrete_center_half_width_v1`; the older clipped structured encoding
+remains separate. The CLI defaults to `--policy-action-space discrete`;
+MultiDiscrete requires the paired explicit grid arguments.
+
+The nominal market, eight observations, observation normalization, learning
+rate, network, and PPO hyperparameters match the previous nominal experiment.
+Both use standard SB3 initialization and `ent_coef=0`, with no Hold bias
+adjustment. Each run collects 10,000,000 simulator transitions using 100
+trajectories, 1,000 simulator steps per episode, and decision stride 100:
+100,000 agent decisions, 100 rollouts, and 10 PPO epochs per rollout.
+
+After configuring `hpc/.env` as described above, submit from the checkout:
+
+```bash
+source hpc/.env
+cd "$SAIFE_PROJECT_DIR"
+mkdir -p logs
+sbatch hpc/sbatch_nominal_action_encodings_cpu.sh
+```
+
+The job preserves `SAIFE_PROJECT_DIR`, `SAIFE_VENV_DIR`, and
+`SAIFE_PYTHON_MODULE` overrides, and prints the resolved Python interpreter,
+encoding, seed, budget, and destination. Seeds and grids are fixed by task.
+Each task writes a timestamped run directory beneath
+`experiments/results/nominal_action_encodings/<encoding>/seed_<seed>/`.
+`OUTPUT_DIR` changes the common parent without changing this isolation.
+
+For a small two-encoding launcher smoke run on Slurm:
+
+```bash
+TOTAL_TIMESTEPS=24 NUM_TRAJECTORIES=2 N_STEPS=6 DECISION_STRIDE=2 \
+N_EVAL_EPISODES=1 CONVERGENCE_N_EVAL_EPISODES=1 \
+CONVERGENCE_EVAL_EVERY_ROLLOUTS=1 PERIODIC_REBALANCE_EVERY=2 \
+OUTPUT_DIR=experiments/results/nominal_action_encodings_smoke \
+  sbatch --array=0-1 --cpus-per-task=2 --time=00:15:00 \
+  hpc/sbatch_nominal_action_encodings_cpu.sh
+```
+
+The same overrides can exercise a task without submission in a permitted
+interactive compute session: replace the `sbatch` command with
+`SLURM_ARRAY_TASK_ID=0 SLURM_CPUS_PER_TASK=2 bash hpc/sbatch_nominal_action_encodings_cpu.sh`
+(and repeat with task 1). Keep budgets divisible by
+`NUM_TRAJECTORIES * N_STEPS` to avoid SB3 rounding up to a full rollout.
+
+### Evaluation and diagnostics artifacts
+
+This launcher enables `--evaluation-action-modes deterministic stochastic`
+and `--record-learning-diagnostics`. Defaults elsewhere remain deterministic
+only, with extra diagnostics off. Validation uses 100 nominal paths (one
+vectorized episode) every ten rollouts from seed `100042`; final evaluation
+uses 1,000 paths per mode (ten vectorized episodes) from seed `200042`.
+Both seeds are shared across encodings and training seeds, and are overridable
+with `CONVERGENCE_EVALUATION_SEED` and `EVALUATION_SEED`. When omitted on the
+Python CLI, `--convergence-evaluation-seed` defaults to `--evaluation-seed`.
+The path identity is `(episode_seed, trajectory_index)`, with consecutive
+episode seeds and 100 trajectories per episode at the default settings.
+
+Deterministic evaluation uses SB3 prediction, including independent greedy
+choices for the MultiDiscrete heads. Stochastic evaluation samples from the
+policy with a separate seed derived from each episode seed, recorded in the
+outputs. Evaluation restores Python, NumPy, and Torch RNG state and the
+policy's training mode. It does not update normalization statistics.
+
+Each run contains:
+
+- `config.json`, `nominal_ppo.zip`, and `nominal_vecnormalize.pkl`, including
+  exact action metadata in the configuration and policy.
+- `nominal_convergence.csv` and `nominal_convergence_stochastic.csv`. With
+  diagnostics enabled, both include an initial evaluation. Regular evaluations
+  are `before_update`: rollout N has been collected, but its PPO update has
+  not run. Final validation is `after_update`. Each row names the exact policy
+  and normalization files in `checkpoints/`, records simulator/decision counts,
+  and records SB3's `_n_updates` (completed optimization epochs).
+- `nominal_learning_diagnostics.jsonl`, with one `rollout` record per rollout
+  and one `optimizer` record after each update, including the last update.
+  Rollout records contain sampled Hold/rebalance fractions, predicted Hold
+  probability, encoded counts, economic counts/frequencies and probabilities,
+  raw entropy, and economic entropy. Economic action index 0 is Hold; the
+  remaining indices enumerate center first, then half-width. Encoded
+  MultiDiscrete counts use C ordering (Hold index varies fastest).
+  Entropies use natural logarithms and average over collected decision
+  observations before the update. All 54 Hold aliases are merged before
+  economic entropy is calculated. Forced simulator holds are counted
+  separately and excluded from these policy statistics. Optimizer records
+  retain SB3 `train/*` metrics, including its raw `train/entropy_loss`.
+- `evaluation_grid.csv`, `summary.json`, and their `_stochastic` counterparts,
+  each including the PPO policy, periodic rebalance, and cash baselines.
+  `validation_baselines.csv` and its stochastic counterpart use validation
+  paths; the two baseline policies are independent of the action mode.
+- `evaluation_paths.csv` and `evaluation_paths_stochastic.csv`, with final
+  per-path objective, P&L, inventory penalty, fees valued in token1, gas spend,
+  rebalance counts (with and without initial deployment), time in range,
+  and maximum drawdown in token1 and as a fraction of peak portfolio value.
+  `time_in_range_fraction` uses all simulator steps;
+  `in_range_fraction_when_deployed` uses deployed steps and is zero for paths
+  never deployed. Objective equals P&L minus inventory penalty. These path
+  files are enabled by `--record-learning-diagnostics`.
+
+These diagnostics measure learning and preserve the data for later statistical
+analysis. Full training and comparison of performance follow HPC submission.

@@ -186,8 +186,10 @@ def test_saved_run_grid_mismatch_rejected_even_with_same_action_count(tmp_path):
         evaluation.load_config(tmp_path)
 
 
-def test_grid_ppo_save_load_and_standalone_evaluation(tmp_path):
+@pytest.mark.parametrize("encoding", ["discrete", "multidiscrete"])
+def test_grid_ppo_save_load_and_standalone_evaluation(tmp_path, encoding):
     args = training.parse_args([
+        "--policy-action-space", encoding,
         "--tau", "500", "--center-magnitudes", "50", "100", "150", "200",
         "--half-widths", "50", "100", "150", "200", "250", "300",
         "--n-steps", "4", "--num-trajectories", "2", "--decision-stride", "2",
@@ -199,7 +201,8 @@ def test_grid_ppo_save_load_and_standalone_evaluation(tmp_path):
     model, vec, normalizer = training.build_ppo(training.make_fixed_env(args, params, 7), args)
     model.n_epochs = 1
     model.learn(total_timesteps=4)
-    assert model.action_space == gym.spaces.Discrete(55)
+    expected_space = gym.spaces.Discrete(55) if encoding == "discrete" else gym.spaces.MultiDiscrete([9, 6, 2])
+    assert model.action_space == expected_space
     model.save(tmp_path / "nominal_ppo")
     normalizer.save(tmp_path / "nominal_vecnormalize.pkl")
     (tmp_path / "config.json").write_text(json.dumps(vars(args)))
@@ -214,9 +217,11 @@ def test_grid_ppo_save_load_and_standalone_evaluation(tmp_path):
     expected = training.evaluate_ppo("nominal_ppo", model, normalizer, params, "in_distribution", args, 99)
     actual = training.evaluate_ppo("nominal_ppo", loaded, normalizer, params, "in_distribution", args, 99)
     assert actual == expected
-    assert evaluation.main([
+    evaluation_args = [
         "--run-dirs", str(tmp_path), "--output-dir", str(tmp_path / "evaluation"),
         "--policies", "nominal_ppo", "--sigma-values", ".03", "--arrival-rate-values", "300",
         "--bootstrap-resamples", "10", "--no-plots",
-    ]) == 0
+    ]
+    assert evaluation.main(evaluation_args) == 0
+    assert evaluation.main([*evaluation_args, "--resume"]) == 0
     vec.close()

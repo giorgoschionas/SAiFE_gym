@@ -20,6 +20,7 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 os.makedirs(os.environ["MPLCONFIGDIR"], exist_ok=True)
 
 import numpy as np
+import torch
 from gymnasium import spaces
 from stable_baselines3 import PPO
 from stable_baselines3.common.callbacks import BaseCallback
@@ -34,6 +35,9 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+from experiments.learning_diagnostics import (  # noqa: E402
+    evaluation_random_state, action_sampling_seed, rollout_action_diagnostics,
+)
 from experiments.evaluation_grid import (  # noqa: E402
     EVALUATION_GRID_VERSION,
     EVALUATION_SETS,
@@ -80,6 +84,7 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
 )
 from SAiFE_gym.gym.lp_actions import (  # noqa: E402
     CATEGORICAL_ENCODING, CENTER_HALF_WIDTH_ENCODING, STRUCTURED_ENCODING,
+    MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING, policy_action_codec,
     CenterHalfWidthActionGrid, categorical_action_codec, action_grid_from_metadata,
     decode_policy_actions, validate_policy_metadata,
 )
@@ -88,7 +93,7 @@ from SAiFE_gym.gym.lp_actions import (  # noqa: E402
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
 EvaluationLabel = EvaluationSet | Literal[
-    "convergence_validation", "convergence_validation_final",
+    "convergence_validation", "convergence_validation_final", "convergence_validation_initial",
 ]
 FORCED_HOLD_ACTION = np.array([0.0, 1.0, 1.0], dtype=np.float32)
 AGENT_DECISION_DIAGNOSTIC_COLUMNS = (
@@ -146,6 +151,12 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
             "remaining steps in the decision window."
         ),
     )
+    parser.add_argument("--policy-action-space", choices=("discrete", "multidiscrete"), default="discrete")
+    parser.add_argument("--evaluation-action-modes", nargs="+",
+                        choices=("deterministic", "stochastic"), default=["deterministic"])
+    parser.add_argument("--convergence-evaluation-seed", type=int, default=None,
+                        help="Validation seed; defaults to --evaluation-seed.")
+    parser.add_argument("--record-learning-diagnostics", action="store_true")
     parser.add_argument("--tau", type=int, default=50)
     parser.add_argument("--tick-stride", type=int, default=5,
                         help="Endpoint-grid stride; unused with explicit center/half-width grids.")
@@ -177,7 +188,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         type=int,
         default=10,
         help=(
-            "Evaluate the current deterministic policy every N PPO rollouts "
+            "Evaluate the selected action modes every N PPO rollouts "
             "on a fixed nominal validation regime; set to 0 to disable."
         ),
     )
@@ -253,7 +264,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
         action="store_true",
         help="Run a tiny end-to-end check instead of an HPC-sized experiment.",
     )
-    return parser.parse_args(argv)
+    args = parser.parse_args(argv)
+    if args.convergence_evaluation_seed is None:
+        args.convergence_evaluation_seed = args.evaluation_seed
+    return args
 
 
 def apply_smoke_overrides(args: argparse.Namespace) -> None:
@@ -371,6 +385,12 @@ def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     if args.evaluation_seed < 0:
         raise ValueError("evaluation_seed must be non-negative")
 
+    validation_seed = getattr(args, "convergence_evaluation_seed", args.evaluation_seed)
+    if isinstance(validation_seed, bool) or not isinstance(validation_seed, (int, np.integer)) or validation_seed < 0:
+        raise ValueError("convergence_evaluation_seed must be a non-negative integer")
+    modes = getattr(args, "evaluation_action_modes", ["deterministic"])
+    if not modes or len(set(modes)) != len(modes) or set(modes) - {"deterministic", "stochastic"}:
+        raise ValueError("evaluation_action_modes must contain unique deterministic/stochastic modes")
     configured_evaluation_grid(vars(args), version=EVALUATION_GRID_VERSION)
 
 
@@ -486,6 +506,8 @@ class DecisionStrideVecEnv(VecEnv):
         self._hold = (
             np.zeros(vec_env.num_envs, dtype=np.int64)
             if isinstance(vec_env.action_space, spaces.Discrete)
+            else np.tile(np.array([0, 0, 1], dtype=np.int64), (vec_env.num_envs, 1))
+            if isinstance(vec_env.action_space, spaces.MultiDiscrete)
             else np.tile(FORCED_HOLD_ACTION, (vec_env.num_envs, 1))
         )
         self._pending_action: Optional[np.ndarray] = None
@@ -677,19 +699,35 @@ def configured_action_grid(args: argparse.Namespace) -> CenterHalfWidthActionGri
         saved_grid = action_grid_from_metadata(saved)
         if grid is None:
             grid = saved_grid
-        expected = categorical_action_codec(args.tau, args.tick_stride, action_grid=grid).metadata
+        expected = policy_action_codec(args.tau, args.tick_stride, action_grid=grid,
+                                       policy_action_space=configured_policy_action_space(args)).metadata
         if saved != expected:
             raise ValueError("Saved run action metadata does not match the configured action grid")
-    if getattr(args, "action_encoding", None) == CENTER_HALF_WIDTH_ENCODING and grid is None:
+    if getattr(args, "action_encoding", None) in (CENTER_HALF_WIDTH_ENCODING, MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING) and grid is None:
         raise ValueError("Center/half-width encoding requires explicit grid metadata")
     return grid
 
 
+def configured_policy_action_space(args: argparse.Namespace) -> str:
+    return getattr(args, "policy_action_space", "multidiscrete" if
+                   getattr(args, "action_encoding", None) == MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING
+                   else "discrete")
+
+
+def adapter_action_encoding(args: argparse.Namespace) -> str:
+    encoding = getattr(args, "action_encoding", CATEGORICAL_ENCODING)
+    if encoding == MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING:
+        return "multidiscrete"
+    return "categorical" if encoding in (CATEGORICAL_ENCODING, CENTER_HALF_WIDTH_ENCODING) else "raw"
+
+
 def configure_action_encoding(args: argparse.Namespace) -> None:
     grid = configured_action_grid(args)
-    codec = categorical_action_codec(args.tau, args.tick_stride, action_grid=grid)
+    codec = policy_action_codec(args.tau, args.tick_stride, action_grid=grid,
+                                policy_action_space=configured_policy_action_space(args))
     args.action_encoding = codec.encoding
-    args.action_count = int(codec.action_space.n)
+    args.action_count = codec.metadata["action_count"]
+    args.economic_action_count = codec.metadata.get("economic_action_count", args.action_count)
     args.lp_action_config = codec.metadata
     if grid is not None:
         args.center_magnitudes = list(grid.center_magnitudes)
@@ -713,6 +751,10 @@ def validate_policy_action_encoding(model, args: argparse.Namespace) -> None:
     validate_policy_metadata(model, args.tau, args.tick_stride, action_grid=grid)
     if isinstance(model.action_space, spaces.Discrete) and getattr(args, "action_count", model.action_space.n) != model.action_space.n:
         raise ValueError("Saved action count does not match policy action space")
+    if actual == MULTIDISCRETE_CENTER_HALF_WIDTH_ENCODING:
+        for key in ("action_count", "economic_action_count"):
+            if getattr(args, key, saved[key]) != saved[key]:
+                raise ValueError(f"Saved {key} does not match policy action metadata")
 
 
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
@@ -720,7 +762,8 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         raise ValueError("Training environment tau must match the configured action grid")
     configure_action_encoding(args)
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs, tick_stride=args.tick_stride,
-                       action_grid=configured_action_grid(args))
+                       action_grid=configured_action_grid(args),
+                       action_encoding=adapter_action_encoding(args))
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
     ppo_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
     rollout_size = ppo_rollout_steps(args) * args.num_trajectories
@@ -738,119 +781,128 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         n_steps=ppo_rollout_steps(args),
         gae_lambda=0.95,
         gamma=1.0,
+        ent_coef=0.0,
         seed=args.seed,
     )
     model.lp_action_config = dict(args.lp_action_config)
     return model, ppo_env, vec_normalize
 
 
-class ConvergenceEvaluationCallback(BaseCallback):
-    """Append fixed-regime policy evaluations during PPO training."""
+def evaluation_suffix(mode: str) -> str:
+    return "" if mode == "deterministic" else "_stochastic"
 
-    def __init__(
-        self,
-        policy_name: str,
-        vec_normalize: Optional[VecNormalize],
-        args: argparse.Namespace,
-        output_path: Path,
-    ):
+
+def append_jsonl(path: Path, row: dict) -> None:
+    with path.open("a") as handle:
+        handle.write(json.dumps(row, sort_keys=True) + "\n")
+
+
+class ConvergenceEvaluationCallback(BaseCallback):
+    """Checkpoint validation policies and keep update timing explicit."""
+
+    def __init__(self, policy_name, vec_normalize, args, output_path):
         super().__init__(verbose=0)
         if args.convergence_eval_every_rollouts < 0:
             raise ValueError("convergence_eval_every_rollouts must be non-negative")
         if args.convergence_n_eval_episodes < 1:
             raise ValueError("convergence_n_eval_episodes must be positive")
-        self.policy_name = policy_name
-        self.vec_normalize = vec_normalize
-        self.args = args
-        self.output_path = output_path
+        self.policy_name, self.vec_normalize = policy_name, vec_normalize
+        self.args, self.output_path = args, output_path
         self.rollouts_completed = 0
-        self._fieldnames: Optional[list[str]] = None
+        self.record_diagnostics = getattr(args, "record_learning_diagnostics", False)
+        self.diagnostics_path = output_path.with_name(output_path.stem.replace("_convergence", "_learning_diagnostics") + ".jsonl")
+        self._last_optimizer_update = 0
 
-    def _on_training_start(self) -> None:
+    def timing(self, phase):
+        return dict(
+            num_timesteps=int(self.model.num_timesteps * self.args.decision_stride),
+            num_decision_timesteps=int(self.model.num_timesteps),
+            rollouts_completed=self.rollouts_completed, policy_phase=phase,
+            optimizer_updates=int(self.model._n_updates),
+        )
+
+    def _on_training_start(self):
         self.output_path.parent.mkdir(parents=True, exist_ok=True)
-        self._fieldnames = None
+        if self.record_diagnostics:
+            self.evaluate("convergence_validation_initial", "initial")
+            eval_args = self.validation_args()
+            params = DomainParameters(eval_args.nominal_sigma, eval_args.nominal_arrival_rate)
+            for mode in getattr(self.args, "evaluation_action_modes", ["deterministic"]):
+                rows = [evaluate_periodic_rebalance(params, "convergence_validation", eval_args, eval_args.evaluation_seed),
+                        evaluate_cash(params, "convergence_validation", eval_args)]
+                save_csv(self.output_path.with_name("validation_baselines" + evaluation_suffix(mode) + ".csv"), rows)
 
-    def _on_step(self) -> bool:
+    def validation_args(self):
+        args = argparse.Namespace(**vars(self.args))
+        args.n_eval_episodes = self.args.convergence_n_eval_episodes
+        args.evaluation_seed = getattr(self.args, "convergence_evaluation_seed", self.args.evaluation_seed)
+        return args
+
+    def _on_step(self):
         return True
 
-    def _on_rollout_end(self) -> None:
-        frequency = self.args.convergence_eval_every_rollouts
-        if frequency == 0:
-            return
+    def _record_optimizer(self):
+        if self.record_diagnostics and self.model._n_updates != self._last_optimizer_update:
+            metrics = {key: float(value) for key, value in self.model.logger.name_to_value.items()
+                       if key.startswith("train/") and np.isscalar(value)}
+            append_jsonl(self.diagnostics_path, dict(
+                record_type="optimizer", **self.timing("after_update"), **metrics,
+            ))
+            self._last_optimizer_update = self.model._n_updates
 
+    def _on_rollout_start(self):
+        # SB3 logs optimizer metrics after train(), which follows rollout_end.
+        self._record_optimizer()
+
+    def _on_training_end(self):
+        self._record_optimizer()
+
+    def _on_rollout_end(self):
         self.rollouts_completed += 1
-        if self.rollouts_completed % frequency != 0:
-            return
+        if self.record_diagnostics:
+            append_jsonl(self.diagnostics_path, dict(
+                record_type="rollout", **self.timing("before_update"),
+                **rollout_action_diagnostics(self.model, self.args),
+            ))
+        frequency = self.args.convergence_eval_every_rollouts
+        if frequency and self.rollouts_completed % frequency == 0:
+            self.evaluate("convergence_validation", "before_update")
 
-        eval_args = argparse.Namespace(**vars(self.args))
-        eval_args.n_eval_episodes = self.args.convergence_n_eval_episodes
-        params = DomainParameters(
-            sigma=self.args.nominal_sigma,
-            arrival_rate=self.args.nominal_arrival_rate,
-        )
-        row = evaluate_ppo(
-            self.policy_name,
-            self.model,
-            self.vec_normalize,
-            params,
-            "convergence_validation",
-            eval_args,
-            regime_seed=self.args.evaluation_seed,
-        )
-        row = {
-            "num_timesteps": int(self.num_timesteps * self.args.decision_stride),
-            "num_decision_timesteps": int(self.num_timesteps),
-            "rollouts_completed": int(self.rollouts_completed),
-            **row,
-        }
-        self._append_row(row)
+    def evaluate(self, evaluation_set, phase):
+        eval_args = self.validation_args()
+        params = DomainParameters(eval_args.nominal_sigma, eval_args.nominal_arrival_rate)
+        checkpoint_dir = self.output_path.parent / "checkpoints"
+        checkpoint_dir.mkdir(exist_ok=True)
+        stem = f"{self.policy_name}_{self.model.num_timesteps:09d}_{phase}"
+        policy_path = checkpoint_dir / f"{stem}.zip"
+        normalization_path = checkpoint_dir / f"{stem}_vecnormalize.pkl"
+        self.model.save(policy_path)
+        if self.vec_normalize is not None:
+            self.vec_normalize.save(normalization_path)
+        for mode in getattr(self.args, "evaluation_action_modes", ["deterministic"]):
+            row = evaluate_ppo(self.policy_name, self.model, self.vec_normalize, params,
+                               evaluation_set, eval_args, eval_args.evaluation_seed, action_mode=mode)
+            self._append_row(dict(
+                **self.timing(phase),
+                policy_checkpoint=str(policy_path.relative_to(self.output_path.parent)),
+                normalization_checkpoint=str(normalization_path.relative_to(self.output_path.parent))
+                if self.vec_normalize is not None else "", **row,
+            ), mode)
 
-    def _append_row(self, row: dict) -> None:
-        if self._fieldnames is None:
-            self._fieldnames = list(row.keys())
-            write_header = not self.output_path.exists()
-        else:
-            write_header = False
-
-        with self.output_path.open("a", newline="") as f:
-            writer = csv.DictWriter(f, fieldnames=self._fieldnames)
+    def _append_row(self, row, mode="deterministic"):
+        path = self.output_path.with_stem(self.output_path.stem + evaluation_suffix(mode))
+        write_header = not path.exists()
+        with path.open("a", newline="") as handle:
+            writer = csv.DictWriter(handle, fieldnames=list(row))
             if write_header:
                 writer.writeheader()
             writer.writerow(row)
 
 
-def append_final_convergence_evaluation(
-    callback: ConvergenceEvaluationCallback,
-    model: PPO,
-    vec_normalize: Optional[VecNormalize],
-    args: argparse.Namespace,
-) -> None:
-    """Append a validation row for the final post-update policy."""
-    if args.convergence_eval_every_rollouts == 0:
-        return
-
-    eval_args = argparse.Namespace(**vars(args))
-    eval_args.n_eval_episodes = args.convergence_n_eval_episodes
-    params = DomainParameters(
-        sigma=args.nominal_sigma,
-        arrival_rate=args.nominal_arrival_rate,
-    )
-    row = evaluate_ppo(
-        callback.policy_name,
-        model,
-        vec_normalize,
-        params,
-        "convergence_validation_final",
-        eval_args,
-        regime_seed=args.evaluation_seed,
-    )
-    row = {
-        "num_timesteps": int(model.num_timesteps * args.decision_stride),
-        "num_decision_timesteps": int(model.num_timesteps),
-        "rollouts_completed": int(callback.rollouts_completed),
-        **row,
-    }
-    callback._append_row(row)
+def append_final_convergence_evaluation(callback, model, vec_normalize, args):
+    """Append validation of the final policy after its last optimizer update."""
+    if args.convergence_eval_every_rollouts or getattr(args, "record_learning_diagnostics", False):
+        callback.evaluate("convergence_validation_final", "after_update")
 
 
 def train_and_save(
@@ -883,6 +935,20 @@ def train_and_save(
 
 
 def evaluate_ppo(
+    policy_name, model, vec_normalize, params, evaluation_set, args, regime_seed,
+    *, env_factory=None, action_mode="deterministic", path_records=None,
+) -> dict:
+    """Evaluate on private market/action streams without changing training state."""
+    if action_mode not in ("deterministic", "stochastic"):
+        raise ValueError("action_mode must be deterministic or stochastic")
+    with evaluation_random_state(model):
+        return _evaluate_ppo(
+            policy_name, model, vec_normalize, params, evaluation_set, args, regime_seed,
+            env_factory=env_factory, action_mode=action_mode, path_records=path_records,
+        )
+
+
+def _evaluate_ppo(
     policy_name: str,
     model: PPO,
     vec_normalize: Optional[VecNormalize],
@@ -892,17 +958,21 @@ def evaluate_ppo(
     regime_seed: int,
     *,
     env_factory: Optional[Callable] = None,
+    action_mode: str = "deterministic",
+    path_records: Optional[list] = None,
 ) -> dict:
     validate_policy_action_encoding(model, args)
     action_grid = configured_action_grid(args)
     objective_values = []
-    behavior = PolicyBehaviorAccumulator()
+    behavior = PolicyBehaviorAccumulator(record_paths=path_records is not None)
     decision_behavior = AgentDecisionAccumulator(
         args.decision_stride,
         max_agent_decisions_per_episode(args),
     )
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
+        if action_mode == "stochastic":
+            torch.manual_seed(action_sampling_seed(episode_seed))
         env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env, action_encoding="raw")
         obs, _ = env.reset(seed=episode_seed)
@@ -915,7 +985,7 @@ def evaluate_ppo(
             if step_idx % args.decision_stride == 0:
                 flat_obs = sb3_env._flatten_obs(obs)
                 model_obs = normalize_obs(flat_obs, vec_normalize)
-                policy_action, _ = model.predict(model_obs, deterministic=True)
+                policy_action, _ = model.predict(model_obs, deterministic=action_mode == "deterministic")
                 action = decode_policy_actions(
                     policy_action, model.action_space, args.tau, args.tick_stride,
                     action_grid=action_grid,
@@ -944,6 +1014,10 @@ def evaluate_ppo(
         behavior_diagnostics=behavior.summarize(),
     )
     row.update(decision_behavior.summarize())
+    row.update(evaluation_action_mode=action_mode, regime_seed=regime_seed,
+               action_sampling_seed=action_sampling_seed(regime_seed) if action_mode == "stochastic" else "")
+    append_path_records(path_records, behavior.path_records, policy_name, params,
+                        evaluation_set, args, regime_seed, action_mode)
     return row
 
 
@@ -955,9 +1029,11 @@ def evaluate_periodic_rebalance(
     *,
     step_observer: Optional[Callable[[AMMEnvironment], None]] = None,
     env_factory: Optional[Callable] = None,
+    path_records: Optional[list] = None,
+    action_mode: str = "deterministic",
 ) -> dict:
     objective_values = []
-    behavior = PolicyBehaviorAccumulator()
+    behavior = PolicyBehaviorAccumulator(record_paths=path_records is not None)
     for episode_idx in range(args.n_eval_episodes):
         episode_seed = regime_seed + episode_idx
         env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
@@ -994,6 +1070,8 @@ def evaluate_periodic_rebalance(
         behavior_diagnostics=behavior.summarize(),
     )
     row.update(zero_agent_decision_diagnostics(args))
+    append_path_records(path_records, behavior.path_records, "periodic_rebalance", params,
+                        evaluation_set, args, regime_seed, action_mode)
     return row
 
 
@@ -1001,6 +1079,7 @@ def evaluate_cash(
     params: DomainParameters,
     evaluation_set: EvaluationSet,
     args: argparse.Namespace,
+    *, path_records=None, regime_seed=None, action_mode="deterministic",
 ) -> dict:
     """Report the undeployed token1 baseline without simulating market paths.
 
@@ -1019,7 +1098,33 @@ def evaluate_cash(
         behavior_diagnostics=cash_behavior_diagnostics(),
     )
     row.update(zero_agent_decision_diagnostics(args))
+    if path_records is not None:
+        records = [{key: 0.0 for key in (
+            "objective", "pnl", "inventory_penalty", "fee_income_token1", "gas_spend",
+            "rebalance_count", "rebalances_after_deployment", "maximum_drawdown",
+            "maximum_drawdown_fraction", "in_range_steps", "deployed_steps",
+            "time_in_range_fraction", "in_range_fraction_when_deployed",
+        )} for _ in objective_values]
+        append_path_records(path_records, records, "cash", params, evaluation_set, args,
+                            args.evaluation_seed if regime_seed is None else regime_seed, action_mode)
     return row
+
+
+def append_path_records(destination, records, policy, params, evaluation_set, args,
+                        regime_seed, action_mode):
+    if destination is None:
+        return
+    for index, metrics in enumerate(records):
+        episode_seed = regime_seed + index // args.num_trajectories
+        destination.append(dict(
+            policy=policy, training_seed=args.seed, evaluation_set=evaluation_set,
+            evaluation_action_mode=action_mode, sigma=params.sigma, arrival_rate=params.arrival_rate,
+            regime_seed=regime_seed, episode_seed=episode_seed,
+            trajectory_index=index % args.num_trajectories,
+            action_sampling_seed=action_sampling_seed(episode_seed)
+            if action_mode == "stochastic" and policy.endswith("_ppo") else "",
+            **metrics,
+        ))
 
 
 def normalize_obs(
@@ -1029,11 +1134,8 @@ def normalize_obs(
     if vec_normalize is None:
         return obs
 
-    old_training = vec_normalize.training
-    vec_normalize.training = False
-    normalized = vec_normalize.normalize_obs(obs)
-    vec_normalize.training = old_training
-    return normalized
+    # SB3's normalize_obs reads statistics without updating them, even in training mode.
+    return vec_normalize.normalize_obs(obs)
 
 
 def summarize_running_inventory_objective(
@@ -1216,7 +1318,7 @@ def _summarize_policy_evaluation_set(
 
 def save_csv(path: Path, rows: list[dict]) -> None:
     with path.open("w", newline="") as f:
-        writer = csv.DictWriter(f, fieldnames=list(rows[0].keys()))
+        writer = csv.DictWriter(f, fieldnames=list(dict.fromkeys(key for row in rows for key in row)))
         writer.writeheader()
         writer.writerows(rows)
 
@@ -1283,40 +1385,34 @@ def main() -> int:
         environment_seed=nominal_environment_seed,
     )
 
-    rows = []
-    for regime_idx, regime in enumerate(evaluation_regimes(args)):
-        params = regime.parameters
-        regime_seed = evaluation_regime_seed(args, regime_idx)
-        for policy_name, (model, vecnormalize) in trained_policies.items():
-            rows.append(
-                evaluate_ppo(
-                    policy_name,
-                    model,
-                    vecnormalize,
-                    params,
-                    regime.evaluation_set,
-                    args,
-                    regime_seed,
-                )
-            )
-        rows.append(
-            evaluate_periodic_rebalance(
-                params,
-                regime.evaluation_set,
-                args,
-                regime_seed,
-            )
-        )
-        rows.append(evaluate_cash(params, regime.evaluation_set, args))
-
-    add_gap_columns(rows)
-    summary = summarize_single_training_seed(
-        rows,
-        training_seed=args.seed,
-        evaluation_seed=args.evaluation_seed,
-    )
-    save_csv(run_dir / "evaluation_grid.csv", rows)
-    save_json(run_dir / "summary.json", summary)
+    for mode in args.evaluation_action_modes:
+        rows = []
+        paths = [] if args.record_learning_diagnostics else None
+        for regime_idx, regime in enumerate(evaluation_regimes(args)):
+            params = regime.parameters
+            regime_seed = evaluation_regime_seed(args, regime_idx)
+            for policy_name, (model, vecnormalize) in trained_policies.items():
+                rows.append(evaluate_ppo(
+                    policy_name, model, vecnormalize, params, regime.evaluation_set,
+                    args, regime_seed, action_mode=mode, path_records=paths,
+                ))
+            rows.append(evaluate_periodic_rebalance(
+                params, regime.evaluation_set, args, regime_seed,
+                path_records=paths, action_mode=mode,
+            ))
+            rows.append(evaluate_cash(params, regime.evaluation_set, args, path_records=paths,
+                                      regime_seed=regime_seed, action_mode=mode))
+        for row in rows:
+            row["evaluation_action_mode"] = mode
+            row["policy_phase"] = "after_update"
+        add_gap_columns(rows)
+        summary = summarize_single_training_seed(rows, training_seed=args.seed,
+                                                 evaluation_seed=args.evaluation_seed)
+        suffix = evaluation_suffix(mode)
+        save_csv(run_dir / f"evaluation_grid{suffix}.csv", rows)
+        save_json(run_dir / f"summary{suffix}.json", summary)
+        if paths is not None:
+            save_csv(run_dir / f"evaluation_paths{suffix}.csv", paths)
 
     print(f"Saved PPO run artifacts (training_mode={args.training_mode}) to: {run_dir}")
     print(json.dumps(summary, indent=2, sort_keys=True))
