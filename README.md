@@ -251,7 +251,8 @@ SAiFE_gym/
 │   ├── fast_lp_evaluation.py
 │   ├── helpers.py
 │   ├── policy_behavior_diagnostics.py
-│   └── train_robust_lp_agent.py
+│   ├── train_robust_lp_agent.py
+│   └── vectorization_convergence.py
 ├── hpc/
 │   ├── .env.example
 │   ├── README.md
@@ -259,6 +260,8 @@ SAiFE_gym/
 │   ├── sbatch_robust_lp_seed_sweep_cpu.sh
 │   ├── sbatch_robust_lp_smoke.sh
 │   ├── sbatch_train_robust_lp_agent_cpu.sh
+│   ├── sbatch_vectorization_convergence_cpu.sh
+│   ├── sbatch_plot_vectorization_convergence.sh
 │   └── setup_env.sh
 ├── skills/
 ├── tests/

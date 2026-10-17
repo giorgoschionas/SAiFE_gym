@@ -52,10 +52,12 @@ See the [Slurm sbatch documentation](https://slurm.schedmd.com/sbatch.html).
 The launchers keep `--export=ALL` so your exported settings reach the jobs.
 Avoid `--export=NONE` when relying on this configuration.
 
-The jobs preserve their single-node resource requests: 16 tasks for training
-and each sweep replicate, two for the smoke job, and one for aggregation.
-Their thread limits follow `SLURM_NTASKS`. Adjust resources and time limits
-with `sbatch` options as required by your allocation.
+The original domain-randomized jobs preserve their single-node resource
+requests: 16 tasks for training and each seed-sweep replicate, two for the
+smoke job, and one for aggregation. Their thread limits follow `SLURM_NTASKS`.
+The vectorization convergence jobs below use one task with thread limits from
+`SLURM_CPUS_PER_TASK`. Adjust resources and time limits with `sbatch` options
+as required by your allocation.
 
 New outputs default to these directories inside the checkout:
 
@@ -121,6 +123,133 @@ Check that the job finishes successfully and saves both PPO models and an
 `evaluation_grid.csv` containing 16 rows. This verifies module loading,
 environment activation, and training on your actual compute nodes.
 All submission examples assume `logs/` exists before calling `sbatch`.
+
+## Nominal PPO vectorization convergence
+
+This experiment trains the fixed nominal PPO agent with **10, 100, 1,000, and
+10,000 parallel trajectories**, using **100 rollout updates** for each setting.
+It inherits the nominal defaults from `experiments/train_robust_lp_agent.py`:
+1,000 simulator steps per episode, decision stride 100 (ten PPO decisions per
+episode), seed 42, nominal environment seed 20042, sigma 0.03, arrival rate 300,
+gas cost 2, initial wealth 1,000, and inventory penalty 0.4. It trains only the
+nominal policy and collects training rewards; held-out evaluation and the
+domain-randomized training run are omitted.
+
+| Parallel trajectories | Rollout updates | Simulator transitions | PPO decision transitions |
+|---:|---:|---:|---:|
+| 10 | 100 | 1,000,000 | 10,000 |
+| 100 | 100 | 10,000,000 | 100,000 |
+| 1,000 | 100 | 100,000,000 | 1,000,000 |
+| 10,000 | 100 | 1,000,000,000 | 10,000,000 |
+
+The optimizer retains ten PPO epochs per rollout, the existing policy network,
+and the original minibatch rule:
+`min(max(64, rollout_size // 16), rollout_size)`. With ten decisions per episode,
+the four minibatch sizes are 64, 64, 625, and 6,250. SB3 may warn about partial
+final minibatches for the smaller settings; these preserve the nominal rule.
+Observation normalization stays enabled and rewards remain unnormalized.
+
+The plot measures convergence per rollout update. Increasing the trajectory
+count also increases the data collected and changes the optimizer minibatch
+size according to that rule. Each setting uses one training seed; the figure
+does not estimate uncertainty across independent training seeds. A shared seed
+does not imply identical market paths when the vectorized batch size changes.
+
+### Submit training and automatic plotting
+
+From the checkout root, after sourcing your private cluster settings and
+setting up the environment as described above:
+
+```bash
+mkdir -p logs
+export OUTPUT_DIR=experiments/results/vectorization_convergence
+export ROLLOUT_UPDATES=100
+export SEED=42
+SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_vectorization_convergence_cpu.sh)
+SWEEP_JOB_ID=${SWEEP_JOB_ID%%;*}
+INPUT_DIR="$OUTPUT_DIR/sweep_$SWEEP_JOB_ID" \
+  sbatch --dependency="afterok:$SWEEP_JOB_ID" \
+  hpc/sbatch_plot_vectorization_convergence.sh
+```
+
+The array maps indices `0, 1, 2, 3` to the four trajectory counts in ascending
+order. Each task requests one node, **one process with 16 CPUs, 64 GB RAM, and
+48 hours**. It uses NumPy's native batch simulator and CPU PPO; trajectory count
+does not specify Slurm processes. These resource requests are starting points,
+not measured runtime or peak-memory guarantees for your cluster. The largest
+setting stores dense arrays for 10,000 trajectories and 7,000 ticks, so keep
+its memory request explicit. Inspect Slurm accounting after a run when tuning
+future resource requests.
+
+To permit at most two concurrent training tasks, use
+`sbatch --parsable --array=0-3%2 hpc/sbatch_vectorization_convergence_cpu.sh` in
+the assignment above. Override CPUs, memory, time, partition, or account with
+normal `sbatch` options. `ROLLOUT_UPDATES`, `SEED`, and `OUTPUT_DIR` can be
+changed before submission. Other training environment variables used by the
+older launchers, such as `TOTAL_TIMESTEPS` and `NUM_TRAJECTORIES`, do not alter
+this experiment.
+
+The plotting job requests one CPU, 4 GB RAM, and 15 minutes. `afterok` makes it
+eligible only after every array task succeeds. It requires `INPUT_DIR` to name
+that exact sweep and defaults to writing beneath `$INPUT_DIR/plots`. Set
+`PLOT_OUTPUT_DIR` to change the plot destination independently of training.
+
+### Artifacts and interpretation
+
+Each sweep is isolated under `OUTPUT_DIR/sweep_<array-job-id>/`, with one
+`trajectories_<count>/` directory per setting. Every run saves:
+
+- `config.json`: resolved nominal settings, update budget, environment seed,
+  actual PPO settings, and package versions.
+- `training_rewards.csv`: one row per rollout, including the mean reward,
+  population standard deviation across episode returns, episode count,
+  cumulative simulator/decision transitions, and elapsed seconds at collection.
+- `nominal_ppo.zip` and `nominal_vecnormalize.pkl`: final trained artifacts.
+- `completion.json`: written only after all requested PPO updates and saves
+  finish successfully.
+
+For plotted point **k**, the mean includes every trajectory's episode return
+collected **for update k**, before that update's optimization. Returns include
+rewards from the forced-hold simulator steps between decisions. The CSV and
+`rollout/all_episodes_reward_mean` training log metric include the full batch;
+SB3's usual `rollout/ep_rew_mean` retains its standard rolling logging window.
+The standard deviation is episode dispersion, not a confidence interval.
+
+Plotting verifies completion, consecutive update indices, episode counts,
+transition budgets, and matching configurations before combining results. It
+creates four unsmoothed curves in `plots/vectorization_convergence.png` and
+`.pdf`, with the underlying data in `plots/combined_training_rewards.csv`.
+The axes are **Rollout update** and **Mean training episode reward**.
+
+To regenerate a figure in an activated environment:
+
+```bash
+python experiments/vectorization_convergence.py plot \
+  --input-dir experiments/results/vectorization_convergence/sweep_12345
+```
+
+Training refuses to overwrite an existing trajectory directory. If a task
+fails, its flushed CSV remains available for diagnosis, and plotting rejects
+it until the complete sweep is available. Submit a fresh array to create a
+new sweep directory; automatic training resume is not implemented.
+
+### Tiny local smoke sweep
+
+This checks real PPO learning, saving, and plotting using one through four
+trajectories, two updates, four simulator steps per episode, and decision
+stride two. Its figure is a workflow check, not a convergence experiment.
+Use a fresh output directory for each attempt:
+
+```bash
+SMOKE_DIR=$(mktemp -d /tmp/saife-vectorization-smoke.XXXXXX)
+for count in 1 2 3 4; do
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+    python experiments/vectorization_convergence.py train \
+    --num-trajectories "$count" --smoke-test --output-dir "$SMOKE_DIR"
+done
+python experiments/vectorization_convergence.py plot \
+  --input-dir "$SMOKE_DIR" --trajectory-counts 1 2 3 4
+```
 
 ## Full training
 

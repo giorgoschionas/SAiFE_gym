@@ -17,6 +17,10 @@ JOBS = (
     "sbatch_robust_lp_seed_sweep_cpu.sh",
     "sbatch_aggregate_domain_randomized_seed_sweep.sh",
 )
+VECTORIZATION_JOBS = (
+    "sbatch_vectorization_convergence_cpu.sh",
+    "sbatch_plot_vectorization_convergence.sh",
+)
 DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
 
 
@@ -25,6 +29,7 @@ def cluster(tmp_path):
     project = tmp_path / "checkout with spaces"
     (project / "experiments").mkdir(parents=True)
     (project / "experiments/train_robust_lp_agent.py").touch()
+    (project / "experiments/vectorization_convergence.py").touch()
     (project / "requirements.txt").touch()
     shutil.copytree(HPC, project / "hpc", ignore=shutil.ignore_patterns(".env"))
     capture = tmp_path / "python_calls.jsonl"
@@ -150,11 +155,12 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
             assert option(call, "--total-timesteps") == "10000000"
 
 
-@pytest.mark.parametrize("script", (*JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, "setup_env.sh"))
 def test_explicit_module_is_loaded_before_python(cluster, script):
     _, _, _, _, run = cluster
     result, calls = run(script, {
         "SAIFE_PYTHON_MODULE": "python/example",
+        "INPUT_DIR": "vectorization sweep",
         "BASH_FUNC_module%%": '() { printf "%s\\n" "$*" >> "$MODULE_CALLS"; }',
     })
     assert result.returncode == 0, result.stderr
@@ -162,7 +168,7 @@ def test_explicit_module_is_loaded_before_python(cluster, script):
     assert all(call["modules"] == ["purge", "load python/example"] for call in calls)
 
 
-@pytest.mark.parametrize("script", (*JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, "setup_env.sh"))
 @pytest.mark.parametrize("failure", ["checkout", "environment", "module_unavailable", "module_load"])
 def test_missing_prerequisites_stop_before_python(cluster, script, failure):
     project, _, _, _, run = cluster
@@ -183,7 +189,7 @@ def test_missing_prerequisites_stop_before_python(cluster, script, failure):
             "BASH_FUNC_module%%": '() { if [ "$1" = load ]; then echo "Module load failed" >&2; return 1; fi; }',
         }
         expected = "Module load failed"
-    result, calls = run(script, overrides)
+    result, calls = run(script, {"INPUT_DIR": "vectorization sweep", **overrides})
     assert result.returncode != 0
     assert expected in result.stderr
     assert not calls
@@ -243,3 +249,92 @@ def test_setup_creates_environment_using_its_checkout_from_another_directory(clu
     assert all(call["cwd"] == str(project) for call in calls)
     assert (project / "logs").is_dir()
     assert (project / DEFAULT_RESULTS).is_dir()
+
+
+@pytest.mark.parametrize("script", VECTORIZATION_JOBS)
+@pytest.mark.parametrize("location", ["submission", "explicit", "working_directory"])
+def test_vectorization_jobs_find_checkout_and_use_cpus_per_task(cluster, script, location):
+    project, scratch, make_venv, _, run = cluster
+    overrides = {"INPUT_DIR": "results with spaces/sweep_1234", "SLURM_CPUS_PER_TASK": "8"}
+    if location == "explicit":
+        custom_venv = project.parent / "external environment"
+        make_venv(custom_venv)
+        overrides.update({
+            "SAIFE_PROJECT_DIR": project,
+            "SAIFE_VENV_DIR": custom_venv,
+            "SLURM_SUBMIT_DIR": project.parent / "unrelated directory",
+        })
+    elif location == "working_directory":
+        overrides.update({"SLURM_SUBMIT_DIR": None, "SAIFE_VENV_DIR": "venv"})
+    result, calls = run(script, overrides, cwd=project, staged=True)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["cwd"] == str(project)
+    assert call["modules"] == []
+    assert call["args"][:2] == ["-u", "experiments/vectorization_convergence.py"]
+    for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+        assert call["env"][key] == "8"
+    assert Path(call["env"]["MPLCONFIGDIR"]).parent == scratch
+    if "plot" in script:
+        assert call["args"][2] == "plot"
+        assert option(call, "--input-dir") == "results with spaces/sweep_1234"
+        assert option(call, "--output-dir") == "results with spaces/sweep_1234/plots"
+    else:
+        assert call["args"][2] == "train"
+        assert option(call, "--num-trajectories") == "10"
+        assert option(call, "--rollout-updates") == "100"
+        assert option(call, "--seed") == "42"
+        assert option(call, "--output-dir") == "experiments/results/vectorization_convergence/sweep_1234"
+
+
+@pytest.mark.parametrize("task_id,count", [(0, 10), (1, 100), (2, 1000), (3, 10000)])
+def test_vectorization_task_mapping_and_overrides(cluster, task_id, count):
+    project, _, _, _, run = cluster
+    cache = project / "custom cache"
+    result, calls = run(VECTORIZATION_JOBS[0], {
+        "SLURM_ARRAY_TASK_ID": task_id,
+        "SLURM_ARRAY_JOB_ID": "9876",
+        "OUTPUT_DIR": "custom results",
+        "ROLLOUT_UPDATES": "250",
+        "SEED": "123",
+        "MPLCONFIGDIR": cache,
+        # Unrelated settings from older jobs cannot silently alter this sweep.
+        "NUM_TRAJECTORIES": "2",
+        "TOTAL_TIMESTEPS": "100",
+    })
+    assert result.returncode == 0, result.stderr
+    call = calls[0]
+    assert option(call, "--num-trajectories") == str(count)
+    assert option(call, "--rollout-updates") == "250"
+    assert option(call, "--seed") == "123"
+    assert option(call, "--output-dir") == "custom results/sweep_9876"
+    assert call["env"]["MPLCONFIGDIR"] == str(cache)
+
+
+@pytest.mark.parametrize("task_id", [None, "-1", "4", "00", "invalid"])
+def test_vectorization_rejects_invalid_array_index(cluster, task_id):
+    _, _, _, _, run = cluster
+    result, calls = run(VECTORIZATION_JOBS[0], {"SLURM_ARRAY_TASK_ID": task_id})
+    assert result.returncode != 0
+    assert "SLURM_ARRAY_TASK_ID" in result.stderr
+    assert not calls
+
+
+def test_vectorization_plot_requires_input_and_supports_output_override(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run(VECTORIZATION_JOBS[1])
+    assert result.returncode != 0
+    assert "INPUT_DIR" in result.stderr
+    assert not calls
+    result, calls = run(VECTORIZATION_JOBS[1], {
+        "INPUT_DIR": "completed sweep", "PLOT_OUTPUT_DIR": "custom figures",
+        "OUTPUT_DIR": "training parent",
+    })
+    assert result.returncode == 0, result.stderr
+    assert option(calls[0], "--output-dir") == "custom figures"
+
+
+@pytest.mark.parametrize("script", VECTORIZATION_JOBS)
+def test_vectorization_shell_syntax(script):
+    subprocess.run(["bash", "-n", str(HPC / script)], check=True)

@@ -643,7 +643,9 @@ def zero_agent_decision_diagnostics(args: argparse.Namespace) -> dict[str, float
     }
 
 
-def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
+def build_ppo(
+    env, args: argparse.Namespace, *, device: str = "auto"
+) -> tuple[PPO, object, Optional[VecNormalize]]:
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
     decision_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
@@ -664,6 +666,7 @@ def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecN
         gae_lambda=0.95,
         gamma=1.0,
         seed=args.seed,
+        device=device,
     )
     return model, ppo_env, vec_normalize
 
