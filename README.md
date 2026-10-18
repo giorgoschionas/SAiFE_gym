@@ -252,7 +252,8 @@ SAiFE_gym/
 │   ├── helpers.py
 │   ├── policy_behavior_diagnostics.py
 │   ├── train_robust_lp_agent.py
-│   └── vectorization_convergence.py
+│   ├── vectorization_convergence.py
+│   └── vectorization_wallclock.py
 ├── hpc/
 │   ├── .env.example
 │   ├── README.md
@@ -262,6 +263,8 @@ SAiFE_gym/
 │   ├── sbatch_train_robust_lp_agent_cpu.sh
 │   ├── sbatch_vectorization_convergence_cpu.sh
 │   ├── sbatch_plot_vectorization_convergence.sh
+│   ├── sbatch_vectorization_wallclock_cpu.sh
+│   ├── sbatch_plot_vectorization_wallclock.sh
 │   └── setup_env.sh
 ├── skills/
 ├── tests/

@@ -21,6 +21,10 @@ VECTORIZATION_JOBS = (
     "sbatch_vectorization_convergence_cpu.sh",
     "sbatch_plot_vectorization_convergence.sh",
 )
+WALLCLOCK_JOBS = (
+    "sbatch_vectorization_wallclock_cpu.sh",
+    "sbatch_plot_vectorization_wallclock.sh",
+)
 DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
 
 
@@ -30,6 +34,7 @@ def cluster(tmp_path):
     (project / "experiments").mkdir(parents=True)
     (project / "experiments/train_robust_lp_agent.py").touch()
     (project / "experiments/vectorization_convergence.py").touch()
+    (project / "experiments/vectorization_wallclock.py").touch()
     (project / "requirements.txt").touch()
     shutil.copytree(HPC, project / "hpc", ignore=shutil.ignore_patterns(".env"))
     capture = tmp_path / "python_calls.jsonl"
@@ -155,7 +160,7 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
             assert option(call, "--total-timesteps") == "10000000"
 
 
-@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, *WALLCLOCK_JOBS, "setup_env.sh"))
 def test_explicit_module_is_loaded_before_python(cluster, script):
     _, _, _, _, run = cluster
     result, calls = run(script, {
@@ -168,7 +173,7 @@ def test_explicit_module_is_loaded_before_python(cluster, script):
     assert all(call["modules"] == ["purge", "load python/example"] for call in calls)
 
 
-@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, *VECTORIZATION_JOBS, *WALLCLOCK_JOBS, "setup_env.sh"))
 @pytest.mark.parametrize("failure", ["checkout", "environment", "module_unavailable", "module_load"])
 def test_missing_prerequisites_stop_before_python(cluster, script, failure):
     project, _, _, _, run = cluster
@@ -335,6 +340,66 @@ def test_vectorization_plot_requires_input_and_supports_output_override(cluster)
     assert option(calls[0], "--output-dir") == "custom figures"
 
 
-@pytest.mark.parametrize("script", VECTORIZATION_JOBS)
+@pytest.mark.parametrize("script", (*VECTORIZATION_JOBS, *WALLCLOCK_JOBS))
 def test_vectorization_shell_syntax(script):
     subprocess.run(["bash", "-n", str(HPC / script)], check=True)
+
+
+@pytest.mark.parametrize("task_id,count", [(0, 10), (1, 100), (2, 1000)])
+def test_wallclock_array_trains_then_evaluates_with_shared_protocol(cluster, task_id, count):
+    project, _, _, _, run = cluster
+    result, calls = run(WALLCLOCK_JOBS[0], {"SLURM_ARRAY_TASK_ID": task_id})
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 2
+    train, evaluate = calls
+    assert train["args"][:3] == ["-u", "experiments/vectorization_wallclock.py", "train"]
+    assert evaluate["args"][:3] == ["-u", "experiments/vectorization_wallclock.py", "evaluate"]
+    for flag, value in (("--num-trajectories", count), ("--training-seconds", 3600),
+                        ("--checkpoint-seconds", 300), ("--evaluation-episodes", 1000),
+                        ("--evaluation-seed", 100042), ("--seed", 42)):
+        assert option(train, flag) == str(value)
+    assert option(evaluate, "--run-dir") == f"experiments/results/vectorization_wallclock/sweep_1234/trajectories_{count}"
+    assert all(call["cwd"] == str(project) for call in calls)
+
+
+def test_wallclock_overrides_paths_and_cpu_allocation(cluster):
+    project, _, _, _, run = cluster
+    result, calls = run(WALLCLOCK_JOBS[0], {
+        "OUTPUT_DIR": "results with spaces", "SLURM_CPUS_PER_TASK": 8,
+        "TRAINING_SECONDS": 120, "CHECKPOINT_SECONDS": 30,
+        "EVALUATION_EPISODES": 50, "EVALUATION_SEED": 1234, "SEED": 123,
+        "TOTAL_TIMESTEPS": 1, "NUM_TRAJECTORIES": 10000, "ROLLOUT_UPDATES": 1,
+        "SAIFE_PROJECT_DIR": project, "SLURM_SUBMIT_DIR": "/unrelated",
+        "SAIFE_VENV_DIR": "venv",
+    }, staged=True)
+    assert result.returncode == 0, result.stderr
+    train, evaluate = calls
+    for flag, value in (("--num-trajectories", 10), ("--training-seconds", 120),
+                        ("--checkpoint-seconds", 30), ("--evaluation-episodes", 50),
+                        ("--evaluation-seed", 1234), ("--seed", 123)):
+        assert option(train, flag) == str(value)
+    assert option(evaluate, "--run-dir") == "results with spaces/sweep_1234/trajectories_10"
+    for call in calls:
+        for key in ("OMP_NUM_THREADS", "MKL_NUM_THREADS", "OPENBLAS_NUM_THREADS", "NUMEXPR_NUM_THREADS"):
+            assert call["env"][key] == "8"
+
+
+@pytest.mark.parametrize("task_id", [None, "-1", "3", "00", "invalid"])
+def test_wallclock_rejects_invalid_array_task(cluster, task_id):
+    _, _, _, _, run = cluster
+    result, calls = run(WALLCLOCK_JOBS[0], {"SLURM_ARRAY_TASK_ID": task_id})
+    assert result.returncode != 0
+    assert not calls
+
+
+def test_wallclock_plot_input_and_output(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run(WALLCLOCK_JOBS[1])
+    assert result.returncode != 0 and not calls
+    result, calls = run(WALLCLOCK_JOBS[1], {
+        "INPUT_DIR": "completed sweep", "PLOT_OUTPUT_DIR": "review folder",
+    })
+    assert result.returncode == 0, result.stderr
+    assert calls[0]["args"][:3] == ["-u", "experiments/vectorization_wallclock.py", "plot"]
+    assert option(calls[0], "--input-dir") == "completed sweep"
+    assert option(calls[0], "--output-dir") == "review folder"

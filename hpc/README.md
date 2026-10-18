@@ -251,6 +251,139 @@ python experiments/vectorization_convergence.py plot \
   --input-dir "$SMOKE_DIR" --trajectory-counts 1 2 3 4
 ```
 
+## One-hour vectorization comparison with held-out evaluation
+
+Use `sbatch_vectorization_wallclock_cpu.sh` (Slurm name
+`lp_vectorization_wallclock`) to train **fresh** nominal PPO policies with
+**10, 100, and 1,000 trajectories** for a common **3,600-second training
+budget**. The array maps task indices `0–2` to these counts. Each task then
+evaluates its saved policies offline on **1,000 held-out episodes per policy**,
+regardless of how many trajectories were used in training.
+
+The nominal simulator, CPU PPO, decision stride, network, normalization and
+minibatch rule match the rollout-count experiment above. The defaults are:
+
+| Environment variable | Default | Meaning |
+|---|---:|---|
+| `TRAINING_SECONDS` | `3600` | Elapsed training budget per setting |
+| `CHECKPOINT_SECONDS` | `300` | Target spacing of saved policies |
+| `EVALUATION_EPISODES` | `1000` | Total held-out episodes per saved policy |
+| `EVALUATION_SEED` | `100042` | Shared held-out environment seed |
+| `SEED` | `42` | PPO training seed |
+| `OUTPUT_DIR` | `experiments/results/vectorization_wallclock` | Sweep parent directory |
+
+Every evaluation uses one native batch of `EVALUATION_EPISODES` trajectories,
+each completing one episode, with deterministic actions and the same seed
+protocol. The saved policy's own observation normalization is frozen. Rewards
+are unnormalized total episode returns, including forced-hold steps. These are
+held-out deterministic-policy measurements; they are different from the
+stochastic training rollout averages in the earlier experiment.
+
+### Submit training, evaluation and automatic plotting
+
+From the repository root with the cluster environment configured:
+
+```bash
+mkdir -p logs
+export OUTPUT_DIR=experiments/results/vectorization_wallclock
+export TRAINING_SECONDS=3600 CHECKPOINT_SECONDS=300
+export EVALUATION_EPISODES=1000 EVALUATION_SEED=100042 SEED=42
+SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_vectorization_wallclock_cpu.sh)
+SWEEP_JOB_ID=${SWEEP_JOB_ID%%;*}
+INPUT_DIR="$OUTPUT_DIR/sweep_$SWEEP_JOB_ID" \
+  sbatch --dependency="afterok:$SWEEP_JOB_ID" \
+  hpc/sbatch_plot_vectorization_wallclock.sh
+```
+
+Each array task requests **16 CPUs, 64 GB RAM and four hours**. One hour is the
+training budget; the remaining allocation accommodates offline evaluations,
+setup, saves and a possible final rollout overrun. Four hours is a starting
+resource request, not a measured runtime guarantee. Override allocation limits
+with normal `sbatch` options. The plotting job requests one CPU, 4 GB and
+15 minutes, and waits for every training/evaluation task to succeed.
+`SAIFE_PROJECT_DIR`, `SAIFE_VENV_DIR` and `SAIFE_PYTHON_MODULE` work as in the
+other launchers. Legacy `TOTAL_TIMESTEPS`, `ROLLOUT_UPDATES` and
+`NUM_TRAJECTORIES` settings do not change this experiment.
+
+### Clock and checkpoint interpretation
+
+The monotonic training clock starts after environment/model construction and
+initial checkpoint setup. It includes rollout collection, PPO optimization,
+logging and subsequent checkpoint overhead. Evaluation happens after training
+and is timed separately. Consecutive rollout/PPO cycles preserve the optimizer,
+environment state/RNG and observation normalization.
+
+The initial policy is saved at time zero. Later snapshots are taken after the
+first complete PPO update crossing each five-minute threshold, using their
+**actual** completion times. Missed thresholds do not create duplicate points.
+The latest fully trained policy completed within the budget is also retained.
+An update in progress at the deadline can finish late; its overrun is recorded,
+but its policy is excluded from the first-hour comparison. The last eligible
+policy and matching normalization are preserved together, even after that late
+update. If no update finishes within the budget, only the initial policy is
+eligible. Curves are not extended artificially to the budget endpoint.
+
+The figure uses a linear 0–60 minute axis by default, with unsmoothed mean
+evaluation rewards at the actual checkpoint times. This is one training seed
+per setting. Episode standard deviations describe outcome dispersion, not
+uncertainty across independent training seeds. Changing the trajectory count
+still changes the samples and optimization work per rollout under the nominal
+minibatch rule; this measures the practical learning/time tradeoff.
+
+### Retrieve results or repeat evaluation
+
+Each `sweep_<array-job-id>/trajectories_<count>/` directory contains:
+
+- `config.json`, including nominal settings, evaluation protocol, versions and runtime host/thread metadata.
+- `checkpoints.json` and paired model/normalization files under `checkpoints/`.
+- `training_rewards.csv`, including all completed rollouts and a `within_budget` flag. These rewards were collected before that row's PPO update; its timestamp is the update completion time.
+- `training_completion.json`, recording the overrun and last eligible policy.
+- `evaluation_rewards.csv`, with mean reward, episode dispersion/count, checkpoint time, transition counts and evaluation duration.
+- `evaluation_completion.json`, written only when every checkpoint has been evaluated successfully.
+
+The dependent plotting job writes `vectorization_wallclock.png`,
+`vectorization_wallclock.pdf`, `combined_evaluation_rewards.csv` and
+`comparison.json` under the sweep's `plots/` directory. For convenient retrieval,
+copy **`plots/vectorization_wallclock_review.tar.gz`** from the HPC. This archive
+includes the figures, CSVs and run metadata; model checkpoints remain on the HPC.
+Set `PLOT_OUTPUT_DIR` to choose another plotting destination.
+
+Training refuses to overwrite a run. If offline evaluation fails after training
+has completed, rerun only evaluation in the configured Python environment:
+
+```bash
+python experiments/vectorization_wallclock.py evaluate \
+  --run-dir experiments/results/vectorization_wallclock/sweep_12345/trajectories_100
+python experiments/vectorization_wallclock.py plot \
+  --input-dir experiments/results/vectorization_wallclock/sweep_12345
+```
+
+Evaluation settings are read from the saved configuration. Reevaluation replaces
+its CSV and completion record while preserving the checkpoints. Plotting checks
+completion, checkpoint integrity and matching training/evaluation protocols.
+An interrupted training task requires a fresh run; training resume is not part
+of this experiment.
+
+For a short local workflow check, activate the project's environment and run:
+
+```bash
+SMOKE_DIR=$(mktemp -d /tmp/saife-wallclock-smoke.XXXXXX)
+for count in 1 2 3; do
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+    python experiments/vectorization_wallclock.py train \
+    --num-trajectories "$count" --smoke-test --output-dir "$SMOKE_DIR"
+  OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 OPENBLAS_NUM_THREADS=1 \
+    python experiments/vectorization_wallclock.py evaluate \
+    --run-dir "$SMOKE_DIR/trajectories_$count"
+done
+python experiments/vectorization_wallclock.py plot \
+  --input-dir "$SMOKE_DIR" --trajectory-counts 1 2 3
+```
+
+Smoke mode uses two seconds of training, one-second checkpoint thresholds, four
+simulator steps, decision stride two and four held-out episodes. Its figure is
+a workflow check, not a convergence result.
+
 ## Full training
 
 Submit the default production run:
