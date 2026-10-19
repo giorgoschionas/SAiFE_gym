@@ -9,7 +9,7 @@ The associated paper can be found at [https://arxiv.org/abs/2609.17788](https://
 
 - **Mechanics of AMMs with CL** - tick-indexed liquidity array, pool price and 
   fee accounting, LP fee snapshots.
-- **Market components as stochastic processes** - External midprice models, orderflow models (that capture baseline traders, liquidity-attracted traders and informed traders), price impact models, and separate fee-accounting models.
+- **Market components as stochastic processes** - External midprice models, orderflow models (that capture baseline traders, liquidity-attracted traders and informed traders), price impact models, and separate fee-accounting models, gas cost models.
 - **Vectorized rollouts** - state, actions, arrivals, swaps, rewards and
   diagnostics are batched across `num_trajectories`.
 - **Domain-randomized PPO workflow** - episode-level randomization of volatility
@@ -49,84 +49,6 @@ for _ in range(env.n_steps):
 
 print("Episode rewards:", cumulative_rewards)
 ```
-
-## Stochastic Gas Costs
-
-Gas is a cost per LP rebalance in token1 units. By default it is the fixed
-`gas_cost` supplied to `UniswapV3ModelDynamics` or `get_amm_env`. To make it
-vary over time, inject an `OrnsteinUhlenbeckGasCostModel`:
-
-```python
-from experiments.helpers import get_amm_env
-from SAiFE_gym.stochastic_processes.gas_cost_models import OrnsteinUhlenbeckGasCostModel
-
-gas_model = OrnsteinUhlenbeckGasCostModel(
-    theta=5.0,          # Mean-reversion speed, in inverse simulation time
-    mu=2.0,             # Long-term latent mean, in token1
-    sigma=0.5,          # Volatility, in token1 / sqrt(simulation time)
-    initial_cost=2.0,   # Defaults to mu
-    step_size=1.0 / 200,
-    terminal_time=1.0,
-    num_trajectories=10,
-)
-env = get_amm_env(
-    num_trajectories=10, terminal_time=1.0, n_steps=200,
-    gas_cost_model=gas_model, seed=42,
-)
-obs, _ = env.reset()
-print(obs["gas_cost"])  # Cost available to the next rebalance action
-```
-
-The process follows `dX = theta * (mu - X) dt + sigma dW`, using the exact
-Gaussian transition and independent noise per trajectory. `theta` must be
-positive; `mu`, `sigma`, and `initial_cost` must be nonnegative. The process's
-trajectory count and timestep must match the environment. The injected model
-takes precedence over the scalar `gas_cost` setting.
-
-Charged gas is `max(X, 0)`. The latent OU state remains unclipped, so `mu` is
-the latent mean and the average charged cost can exceed it. Each action uses
-the gas cost in its observation, then gas advances once for the next simulator
-step, including hold steps. First deployment and holds are free; subsequent
-rebalances deduct gas plus any configured swap cost, with wealth floored at
-zero. PnL rewards already include these deductions.
-
-Reset restores the initial gas cost. `reset(seed=...)` also replays the RNG
-stream; resets without a seed continue that stream. Gas uses environment seed
-plus 4, independently of the existing market streams.
-
-Raw and Gymnasium observations include `gas_cost` in token1 units; it also
-remains available through explicit SB3 `obs_keys`. The default SB3 observation
-vector has eight features, in order: `mispricing`,
-`lp_lower_offset`, `lp_upper_offset`, `time`, `has_position`,
-`portfolio_value_ratio`, `pending_fee_share`, and `relative_gas_cost`.
-The last two features are dimensionless:
-
-- `pending_fee_share` (index 6) is pending fee value divided by total portfolio
-  value, or zero when portfolio value is zero. Pending token0 fees are valued
-  at the external midprice and added to pending token1 fees. Total portfolio
-  value already includes these fees.
-- `relative_gas_cost` (index 7) is total portfolio value divided by
-  `max(gas_cost, 1e-12)`. Larger values mean the portfolio can cover more gas
-  charges: a portfolio worth 1,000 with gas cost 2 produces 500. Zero gas gives
-  a large finite value for positive wealth; zero wealth gives zero.
-
-The existing `VecNormalize` wrapper normalizes these features when enabled.
-Stochastic gas is configured through Python; the training CLI continues to
-use fixed gas. Policy plotting helpers accept keyword-only `initial_wealth`
-to set the neutral portfolio value used for the relative gas feature; it
-defaults to `experiments.helpers.INITIAL_WEALTH`, with pending fees set to zero.
-
-The derived `boundary_proximity` and `position_width` observations have been
-removed completely. Saved policies and normalization statistics that include
-either feature require their original code version or retraining with fresh
-normalization statistics. Older nine- and ten-feature defaults are incompatible
-with the current eight-feature layout.
-
-The former eight-feature layout using `unclaimed_fee_value_ratio` and raw
-`gas_cost` is also incompatible, despite having the same dimension. Those
-checkpoints and normalization statistics require their original code version
-or retraining with fresh statistics. The old `unclaimed_fee_value_ratio`
-derived feature has been removed.
 
 ## Domain-Randomized PPO
 
