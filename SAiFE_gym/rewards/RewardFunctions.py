@@ -4,6 +4,7 @@ from typing import Optional, Union
 import numpy as np
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY, PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY, TIME_KEY,
+    INITIAL_WEALTH_KEY,
 )
 
 
@@ -64,6 +65,68 @@ class ExponentialUtility(RewardFunction):
         return np.zeros_like(next_state[PORTFOLIO_VALUE_KEY])
 
     def reset(self, initial_state: Union[np.ndarray, dict]):
+        pass
+
+
+class DenseExponentialUtility(RewardFunction):
+    """Per-step CARA utility increments on cumulative PnL from initial cash.
+
+    For G_t = portfolio_value_t - initial_wealth and a = risk_aversion > 0,
+    return U(G_next) - U(G_current), where U(G) = -exp(-a * G). With an
+    undiscounted return (RL gamma=1), episode rewards sum to U(G_T) - U(0).
+    The terminal step uses the same increment, without an extra terminal bonus.
+
+    Portfolio value already includes fees and reflects paid rebalancing costs.
+    ``risk_aversion`` is in inverse token1 units: choose it for the PnL scale
+    (e.g. 1e-6 for initial wealth 1e6 gives an exponent of 1 at total loss).
+    There is no automatic normalization, clipping, or extra inventory penalty.
+    Unrepresentable rewards raise FloatingPointError rather than silently
+    clipping the utility and changing the objective.
+    """
+
+    def __init__(self, risk_aversion: float):
+        if not np.isfinite(risk_aversion) or risk_aversion <= 0.0:
+            raise ValueError("risk_aversion must be finite and strictly positive")
+        self.risk_aversion = float(risk_aversion)
+
+    def calculate(
+        self, current_state: dict, action: np.ndarray,
+        next_state: dict, is_terminal_step: bool = False
+    ) -> np.ndarray:
+        current_value = np.asarray(current_state[PORTFOLIO_VALUE_KEY], dtype=np.float64)
+        next_value = np.asarray(next_state[PORTFOLIO_VALUE_KEY], dtype=np.float64)
+        initial_wealth = np.asarray(current_state[INITIAL_WEALTH_KEY], dtype=np.float64)
+        if not (
+            np.all(np.isfinite(current_value))
+            and np.all(np.isfinite(next_value))
+            and np.all(np.isfinite(initial_wealth))
+        ):
+            raise ValueError("DenseExponentialUtility requires finite wealth values")
+
+        try:
+            with np.errstate(over="raise", invalid="raise", under="ignore"):
+                pnl_change = next_value - current_value
+                # Factor out the larger exponential. The expm1 argument is
+                # nonpositive, avoiding inf * 0 on large gains/reversals while
+                # retaining precision for tiny PnL increments.
+                exponent = -self.risk_aversion * (
+                    np.minimum(current_value, next_value) - initial_wealth
+                )
+                difference = -np.expm1(-self.risk_aversion * np.abs(pnl_change))
+                # Work in log space so even a large utility level can yield a
+                # representable small increment. Unchanged wealth returns 0.
+                with np.errstate(divide="ignore"):
+                    magnitude = np.exp(exponent + np.log(difference))
+                return np.sign(pnl_change) * magnitude
+        except FloatingPointError as error:
+            raise FloatingPointError(
+                "DenseExponentialUtility cannot represent this reward; "
+                "check that wealth is finite and reduce risk_aversion to "
+                "match the token1 PnL scale."
+            ) from error
+
+    def reset(self, initial_state: Union[np.ndarray, dict]):
+        # The fixed per-trajectory baseline is already carried in each state.
         pass
 
 

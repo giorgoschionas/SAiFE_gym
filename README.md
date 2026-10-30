@@ -70,6 +70,88 @@ for _ in range(env.n_steps):
 print("Episode rewards:", cumulative_rewards)
 ```
 
+## Dense exponential reward
+
+`DenseExponentialUtility` gives a reward at every simulator step using
+`risk_aversion > 0`. The LP starts in cash, so its cumulative PnL is
+`G_t = portfolio_value_t - initial_wealth`. For `a = risk_aversion`,
+
+```text
+U(G) = -exp(-a * G)
+reward_t = U(G_next) - U(G_current)
+sum(rewards) = U(G_terminal) - U(0)
+```
+
+Use an RL discount factor of `gamma=1.0` to preserve this terminal-utility
+objective. The last transition receives the same increment as every other
+step; no extra terminal utility is added. Applying utility separately to each
+step's PnL would define a different objective. The existing `ExponentialUtility`
+class remains available for terminal-only utility on total wealth.
+
+```python
+from experiments.helpers import get_amm_env, get_ppo_learner_and_callback
+from SAiFE_gym.rewards.RewardFunctions import DenseExponentialUtility
+
+env = get_amm_env(
+    num_trajectories=50,
+    # This helper uses initial_wealth=1e6.
+    reward_function=DenseExponentialUtility(risk_aversion=1e-6),
+)
+model, callback = get_ppo_learner_and_callback(env)  # gamma=1.0, norm_reward=False
+```
+
+`risk_aversion` is measured in inverse token1 units. Choose it for the monetary
+PnL scale: the example gives `a * G = -1` at a total loss of the initial capital.
+The reward does not automatically normalize PnL or clip utility. It uses a stable
+exponential difference for small changes and large reversals, and raises
+`FloatingPointError` if a reward cannot be represented in float64. Reduce
+`risk_aversion` if the exponent becomes too large. Reward clipping or a changing
+reward normalization would break the exact telescoping identity.
+
+### Relation to the continuous-time dynamics
+
+For `G = W - W_0` and `U(G) = -exp(-a * G)`, applying Ito's formula introduces
+`U'(G) = a * exp(-a * G)` and `U''(G) = -a^2 * exp(-a * G)`. If
+`dG = b dt + v dW + sum(kappa_j dN_j)`, then
+
+```text
+dU = exp(-a * G_before) * [
+    (a * b - 0.5 * a^2 * v^2) dt
+    + a * v dW
+    + sum((1 - exp(-a * kappa_j)) dN_j)
+]
+```
+
+The implementation evaluates exact utility differences between simulated
+states. It needs no intensity estimates, extra variance penalty, or additional
+`dt` factor. Several accounting assumptions matter when applying a continuous
+AMM derivation to this simulator:
+
+- **Cash benchmark:** holding the reset inventory has constant value `W_0`.
+  Thus `G` is total PnL from cash. Calling its fee-exclusive counterpart
+  "impermanent loss" differs from the usual benchmark of holding the tokens
+  deposited into an LP position.
+- **Continuous valuation:** pure-jump reserves do not imply pure-jump PnL or
+  impermanent loss. Existing risky holdings change value whenever the external
+  price changes, even without a swap.
+- **Fees in both tokens:** unclaimed token0 fees retain price exposure.
+  A scalar fee value is not pure-jump unless risky-token fees are immediately
+  converted to cash. The diffusion exposure includes those fee holdings.
+  Portfolio value already includes claimable fees; collected fees are
+  reinvested on rebalance, so adding lifetime fee counters would double-count.
+- **LP control events:** initial deployment and subsequent rebalances change
+  holdings independently of swap arrivals. Rebalancing gas and conversion costs
+  must enter the wealth change. One fixed reserve map based only on net swap
+  count is insufficient for a controlled LP whose range and liquidity change.
+  The simulator currently charges these costs only for an existing position,
+  making the first deployment free of those explicit costs.
+- **Model assumptions:** a positive initial price alone does not guarantee a
+  general diffusion stays positive. The simulator discretizes prices and
+  arrivals, and can execute both swap directions within one step. Utility
+  differences capture its realized transitions; they do not remove these
+  market-model approximations. Expected-drift arguments also require the
+  exponential integrability conditions for the transformed martingales.
+
 ## Training
 
 For the basic nominal PPO helper:
