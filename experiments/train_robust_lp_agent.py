@@ -61,7 +61,10 @@ from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
     UniformDomainRandomizationConfig,
 )
 from SAiFE_gym.gym.index_names import LP_LIQUIDITY_KEY  # noqa: E402
-from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty  # noqa: E402
+from SAiFE_gym.rewards.RewardFunctions import (  # noqa: E402
+    RewardFunction,
+    RunningInventoryPenalty,
+)
 from SAiFE_gym.stochastic_processes.arrival_models import (  # noqa: E402
     LiquidityKernelArrivalModel,
 )
@@ -425,6 +428,8 @@ def make_fixed_env(
     args: argparse.Namespace,
     params: DomainParameters,
     seed: int,
+    *,
+    reward_function: Optional[RewardFunction] = None,
 ):
     step_size = args.terminal_time / args.n_steps
     alpha = np.array([
@@ -476,8 +481,10 @@ def make_fixed_env(
         terminal_time=args.terminal_time,
         n_steps=args.n_steps,
         model_dynamics=model_dynamics,
-        reward_function=RunningInventoryPenalty(
-            per_step_inventory_aversion=args.inventory_phi,
+        reward_function=(
+            reward_function
+            if reward_function is not None
+            else RunningInventoryPenalty(per_step_inventory_aversion=args.inventory_phi)
         ),
         initial_wealth=args.initial_wealth,
         num_trajectories=args.num_trajectories,
