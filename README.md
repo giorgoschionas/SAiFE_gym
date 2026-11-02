@@ -50,6 +50,175 @@ for _ in range(env.n_steps):
 print("Episode rewards:", cumulative_rewards)
 ```
 
+## Dense extended CARA reward
+
+`DenseExponentialUtility` gives a reward at every simulator step using
+any finite `risk_aversion`. The LP starts in cash, so its cumulative PnL is
+`G_t = portfolio_value_t - initial_wealth`. For `a = risk_aversion`,
+
+```text
+U(G) = (1 - exp(-a * G)) / a    if a != 0
+U(G) = G                       if a == 0
+reward_t = U(G_next) - U(G_current)
+sum(rewards) = U(G_terminal)    because U(0) = 0
+```
+
+| `risk_aversion` | Profile | Utility in PnL |
+| --- | --- | --- |
+| Positive | Risk averse | Increasing and concave |
+| Zero | Risk neutral | Linear; the reward equals per-step PnL |
+| Negative | Risk seeking | Increasing and convex |
+
+This generalizes the previous `-exp(-a * G)` dense reward. For positive `a`,
+each reward is now the previous reward divided by `a`. Expected-utility
+rankings and optimal widths are preserved for a fixed positive parameter;
+reward magnitudes and learning behavior can change. Previously saved sweep
+outputs retain the old scale, so compare them with new runs after rescaling.
+
+Use an RL discount factor of `gamma=1.0` to preserve this terminal-utility
+objective. The last transition receives the same increment as every other
+step; no extra terminal utility is added. Applying utility separately to each
+step's PnL would define a different objective. The existing `ExponentialUtility`
+class remains available for terminal-only utility on total wealth.
+
+```python
+from experiments.helpers import get_amm_env, get_ppo_learner_and_callback
+from SAiFE_gym.rewards.RewardFunctions import DenseExponentialUtility
+
+env = get_amm_env(
+    num_trajectories=50,
+    # This helper uses initial_wealth=1e6.
+    reward_function=DenseExponentialUtility(risk_aversion=1e-6),
+)
+model, callback = get_ppo_learner_and_callback(env)  # gamma=1.0, norm_reward=False
+
+# The same dense reward supports the other profiles:
+neutral_reward = DenseExponentialUtility(risk_aversion=0.0)
+seeking_reward = DenseExponentialUtility(risk_aversion=-1e-6)
+```
+
+`risk_aversion` is measured in inverse token1 units. Choose it for the monetary
+PnL scale: the example gives `a * G = -1` at a total loss of the initial capital.
+The reward does not automatically normalize PnL or clip utility. It uses a stable
+exponential difference for small changes and large reversals, and raises
+`FloatingPointError` if a reward cannot be represented in float64. Reduce
+`abs(risk_aversion)` if the exponent becomes too large. Positive parameters
+amplify losses; negative parameters amplify gains. Reward clipping or a changing
+reward normalization would break the exact telescoping identity.
+
+### Periodic baseline width sweep
+
+Run the periodic baseline with the nominal environment and defaults from
+`experiments/train_robust_lp_agent.py`, replacing its inventory-penalty reward:
+
+```bash
+venv/bin/python experiments/sweep_dense_exponential_width.py
+```
+
+This evaluates 12 symmetric half-widths from 1 to 50 ticks and
+`risk_aversion` values `0.0001, 0.001, 0.003, 0.01, 0.03, 0.1`. A half-width
+`w` means offsets `[-w, +w]`, spanning `2*w` ticks. Defaults are 10 episodes
+of 100 trajectories per width, 1,000 simulator steps, rebalancing every
+100 steps, initial cash 1,000, nominal volatility 0.03, baseline arrival
+rate 300 per side, and gas cost 2. Domain randomization is disabled.
+
+Override the sweep or the trainer's environment arguments directly:
+
+```bash
+venv/bin/python experiments/sweep_dense_exponential_width.py \
+  --half-widths 5 10 20 30 40 50 \
+  --risk-aversion-values 0.001 0.01 0.1 \
+  --n-eval-episodes 20 --workers 4
+```
+
+To compare all three profiles, use `--risk-aversion-values -0.01 0 0.01`.
+Negative and zero parameters are supported in the summaries and plots.
+
+For a smaller exploratory run with 200 paths per width, add
+`--num-trajectories 10 --n-eval-episodes 20`. This changes evaluation batching
+and sample count only; the market and policy parameters stay fixed. Narrow
+confidence intervals should not be assumed at this sample size, especially
+for large risk aversion, where a few losses can dominate expected utility.
+
+Results go into a new timestamped directory under
+`experiments/results/dense_exponential_width_sweep/`: configuration, per-path
+PnL and total rewards, accounting diagnostics, CSV summaries, and PNG/PDF
+plots. `--smoke-test` uses two widths and four total paths per width while
+preserving the full episode horizon. `--workers 1` runs sequentially.
+
+The deterministic baseline ignores rewards. Each market path is therefore
+simulated once per width, and the production reward is applied to **every
+recorded transition** for all risk parameters. The first risk parameter also
+runs inside the environment; every path is checked against the terminal
+identity. Widths use matched episode seeds, preserving external price shocks,
+although their endogenous swap paths can differ. All reward arithmetic remains
+float64, with discount one and no reward normalization or clipping.
+
+The score is the **mean of total rewards across paths**, not utility applied
+to mean PnL. The certainty equivalent is also reported in token1 units:
+`CE = -log(mean(exp(-risk_aversion * final_PnL))) / risk_aversion` for nonzero
+parameters, and `CE = mean(final_PnL)` at zero.
+For a fixed risk parameter it gives exactly the same ordering as expected
+utility. A cash baseline has both total reward and CE equal to zero.
+
+Uncertainty uses a paired bootstrap of entire episode batches because swap
+execution order is shared among trajectories within a batch. Intervals are
+pointwise, and a selected grid maximum is an estimate, not proof of the
+population optimum. The summary also records bootstrap selection frequencies
+and utility-weight concentration to expose tail-sensitive estimates. Concavity
+is checked using changes in secant slopes on the sampled width grid; no curve
+is forced to be concave. Concavity of utility **in PnL** alone guarantees
+neither concavity **in width** nor increasing optimal width with risk aversion.
+
+### Relation to the continuous-time dynamics
+
+For `G = W - W_0` and the extended CARA utility above, Ito's formula uses
+`U'(G) = exp(-a * G)` and `U''(G) = -a * exp(-a * G)`. If
+`dG = b dt + v dW + sum(kappa_j dN_j)`, then
+
+```text
+dU = exp(-a * G_before) * [
+    (b - 0.5 * a * v^2) dt
+    + v dW
+    + sum(U(kappa_j) dN_j)
+]
+```
+
+The jump term uses the same piecewise utility, so at `a=0` this reduces to
+`dU=dG`. The diffusion correction penalizes variance for positive `a` and
+rewards it for negative `a`.
+
+The implementation evaluates exact utility differences between simulated
+states. It needs no intensity estimates, extra variance penalty, or additional
+`dt` factor. Several accounting assumptions matter when applying a continuous
+AMM derivation to this simulator:
+
+- **Cash benchmark:** holding the reset inventory has constant value `W_0`.
+  Thus `G` is total PnL from cash. Calling its fee-exclusive counterpart
+  "impermanent loss" differs from the usual benchmark of holding the tokens
+  deposited into an LP position.
+- **Continuous valuation:** pure-jump reserves do not imply pure-jump PnL or
+  impermanent loss. Existing risky holdings change value whenever the external
+  price changes, even without a swap.
+- **Fees in both tokens:** unclaimed token0 fees retain price exposure.
+  A scalar fee value is not pure-jump unless risky-token fees are immediately
+  converted to cash. The diffusion exposure includes those fee holdings.
+  Portfolio value already includes claimable fees; collected fees are
+  reinvested on rebalance, so adding lifetime fee counters would double-count.
+- **LP control events:** initial deployment and subsequent rebalances change
+  holdings independently of swap arrivals. Rebalancing gas and conversion costs
+  must enter the wealth change. One fixed reserve map based only on net swap
+  count is insufficient for a controlled LP whose range and liquidity change.
+  The simulator currently charges these costs only for an existing position,
+  making the first deployment free of those explicit costs.
+- **Model assumptions:** a positive initial price alone does not guarantee a
+  general diffusion stays positive. The simulator discretizes prices and
+  arrivals, and can execute both swap directions within one step. Utility
+  differences capture its realized transitions; they do not remove these
+  market-model approximations. Expected-drift arguments also require the
+  exponential integrability conditions for the transformed martingales.
+
+
 ## Domain-Randomized PPO
 
 `experiments/train_robust_lp_agent.py` trains two PPO policies with the same

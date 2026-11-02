@@ -4,6 +4,7 @@ from typing import Optional, Union
 import numpy as np
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY, PORTFOLIO_VALUE_KEY, LP_TOKEN0_AMOUNT_KEY, TIME_KEY,
+    INITIAL_WEALTH_KEY,
 )
 
 
@@ -64,6 +65,95 @@ class ExponentialUtility(RewardFunction):
         return np.zeros_like(next_state[PORTFOLIO_VALUE_KEY])
 
     def reset(self, initial_state: Union[np.ndarray, dict]):
+        pass
+
+
+class DenseExponentialUtility(RewardFunction):
+    """Per-step extended CARA utility on cumulative PnL from initial cash.
+
+    For G_t = portfolio_value_t - initial_wealth and a = risk_aversion,
+    U(G) = (1 - exp(-a * G)) / a for a != 0, and U(G) = G for a == 0.
+    Positive a is risk averse, zero is risk neutral, and negative a is risk
+    seeking. Return U(G_next) - U(G_current); with RL gamma=1 and G_0=0,
+    episode rewards sum to U(G_T), since U(0)=0. At a=0 this is exactly PnL.
+    The terminal step uses the same increment, without an extra terminal bonus.
+
+    For a > 0, rewards equal the former -exp(-a * G) increments divided by a:
+    strategy rankings are preserved, but reward magnitudes change.
+    Portfolio value already includes fees and reflects paid rebalancing costs.
+    ``risk_aversion`` is in inverse token1 units: choose it for the PnL scale
+    (e.g. 1e-6 for initial wealth 1e6 gives an exponent of 1 at total loss).
+    There is no automatic normalization, clipping, or extra inventory penalty.
+    Unrepresentable rewards raise FloatingPointError rather than silently
+    clipping the utility and changing the objective.
+    """
+
+    def __init__(self, risk_aversion: float):
+        if not np.isfinite(risk_aversion):
+            raise ValueError("risk_aversion must be finite")
+        self.risk_aversion = float(risk_aversion)
+
+    def calculate(
+        self, current_state: dict, action: np.ndarray,
+        next_state: dict, is_terminal_step: bool = False
+    ) -> np.ndarray:
+        current_value = np.asarray(current_state[PORTFOLIO_VALUE_KEY], dtype=np.float64)
+        next_value = np.asarray(next_state[PORTFOLIO_VALUE_KEY], dtype=np.float64)
+        initial_wealth = np.asarray(current_state[INITIAL_WEALTH_KEY], dtype=np.float64)
+        if not (
+            np.all(np.isfinite(current_value))
+            and np.all(np.isfinite(next_value))
+            and np.all(np.isfinite(initial_wealth))
+        ):
+            raise ValueError("DenseExponentialUtility requires finite wealth values")
+
+        try:
+            with np.errstate(over="raise", invalid="raise", under="ignore"):
+                pnl_change = next_value - current_value
+                if self.risk_aversion == 0.0:
+                    return pnl_change
+
+                # Factor out the larger exponential: it occurs at the smaller
+                # wealth for a > 0 and the larger wealth for a < 0. The reward
+                # has the sign of the PnL change for BOTH risk profiles.
+                anchor = (
+                    np.minimum(current_value, next_value)
+                    if self.risk_aversion > 0.0
+                    else np.maximum(current_value, next_value)
+                )
+                anchor = np.where(pnl_change == 0.0, initial_wealth, anchor)
+                exponent = -self.risk_aversion * (anchor - initial_wealth)
+                absolute_risk = abs(self.risk_aversion)
+                # An infinite scaled gap has the well-defined limit expm1(-inf)=-1.
+                with np.errstate(over="ignore"):
+                    scaled_gap = absolute_risk * np.abs(pnl_change)
+                difference = -np.expm1(-scaled_gap)
+                small_gap = scaled_gap <= 1.0
+                # For tiny a, divide by a analytically before taking logs. This
+                # retains the PnL limit even when a * abs(PnL change) underflows.
+                ratio = np.divide(
+                    difference, scaled_gap, out=np.ones_like(scaled_gap),
+                    where=small_gap & (scaled_gap != 0.0),
+                )
+                with np.errstate(divide="ignore"):
+                    log_gap = np.where(
+                        small_gap,
+                        np.log(np.abs(pnl_change)) + np.log(ratio),
+                        np.log(difference) - np.log(absolute_risk),
+                    )
+                    # Log space permits finite increments even if the utility
+                    # level itself overflows. An unchanged portfolio returns 0.
+                    magnitude = np.exp(exponent + log_gap)
+                return np.sign(pnl_change) * magnitude
+        except FloatingPointError as error:
+            raise FloatingPointError(
+                "DenseExponentialUtility cannot represent this reward; "
+                "check that wealth is finite and reduce abs(risk_aversion) to "
+                "match the token1 PnL scale."
+            ) from error
+
+    def reset(self, initial_state: Union[np.ndarray, dict]):
+        # The fixed per-trajectory baseline is already carried in each state.
         pass
 
 
