@@ -405,11 +405,17 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
     """Reduced-form liquidity-depth Uniswap V3 impact model.
 
     The model samples an active gross trade size, converts it to the swap input
-    token's units, deducts fees to get the curve input, maps that net amount to
-    an expected tick impact using average directional one-tick capacity, then
-    stochastically rounds the result to an integer tick move. Zero-tick fees
+    token's units, deducts fees to get the curve input, and accumulates interval
+    capacities in execution order. The remaining input divided by the next
+    interval's capacity gives the probability of crossing one additional tick.
+    Prices stay on the tick lattice. Zero-tick fees
     are allocated to the first executable interval; multi-tick fees are
     allocated across realized crossed intervals by directional capacity.
+
+    ``depth_window`` is the number of intervals inspected per batch. Additional
+    windows are inspected only for trades that exhaust the current window.
+    ``min_depth`` floors each interval's capacity for the impact calculation,
+    keeping empty or very thin intervals numerically well-defined.
 
     ``trade_size_unit="input_token"`` keeps the sampled size in token0 units
     for sells and token1 units for buys. ``trade_size_unit="token1_notional"``
@@ -463,35 +469,14 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         gross_multiplier = 1.0 + float(fee_multiplier)
         assert gross_multiplier > 0.0, "fee_multiplier must be greater than -1"
 
-        offsets = np.arange(self.depth_window)
-        traj_idx = traj[:, None]
         if direction == -1:
-            interval_indices = idx[:, None] - 1 - offsets[None, :]
             fee_key = FEES0_KEY
-            first_fee_idx = idx - 1
             first_executable = (idx > 0) & (idx <= num_ticks)
             max_tick_move = np.maximum(idx, 0)
         else:
-            interval_indices = idx[:, None] + offsets[None, :]
             fee_key = FEES1_KEY
-            first_fee_idx = idx
             first_executable = (idx >= 0) & (idx < num_ticks)
             max_tick_move = np.maximum(num_ticks - idx, 0)
-
-        valid = (interval_indices >= 0) & (interval_indices < num_ticks)
-        interval_indices_safe = np.clip(interval_indices, 0, num_ticks - 1)
-        liquidity = liquidity_array[traj_idx, interval_indices_safe] * valid
-        capacities = self._interval_capacity(
-            liquidity,
-            interval_indices_safe,
-            sqrt_grid,
-            direction,
-        ) * valid
-
-        valid_counts = valid.sum(axis=1)
-        safe_counts = np.where(valid_counts > 0, valid_counts, 1)
-        average_depth = capacities.sum(axis=1) / safe_counts
-        average_depth = np.maximum(average_depth, self.min_depth)
 
         sampled_trade_size = np.asarray(
             self.trade_size_sampler(self.rng, len(traj)),
@@ -513,9 +498,15 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
         )
         curve_trade_size = gross_trade_size / gross_multiplier
 
-        eta = np.minimum(curve_trade_size / average_depth, max_tick_move)
-        whole_ticks = np.floor(eta).astype(np.int64)
-        fractional_ticks = eta - whole_ticks
+        whole_ticks, fractional_ticks = self._cumulative_tick_depth(
+            liquidity_array,
+            traj,
+            idx,
+            curve_trade_size,
+            max_tick_move,
+            sqrt_grid,
+            direction,
+        )
         rounded_ticks = whole_ticks + (
             self.rng.uniform(size=len(traj)) < fractional_ticks
         ).astype(np.int64)
@@ -598,6 +589,65 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
             amounts=amounts_matrix[fee_mask],
             direction=direction,
         )
+
+    def _cumulative_tick_depth(
+        self,
+        liquidity_array: np.ndarray,
+        trajectories: np.ndarray,
+        indices: np.ndarray,
+        curve_input: np.ndarray,
+        max_tick_move: np.ndarray,
+        sqrt_grid: np.ndarray,
+        direction: int,
+    ) -> tuple[np.ndarray, np.ndarray]:
+        """Find affordable whole ticks and the next tick's rounding probability.
+
+        Work in windows across all unfinished trajectories, rather than scanning
+        to the pool boundary or looping over individual ticks or trajectories.
+        """
+        whole_ticks = np.zeros(len(trajectories), dtype=np.int64)
+        fractions = np.zeros(len(trajectories), dtype=np.float64)
+        remaining = curve_input.copy()
+        pending = (remaining > 0.0) & (max_tick_move > 0)
+        offsets = np.arange(min(self.depth_window, int(max_tick_move.max())))
+        num_ticks = liquidity_array.shape[1]
+
+        while np.any(pending):
+            rows = np.flatnonzero(pending)
+            available = max_tick_move[rows] - whole_ticks[rows]
+            valid = offsets[None, :] < available[:, None]
+            boundary = indices[rows] + direction * whole_ticks[rows]
+            if direction == 1:
+                interval_indices = boundary[:, None] + offsets[None, :]
+            else:
+                interval_indices = boundary[:, None] - 1 - offsets[None, :]
+            safe_indices = np.clip(interval_indices, 0, num_ticks - 1)
+            liquidity = liquidity_array[trajectories[rows, None], safe_indices]
+            capacities = self._interval_capacity(
+                liquidity, safe_indices, sqrt_grid, direction
+            )
+            capacities = np.where(valid, np.maximum(capacities, self.min_depth), np.inf)
+            cumulative = np.cumsum(capacities, axis=1)
+            crossed = valid & (cumulative <= remaining[rows, None])
+            counts = crossed.sum(axis=1)
+            row_indices = np.arange(len(rows))
+            spent = np.where(
+                counts > 0, cumulative[row_indices, np.maximum(counts - 1, 0)], 0.0
+            )
+            remaining[rows] = np.maximum(remaining[rows] - spent, 0.0)
+            whole_ticks[rows] += counts
+
+            # Only a partially affordable interval needs stochastic rounding.
+            partial = counts < valid.sum(axis=1)
+            next_capacity = capacities[row_indices, np.minimum(counts, len(offsets) - 1)]
+            fractions[rows] = np.where(
+                partial, np.clip(remaining[rows] / next_capacity, 0.0, 1.0), 0.0
+            )
+            pending[rows] = (
+                ~partial & (remaining[rows] > 0.0) & (whole_ticks[rows] < max_tick_move[rows])
+            )
+
+        return whole_ticks, fractions
 
     @staticmethod
     def _interval_capacity(

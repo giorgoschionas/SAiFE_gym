@@ -262,8 +262,10 @@ injected `PriceImpactModel` determines how far an active trade moves the pool.
 - On crossing, `sqrt_price` is set from the tick lattice: `sqrt_grid[new_tick - tick_lower_global]`
 
 **Liquidity-Depth Principle**: With `LiquidityDepthUniswapV3PriceImpact`, each trade can cross zero, one, or many ticks.
-- Sampled trade size is gross input; fee-adjusted curve input is divided by average local directional one-tick capacity over `depth_window`
-- Fractional expected tick movement is stochastically rounded to an integer move
+- Sampled trade size is gross input; fee-adjusted curve input is compared with cumulative directional interval capacities in execution order
+- `depth_window` controls the number of intervals examined per batch; trades that exhaust a window continue into the next window, without scanning the full tracked range up front
+- Each interval capacity is floored at `min_depth` for the impact calculation, including empty intervals; zero-size trades never move the price
+- After fully affordable intervals, remaining input divided by the next interval's capacity gives the probability of crossing one additional tick; prices remain on tick boundaries
 - Tick movement is capped by the available tick window
 - Zero-tick sampled arrivals allocate all fees to the first executable interval
 - Multi-tick sampled arrivals allocate the full curve input across realized crossed intervals using directional capacity weights
