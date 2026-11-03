@@ -477,9 +477,9 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             _buy_capacity(state, sqrt_grid, 0, idx),
             _buy_capacity(state, sqrt_grid, 0, idx + 1),
         ])
-        average_depth = np.mean(capacities)
+        curve_input = capacities.sum()
         model = LiquidityDepthUniswapV3PriceImpact(
-            trade_size_sampler=_fixed_sampler(2.0 * average_depth),
+            trade_size_sampler=_fixed_sampler(curve_input),
             depth_window=2,
         )
 
@@ -500,7 +500,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
         np.testing.assert_allclose(
             result.amounts,
-            _capacity_weighted_amounts(capacities, 2.0 * average_depth),
+            _capacity_weighted_amounts(capacities, curve_input),
         )
         assert np.sum(state[FEES0_KEY]) == 0.0
         assert np.sum(state[FEES1_KEY]) == 0.0
@@ -512,9 +512,9 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             _sell_capacity(state, sqrt_grid, 0, idx - 1),
             _sell_capacity(state, sqrt_grid, 0, idx - 2),
         ])
-        average_depth = np.mean(capacities)
+        curve_input = capacities.sum()
         model = LiquidityDepthUniswapV3PriceImpact(
-            trade_size_sampler=_fixed_sampler(2.0 * average_depth),
+            trade_size_sampler=_fixed_sampler(curve_input),
             depth_window=2,
         )
 
@@ -535,7 +535,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
         np.testing.assert_allclose(
             result.amounts,
-            _capacity_weighted_amounts(capacities, 2.0 * average_depth),
+            _capacity_weighted_amounts(capacities, curve_input),
         )
         assert np.sum(state[FEES0_KEY]) == 0.0
         assert np.sum(state[FEES1_KEY]) == 0.0
@@ -600,7 +600,121 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
         np.testing.assert_allclose(result.amounts, np.array([0.25, 0.75]) * curve_input)
 
-    def test_fractional_eta_uses_seeded_stochastic_rounding(self):
+    @pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+    @pytest.mark.parametrize("depth_window", [1, 2, 10])
+    def test_cumulative_depth_respects_interval_order(self, direction, depth_window):
+        state, sqrt_grid = _make_state(num_trajectories=2)
+        indices = np.array([5, 6]) if direction == 1 else np.array([4, 3])
+        capacity = _buy_capacity if direction == 1 else _sell_capacity
+        target_capacities = np.array([[10.0, 190.0], [190.0, 10.0]])
+        state[POOL_LIQUIDITY_ARRAY_KEY][:, indices] *= (
+            target_capacities / capacity(state, sqrt_grid, 0, indices)
+        )
+        # Identical total depth, different execution order. Seeded rounding
+        # leaves the residual budgets below the next boundary in both rows.
+        fee_multiplier = 0.25
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(125.0),
+            depth_window=depth_window,
+            num_trajectories=2,
+            seed=7,
+        )
+
+        result = model.process_swap(
+            state, np.ones(2, dtype=bool), direction,
+            tick_lower_global=100, sqrt_grid=sqrt_grid, num_ticks=10,
+            fee_multiplier=fee_multiplier,
+        )
+
+        expected_indices = 5 + direction * np.array([1, 0])
+        np.testing.assert_array_equal(state[POOL_CURRENT_TICK_KEY], 100 + expected_indices)
+        np.testing.assert_array_equal(state[POOL_SQRT_PRICE_KEY], sqrt_grid[expected_indices])
+        np.testing.assert_array_equal(result.trajectories, [0, 1])
+        np.testing.assert_allclose(result.amounts, [100.0, 100.0])
+        UniswapV3FeeAccounting().apply_fees(state, result, fee_multiplier)
+        np.testing.assert_allclose(state[result.fee_key].sum(axis=1), [25.0, 25.0])
+
+    @pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+    @pytest.mark.parametrize("depth_window", [1, 2, 10])
+    def test_large_trade_uses_actual_capacity_beyond_first_window(self, direction, depth_window):
+        state, sqrt_grid = _make_state()
+        indices = np.arange(5, 10) if direction == 1 else np.arange(4, -1, -1)
+        capacity = _buy_capacity if direction == 1 else _sell_capacity
+        state[POOL_LIQUIDITY_ARRAY_KEY][0, indices] *= (
+            np.array([10.0, 20.0, 30.0, 400.0, 1000.0])
+            / capacity(state, sqrt_grid, 0, indices)
+        )
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(100.0),
+            depth_window=depth_window,
+            seed=7,
+        )
+
+        result = model.process_swap(
+            state, np.array([True]), direction,
+            tick_lower_global=100, sqrt_grid=sqrt_grid, num_ticks=10,
+        )
+
+        assert state[POOL_CURRENT_TICK_KEY][0] == 105 + direction * 3
+        assert state[POOL_SQRT_PRICE_KEY][0] == sqrt_grid[5 + direction * 3]
+        np.testing.assert_array_equal(result.fee_indices, indices[:3])
+        np.testing.assert_allclose(result.amounts, 100.0 * np.array([1.0, 2.0, 3.0]) / 6.0)
+
+    @pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+    @pytest.mark.parametrize("depth_window", [1, 2])
+    def test_rounding_uses_residual_input_and_next_interval_capacity(self, direction, depth_window):
+        state, sqrt_grid = _make_state(num_trajectories=3)
+        indices = np.array([5, 6]) if direction == 1 else np.array([4, 3])
+        capacity = _buy_capacity if direction == 1 else _sell_capacity
+        state[POOL_LIQUIDITY_ARRAY_KEY][:, indices] *= (
+            np.array([10.0, 1000.0]) / capacity(state, sqrt_grid, 0, indices)
+        )
+        capacities = capacity(state, sqrt_grid, 0, indices)
+        # One exactly affordable interval, then 20% and 95% of the next one.
+        curve_inputs = capacities[0] + np.array([0.0, 0.2, 0.95]) * capacities[1]
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler(curve_inputs),
+            depth_window=depth_window,
+            num_trajectories=3,
+            seed=7,
+        )
+
+        result = model.process_swap(
+            state, np.ones(3, dtype=bool), direction,
+            tick_lower_global=100, sqrt_grid=sqrt_grid, num_ticks=10,
+        )
+
+        expected_indices = 5 + direction * np.array([1, 1, 2])
+        np.testing.assert_array_equal(state[POOL_CURRENT_TICK_KEY], 100 + expected_indices)
+        np.testing.assert_array_equal(state[POOL_SQRT_PRICE_KEY], sqrt_grid[expected_indices])
+        np.testing.assert_allclose(
+            np.bincount(result.trajectories, weights=result.amounts), curve_inputs
+        )
+
+    @pytest.mark.parametrize("direction", [1, -1], ids=["buy", "sell"])
+    def test_empty_intervals_use_min_depth_and_zero_trade_does_not_move(self, direction):
+        state, sqrt_grid = _make_state(num_trajectories=2)
+        state[POOL_LIQUIDITY_ARRAY_KEY].fill(0.0)
+        model = LiquidityDepthUniswapV3PriceImpact(
+            trade_size_sampler=_fixed_sampler([0.0, 25.0]),
+            depth_window=2,
+            min_depth=10.0,
+            num_trajectories=2,
+            seed=7,
+        )
+
+        result = model.process_swap(
+            state, np.ones(2, dtype=bool), direction,
+            tick_lower_global=100, sqrt_grid=sqrt_grid, num_ticks=10,
+        )
+
+        np.testing.assert_array_equal(
+            state[POOL_CURRENT_TICK_KEY], 105 + direction * np.array([0, 2])
+        )
+        np.testing.assert_array_equal(result.trajectories, [1, 1])
+        np.testing.assert_allclose(result.amounts, [12.5, 12.5])
+
+    def test_fractional_depth_uses_seeded_stochastic_rounding(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
         idx = 105 - 100
         depth = _buy_capacity(state, sqrt_grid, 0, idx)
@@ -635,9 +749,10 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         idx = 105 - 100
         state[POOL_LIQUIDITY_ARRAY_KEY][2] *= 2.0
         depth0 = _buy_capacity(state, sqrt_grid, 0, idx)
-        depth2 = _buy_capacity(state, sqrt_grid, 2, idx)
+        capacities2 = _buy_capacity(state, sqrt_grid, 2, np.array([idx, idx + 1]))
+        curve_input2 = capacities2.sum()
         model = LiquidityDepthUniswapV3PriceImpact(
-            trade_size_sampler=_fixed_sampler(np.array([depth0, 2.0 * depth2])),
+            trade_size_sampler=_fixed_sampler(np.array([depth0, curve_input2])),
             depth_window=1,
             num_trajectories=3,
         )
@@ -652,10 +767,6 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         )
 
         np.testing.assert_array_equal(state[POOL_CURRENT_TICK_KEY], np.array([106, 105, 107]))
-        capacities2 = np.array([
-            _buy_capacity(state, sqrt_grid, 2, idx),
-            _buy_capacity(state, sqrt_grid, 2, idx + 1),
-        ])
         np.testing.assert_array_equal(result.trajectories, np.array([0, 2, 2]))
         np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx, idx + 1]))
         np.testing.assert_allclose(
@@ -663,7 +774,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             np.concatenate(
                 [
                     np.array([depth0]),
-                    _capacity_weighted_amounts(capacities2, 2.0 * depth2),
+                    _capacity_weighted_amounts(capacities2, curve_input2),
                 ]
             ),
         )
@@ -1147,14 +1258,14 @@ class TestLiquidityDepthUniswapV3PriceImpact:
             asset_price=external_midprice,
         )
         idx = 105 - 100
-        average_token0_depth = np.mean([
+        token0_depth = np.sum([
             _sell_capacity(state, sqrt_grid, 0, idx - 1),
             _sell_capacity(state, sqrt_grid, 0, idx - 2),
         ])
         pool_price = state[POOL_SQRT_PRICE_KEY][0] ** 2
         assert not np.isclose(pool_price, external_midprice)
         model = LiquidityDepthUniswapV3PriceImpact(
-            trade_size_sampler=_fixed_sampler(2.0 * average_token0_depth * external_midprice),
+            trade_size_sampler=_fixed_sampler(token0_depth * external_midprice),
             depth_window=2,
             trade_size_unit="token1_notional",
         )
@@ -1176,7 +1287,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.fee_indices, np.array([idx - 1, idx - 2]))
         np.testing.assert_allclose(
             result.amounts,
-            _capacity_weighted_amounts(capacities, 2.0 * average_token0_depth),
+            _capacity_weighted_amounts(capacities, token0_depth),
         )
 
     def test_token1_notional_sell_requires_positive_external_midprice(self):
@@ -1200,12 +1311,12 @@ class TestLiquidityDepthUniswapV3PriceImpact:
     def test_token1_notional_buy_size_uses_token1_directly(self):
         state, sqrt_grid = _make_state(tick_lower_global=100, current_tick=105)
         idx = 105 - 100
-        average_token1_depth = np.mean([
+        token1_depth = np.sum([
             _buy_capacity(state, sqrt_grid, 0, idx),
             _buy_capacity(state, sqrt_grid, 0, idx + 1),
         ])
         model = LiquidityDepthUniswapV3PriceImpact(
-            trade_size_sampler=_fixed_sampler(2.0 * average_token1_depth),
+            trade_size_sampler=_fixed_sampler(token1_depth),
             depth_window=2,
             trade_size_unit="token1_notional",
         )
@@ -1227,7 +1338,7 @@ class TestLiquidityDepthUniswapV3PriceImpact:
         np.testing.assert_array_equal(result.fee_indices, np.array([idx, idx + 1]))
         np.testing.assert_allclose(
             result.amounts,
-            _capacity_weighted_amounts(capacities, 2.0 * average_token1_depth),
+            _capacity_weighted_amounts(capacities, token1_depth),
         )
 
 

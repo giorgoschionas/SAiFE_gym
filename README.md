@@ -239,6 +239,16 @@ The robust training environment uses:
 - `StructuredMultiDiscreteVecEnv`
 - SB3 `VecNormalize` unless `--no-normalise-obs` is passed
 
+The liquidity-depth price impact model sums interval input capacities in trade
+execution order. It examines `depth_window` intervals at a time and continues
+into additional windows only when the trade exceeds their capacity. Remaining
+input determines the probability of crossing the next tick, using that
+interval's capacity, so pool prices stay on tick boundaries. `min_depth` floors
+each interval capacity for this calculation. This replaces the previous
+average-depth approximation; existing training configurations still work, but
+the resulting price paths can differ, especially near concentrated liquidity.
+Fee accounting continues to use the full sampled input after fee deduction.
+
 Important script defaults (also used by the HPC training launchers):
 
 | Parameter | Default | Meaning |
