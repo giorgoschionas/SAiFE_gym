@@ -280,6 +280,15 @@ also accept `background_liquidity`, retaining their legacy default of `100000.0`
 The saved-policy evaluator interprets older configurations without this field
 as `100000.0`, preserving their original market setting.
 
+For a separate nominal PPO policy at each fixed volatility, use
+`experiments/sweep_nominal_lp_volatility.py`. Its default grid is 3–5% volatility
+in half-percent increments, with three training seeds, pure P&L, 10,000 simulator
+steps per episode, and symmetric rebalancing every 100 steps. The policy chooses
+only the half-width from `2, 5, 10, 15, …, 50` ticks (11 choices). The accompanying
+[HPC instructions](hpc/README.md#nominal-volatility-versus-learned-position-width)
+cover the Slurm array and the summary command that plots deployed width and
+P&L versus volatility.
+
 Nominal training and convergence validation default to sigma `0.03` and arrival
 rate `300.0`, the midpoints of the randomized training ranges. The final
 in-distribution evaluation grid includes this nominal condition.

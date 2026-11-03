@@ -84,7 +84,9 @@ from SAiFE_gym.stochastic_processes.midprice_models import (  # noqa: E402
 from SAiFE_gym.stochastic_processes.price_impact_models import (  # noqa: E402
     LiquidityDepthUniswapV3PriceImpact,
 )
-from SAiFE_gym.wrappers import StructuredMultiDiscreteVecEnv  # noqa: E402
+from SAiFE_gym.wrappers import (  # noqa: E402
+    StructuredMultiDiscreteVecEnv, SymmetricWidthVecEnv, validate_half_widths,
+)
 
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
@@ -142,6 +144,14 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     )
     parser.add_argument("--tau", type=int, default=50)
     parser.add_argument("--tick-stride", type=int, default=5)
+    parser.add_argument(
+        "--action-mode", choices=("structured", "symmetric_width"), default="structured",
+        help="structured chooses center/width/hold; symmetric_width always recenters and rebalances.",
+    )
+    parser.add_argument(
+        "--half-widths", type=int, nargs="+", default=None,
+        help="Explicit increasing half-widths for symmetric_width; replaces tick-stride spacing.",
+    )
     parser.add_argument("--alpha3", type=float, default=4000.0)
     # LP capital. Fee income scales with pool volume, not with this, so raising
     # it dilutes fees relative to the position's mark-to-market price noise.
@@ -338,6 +348,10 @@ def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
 
 def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     """Validate evaluation settings and diagnostic grids before training."""
+    if getattr(args, "half_widths", None) is not None:
+        if getattr(args, "action_mode", "structured") != "symmetric_width":
+            raise ValueError("half_widths requires action_mode=symmetric_width")
+        validate_half_widths(args.half_widths, args.tau)
     args.background_liquidity = validate_background_liquidity(
         getattr(args, "background_liquidity", DEFAULT_BACKGROUND_LIQUIDITY)
     )
@@ -662,11 +676,27 @@ def zero_agent_decision_diagnostics(args: argparse.Namespace) -> dict[str, float
     }
 
 
+def make_policy_action_wrapper(vec_env, args: argparse.Namespace):
+    """Use identical action decoding for training, validation, and evaluation."""
+    mode = getattr(args, "action_mode", "structured")
+    if mode == "structured":
+        if getattr(args, "half_widths", None) is not None:
+            raise ValueError("half_widths requires action_mode=symmetric_width")
+        return StructuredMultiDiscreteVecEnv(vec_env, args.tau, args.tick_stride)
+    elif mode == "symmetric_width":
+        return SymmetricWidthVecEnv(
+            vec_env, args.tau, args.tick_stride,
+            half_widths=getattr(args, "half_widths", None),
+        )
+    else:
+        raise ValueError(f"Unknown action_mode: {mode}")
+
+
 def build_ppo(env, args: argparse.Namespace) -> tuple[PPO, object, Optional[VecNormalize]]:
     vec_env = wrap_env(env, normalise_obs=args.normalise_obs)
     vec_normalize = vec_env if isinstance(vec_env, VecNormalize) else None
     decision_env = DecisionStrideVecEnv(vec_env, args.decision_stride)
-    ppo_env = StructuredMultiDiscreteVecEnv(decision_env, args.tau, args.tick_stride)
+    ppo_env = make_policy_action_wrapper(decision_env, args)
     rollout_size = ppo_rollout_steps(args) * args.num_trajectories
     batch_size = min(max(64, rollout_size // 16), rollout_size)
     policy_kwargs = dict(net_arch=dict(pi=[256, 256], vf=[256, 256]))
@@ -846,11 +876,7 @@ def evaluate_ppo(
         episode_seed = regime_seed + episode_idx
         env = (env_factory or make_fixed_env)(args, params, seed=episode_seed)
         sb3_env = StableBaselinesAMMEnvironment(env)
-        action_wrapper = StructuredMultiDiscreteVecEnv(
-            sb3_env,
-            args.tau,
-            args.tick_stride,
-        )
+        action_wrapper = make_policy_action_wrapper(sb3_env, args)
         obs, _ = env.reset(seed=episode_seed)
         cumulative_reward = np.zeros(env.num_trajectories)
         behavior.begin_episode(env.num_trajectories)

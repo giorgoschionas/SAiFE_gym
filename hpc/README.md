@@ -1,6 +1,6 @@
-# Slurm jobs for domain-randomized LP PPO
+# Slurm jobs for LP PPO
 
-These templates run the domain-randomized PPO experiment on a Slurm cluster.
+These templates run nominal and domain-randomized PPO experiments on a Slurm cluster.
 They use Python 3.12 and the checkout's `requirements.txt`. Adapt paths,
 optional Python module loading, partitions, time limits, and resource requests
 to your allocation. Submit from the checkout root, with `logs/` already created
@@ -52,10 +52,12 @@ See the [Slurm sbatch documentation](https://slurm.schedmd.com/sbatch.html).
 The launchers keep `--export=ALL` so your exported settings reach the jobs.
 Avoid `--export=NONE` when relying on this configuration.
 
-The jobs preserve their single-node resource requests: 16 tasks for training
+The original jobs preserve their single-node resource requests: 16 tasks for training
 and each sweep replicate, two for the smoke job, and one for aggregation.
 Their thread limits follow `SLURM_NTASKS`. Adjust resources and time limits
 with `sbatch` options as required by your allocation.
+The nominal-volatility sweep uses one task with 16 CPUs and sets thread limits
+from `SLURM_CPUS_PER_TASK`.
 
 New outputs default to these directories inside the checkout:
 
@@ -123,6 +125,88 @@ environment activation, and training on your actual compute nodes.
 All submission examples assume `logs/` exists before calling `sbatch`.
 
 ## Full training
+
+### Nominal volatility versus learned position width
+
+`experiments/sweep_nominal_lp_volatility.py` trains a separate nominal PPO
+policy for each fixed volatility and training seed. It never trains a
+domain-randomized policy. Defaults are volatilities `0.03 0.035 0.04 0.045 0.05`
+and seeds `43 44 45`, giving 15 jobs. Volatility is constant within a run.
+
+The environment matches the recent baseline sweeps: background liquidity
+30,000 per interval, starting wealth 1,000 token1, initial price 100, gross
+trade notional 250 token1, a 15-tick impact window, and 10,000 simulator steps
+over an episode horizon of 1. Decisions are offered every 100 steps. Reward is
+pure P&L including fees and rebalance costs, with no inventory penalty.
+
+PPO chooses only the half-width. Every decision recenters on the current pool
+tick and rebalances, even if it selects the same width again. The default action
+space is `Discrete(11)`, selecting half-widths `2, 5, 10, 15, …, 50` ticks.
+Index 0 selects ±2 ticks; index 10 selects ±50 ticks. Override this explicit
+list with `--half-widths` or the launcher's space-separated `HALF_WIDTHS` variable.
+Values must be strictly increasing positive integers no greater than `TAU`.
+It holds the position between decisions. There is no center or hold choice.
+The grid matches the earlier baseline width sweep. This matches the baseline rebalance rule while letting
+the learned policy vary its width with the observed state. The general robust
+trainer retains its existing structured action space unless explicitly changed
+with `--action-mode symmetric_width`.
+
+After the shared cluster setup above, submit from the checkout root:
+
+```bash
+mkdir -p logs
+sbatch hpc/sbatch_nominal_lp_volatility_cpu.sh
+```
+
+Array indices enumerate volatility first, then seed: tasks 0–2 use 3%, tasks
+3–5 use 3.5%, and so on. Export `SIGMA_VALUES` and `TRAINING_SEEDS` to change
+the grid; also override `--array=0-N` so its size equals the product of the
+two list lengths. Other overrides include `OUTPUT_DIR`, `TOTAL_TIMESTEPS`,
+`NUM_TRAJECTORIES`, `N_STEPS`, `DECISION_STRIDE`, `HALF_WIDTHS`,
+`BACKGROUND_LIQUIDITY`, and `N_EVAL_EPISODES` (see the launcher).
+
+The default training budget is 10 million aggregate simulator transitions per
+policy, equivalent to 100,000 PPO decisions and 10 full rollouts with these
+batch/episode settings. PPO finishes full rollouts, rounding the requested
+budget upward if necessary. This budget does not guarantee convergence;
+inspect each `nominal_convergence.csv` before interpreting the width curve,
+and increase `TOTAL_TIMESTEPS` in a fresh output directory if needed.
+
+Validation uses seed 100042, while final deterministic-policy evaluation uses
+seed 200042 and ten batches of 100 paths. Final external price shocks are shared
+across policies and scaled by volatility; trade arrivals and pool prices remain
+endogenous. The final evaluation paths are separate from convergence validation.
+
+Each cell saves its configuration, source fingerprint, policy, normalization
+statistics, convergence trace, and final metrics beneath
+`experiments/results/nominal_lp_volatility/sigma_<sigma>/seed_<seed>/`.
+Existing cell directories are never overwritten. Failed cells must be handled
+explicitly before retrying; training does not automatically resume.
+
+Once all jobs complete, activate the environment and generate the comparison:
+
+```bash
+python experiments/sweep_nominal_lp_volatility.py summarize \
+  --input-dir experiments/results/nominal_lp_volatility
+```
+
+This writes CSV/JSON tables and PNG/PDF plots under `summary/`. Incomplete grids
+or mixed settings/source versions are rejected. The main width is the actual
+**full width**, upper boundary minus lower boundary, averaged over deployed
+trajectory-steps, including time out of range. For a symmetric ±20 position,
+this is 40 ticks. The tables also report equivalent half-width, selected width,
+non-deployment, hold decisions, and rebalance counts. Never-deployed policies
+have undefined width rather than zero width. The band shows ±1 standard
+deviation across training-seed means, not a confidence interval over independent
+market paths. It is a learned-width curve, not proof of optimality.
+
+To inspect task mapping without launching training or writing results:
+
+```bash
+python experiments/sweep_nominal_lp_volatility.py train --dry-run
+```
+
+### Nominal and domain-randomized comparison
 
 Submit the default production run:
 

@@ -11,6 +11,7 @@ import pytest
 
 
 HPC = Path(__file__).resolve().parents[1] / "hpc"
+NOMINAL_SWEEP = "sbatch_nominal_lp_volatility_cpu.sh"
 JOBS = (
     "sbatch_robust_lp_smoke.sh",
     "sbatch_train_robust_lp_agent_cpu.sh",
@@ -25,6 +26,7 @@ def cluster(tmp_path):
     project = tmp_path / "checkout with spaces"
     (project / "experiments").mkdir(parents=True)
     (project / "experiments/train_robust_lp_agent.py").touch()
+    (project / "experiments/sweep_nominal_lp_volatility.py").touch()
     (project / "requirements.txt").touch()
     shutil.copytree(HPC, project / "hpc", ignore=shutil.ignore_patterns(".env"))
     capture = tmp_path / "python_calls.jsonl"
@@ -151,7 +153,7 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
             assert option(call, "--total-timesteps") == "10000000"
 
 
-@pytest.mark.parametrize("script", (*JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, NOMINAL_SWEEP, "setup_env.sh"))
 def test_explicit_module_is_loaded_before_python(cluster, script):
     _, _, _, _, run = cluster
     result, calls = run(script, {
@@ -163,7 +165,7 @@ def test_explicit_module_is_loaded_before_python(cluster, script):
     assert all(call["modules"] == ["purge", "load python/example"] for call in calls)
 
 
-@pytest.mark.parametrize("script", (*JOBS, "setup_env.sh"))
+@pytest.mark.parametrize("script", (*JOBS, NOMINAL_SWEEP, "setup_env.sh"))
 @pytest.mark.parametrize("failure", ["checkout", "environment", "module_unavailable", "module_load"])
 def test_missing_prerequisites_stop_before_python(cluster, script, failure):
     project, _, _, _, run = cluster
@@ -234,6 +236,47 @@ def test_background_liquidity_override_reaches_training(cluster, script):
     result, calls = run(script, {"BACKGROUND_LIQUIDITY": "45000"})
     assert result.returncode == 0, result.stderr
     assert option(calls[-1], "--background-liquidity") == "45000"
+
+
+def test_nominal_volatility_launcher_forwards_array_settings(cluster):
+    project, _, _, _, run = cluster
+    result, calls = run(NOMINAL_SWEEP, {
+        "SLURM_ARRAY_TASK_ID": "14", "SLURM_CPUS_PER_TASK": "8",
+        "OUTPUT_DIR": "results with spaces", "BACKGROUND_LIQUIDITY": "42000",
+    }, staged=True)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 1
+    call = calls[0]
+    assert call["cwd"] == str(project)
+    assert call["args"][:3] == ["-u", "experiments/sweep_nominal_lp_volatility.py", "train"]
+    assert call["env"]["OMP_NUM_THREADS"] == "8"
+    assert option(call, "--task-index") == "14"
+    assert option(call, "--output-dir") == "results with spaces"
+    assert option(call, "--background-liquidity") == "42000"
+    assert option(call, "--n-steps") == "10000"
+    widths_start = call["args"].index("--half-widths") + 1
+    widths_end = call["args"].index("--output-dir")
+    assert call["args"][widths_start:widths_end] == ["2", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50"]
+    assert option(call, "--evaluation-seed") != option(call, "--validation-seed")
+    start = call["args"].index("--sigma-values") + 1
+    end = call["args"].index("--seeds")
+    assert call["args"][start:end] == ["0.03", "0.035", "0.04", "0.045", "0.05"]
+
+
+def test_nominal_volatility_launcher_rejects_out_of_range_task(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run(NOMINAL_SWEEP, {"SLURM_ARRAY_TASK_ID": "15"})
+    assert result.returncode != 0
+    assert "outside" in result.stderr
+    assert not calls
+
+
+def test_nominal_volatility_launcher_forwards_custom_width_list(cluster):
+    _, _, _, _, run = cluster
+    result, calls = run(NOMINAL_SWEEP, {"HALF_WIDTHS": "2 10 25 50"})
+    assert result.returncode == 0, result.stderr
+    args = calls[0]["args"]
+    assert args[args.index("--half-widths") + 1:args.index("--output-dir")] == ["2", "10", "25", "50"]
 
 
 def test_setup_creates_environment_using_its_checkout_from_another_directory(cluster):

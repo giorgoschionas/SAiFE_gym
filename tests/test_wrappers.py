@@ -16,6 +16,7 @@ from SAiFE_gym.wrappers import (
     DiscreteActionVecEnv,
     DiscreteActionWrapper,
     StructuredMultiDiscreteVecEnv,
+    SymmetricWidthVecEnv,
     build_discrete_action_table,
 )
 
@@ -235,6 +236,52 @@ class TestDecisionStrideVecEnv:
     def test_invalid_stride_raises(self):
         with pytest.raises(ValueError, match="stride"):
             DecisionStrideVecEnv(RecordingVecEnv(num_envs=2), stride=0)
+
+
+class TestSymmetricWidthVecEnv:
+    def test_explicit_coarse_grid_has_only_the_eleven_requested_actions(self):
+        widths = np.array([2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50])
+        wrapped = SymmetricWidthVecEnv(RecordingVecEnv(num_envs=11), tau=50,
+                                       half_widths=widths)
+        assert wrapped.action_space.n == 11
+        mapped = wrapped.unscale(np.arange(11))
+        np.testing.assert_array_equal(mapped[:, 0], -widths)
+        np.testing.assert_array_equal(mapped[:, 1], widths)
+        np.testing.assert_array_equal(mapped[:, 2], -1)
+
+    @pytest.mark.parametrize("widths", [[], [0, 5], [2, 51], [5, 2], [2, 2],
+                                       [1.5, 5], [np.nan], [np.inf], [[2, 5]], [True]])
+    def test_invalid_explicit_grids_are_rejected(self, widths):
+        with pytest.raises(ValueError, match="half_widths"):
+            SymmetricWidthVecEnv(RecordingVecEnv(), tau=50, half_widths=widths)
+
+    def test_all_actions_are_symmetric_rebalances_without_clipping(self):
+        wrapped = SymmetricWidthVecEnv(RecordingVecEnv(num_envs=5), tau=5)
+        assert isinstance(wrapped.action_space, gymnasium.spaces.Discrete)
+        assert wrapped.action_space.n == 5
+        widths = np.arange(1, 6)
+        mapped = wrapped.unscale(np.arange(5))
+        np.testing.assert_array_equal(mapped[:, 0], -widths)
+        np.testing.assert_array_equal(mapped[:, 1], widths)
+        np.testing.assert_array_equal(mapped[:, 2], -1)
+        np.testing.assert_array_equal(wrapped.unscale(0), [[-1, 1, -1]])
+
+    def test_coarser_grid_includes_maximum_width(self):
+        wrapped = SymmetricWidthVecEnv(RecordingVecEnv(), tau=5, tick_stride=2)
+        np.testing.assert_array_equal(wrapped.half_widths, [2, 4, 5])
+        assert wrapped.action_space.n == 3
+
+    def test_repeated_width_rebalances_each_decision_and_holds_between(self):
+        base = RecordingVecEnv()
+        wrapped = SymmetricWidthVecEnv(DecisionStrideVecEnv(base, stride=3), tau=5)
+        wrapped.reset()
+        for _ in range(2):
+            wrapped.step(np.array([1, 4]))
+        expected = np.array([[-2, 2, -1], [-5, 5, -1]])
+        np.testing.assert_array_equal(base.recorded_actions[0], expected)
+        np.testing.assert_array_equal(base.recorded_actions[3], expected)
+        for index in (1, 2, 4, 5):
+            np.testing.assert_array_equal(base.recorded_actions[index][:, 2], 1)
 
 
 class TestStructuredMultiDiscreteVecEnv:

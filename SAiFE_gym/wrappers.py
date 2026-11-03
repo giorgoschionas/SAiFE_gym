@@ -30,6 +30,19 @@ def _half_width_grid(tau: int, tick_stride: int) -> np.ndarray:
     return np.asarray(widths, dtype=np.float32)
 
 
+def validate_half_widths(half_widths: Sequence[int], tau: int) -> np.ndarray:
+    """Require a nonempty, strictly increasing list of integer widths in [1, tau]."""
+    message = "half_widths must be strictly increasing integer ticks between 1 and tau"
+    values = np.asarray(half_widths)
+    if values.ndim != 1 or values.size == 0 or values.dtype.kind not in "iuf":
+        raise ValueError(message)
+    values = values.astype(np.float64)
+    if (not np.all(np.isfinite(values)) or np.any(values != np.floor(values))
+            or np.any(values < 1) or np.any(values > tau) or np.any(np.diff(values) <= 0)):
+        raise ValueError(message)
+    return values.astype(np.float32)
+
+
 def build_discrete_action_table(tau: int, tick_stride: int = 1) -> np.ndarray:
     """Map discrete action ids to internal ``[lower, upper, hold_flag]`` actions.
 
@@ -138,6 +151,29 @@ class DiscreteActionVecEnv(VecEnv):
 
     def get_images(self) -> Sequence[np.ndarray]:
         return self._wrapped.get_images()
+
+
+class SymmetricWidthVecEnv(DiscreteActionVecEnv):
+    """Choose only a half-width; every action recenters and rebalances.
+
+    Action index i maps to [-half_widths[i], +half_widths[i], -1].
+    A DecisionStrideVecEnv can enforce holds between these decisions.
+    """
+
+    def __init__(self, vec_env: VecEnv, tau: int, tick_stride: int = 1,
+                 *, half_widths: Optional[Sequence[int]] = None):
+        self._wrapped = vec_env
+        self.tau, self.tick_stride = _validate_action_table_args(tau, tick_stride)
+        self.half_widths = (
+            _half_width_grid(self.tau, self.tick_stride) if half_widths is None
+            else validate_half_widths(half_widths, self.tau)
+        )
+        self.action_table = np.stack([
+            -self.half_widths, self.half_widths, -np.ones_like(self.half_widths),
+        ], axis=-1)
+        self.num_actions = len(self.action_table)
+        VecEnv.__init__(self, vec_env.num_envs, vec_env.observation_space,
+                        gymnasium.spaces.Discrete(self.num_actions))
 
 
 class StructuredMultiDiscreteVecEnv(VecEnv):
