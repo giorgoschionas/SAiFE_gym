@@ -54,6 +54,7 @@ from SAiFE_gym.gym.index_names import (
     LP_TICK_UPPER_KEY,
     PENDING_FEE_SHARE_KEY,
     POOL_CURRENT_TICK_KEY,
+    POOL_LIQUIDITY_ARRAY_KEY,
     PORTFOLIO_VALUE_RATIO_KEY,
     PORTFOLIO_VALUE_KEY,
     RELATIVE_GAS_COST_KEY,
@@ -720,6 +721,7 @@ def test_domain_randomized_script_factory_uses_requested_market_components():
         alpha3=7.0,
         initial_wealth=INITIAL_WEALTH,
         inventory_phi=20.0,
+        background_liquidity=60_000.0,
         arrival_alpha2=2.0,
         kernel_beta=0.25,
         kernel_window=3,
@@ -733,6 +735,7 @@ def test_domain_randomized_script_factory_uses_requested_market_components():
 
     env = make_fixed_env(args, params, seed=123)
 
+    np.testing.assert_array_equal(env.state[POOL_LIQUIDITY_ARRAY_KEY], 60_000.0)
     assert isinstance(env.model_dynamics.midprice_model, GeometricBrownianMotionMidpriceModel)
     assert env.model_dynamics.midprice_model.volatility == 0.12
     assert isinstance(env.model_dynamics.arrival_model, LiquidityKernelArrivalModel)
@@ -771,6 +774,7 @@ def test_domain_randomized_script_parser_defaults_use_expected_configuration():
     assert args.tick_stride == 5
     assert args.alpha3 == 4000.0
     assert args.initial_wealth == 1_000.0
+    assert args.background_liquidity == 30_000.0
     assert args.inventory_phi == 0.4
     assert args.evaluation_seed == 100042
     assert args.periodic_rebalance_every == 100
@@ -829,6 +833,7 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     )
 
     assert env.initial_wealth == 1_000.0
+    np.testing.assert_array_equal(state[POOL_LIQUIDITY_ARRAY_KEY], 30_000.0)
     assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
     assert env.model_dynamics.tau == 50
     assert args.tick_stride == 5

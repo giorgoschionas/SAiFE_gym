@@ -137,6 +137,7 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
         assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/seed_sweep/aggregate"
     else:
         assert call["args"][:2] == ["-u", "experiments/train_robust_lp_agent.py"]
+        assert option(call, "--background-liquidity") == "30000.0"
         cache = Path(call["env"]["MPLCONFIGDIR"])
         assert cache.parent == scratch
         assert cache.is_dir()
@@ -225,6 +226,14 @@ def test_smoke_output_and_existing_aggregation_input_can_be_overridden(cluster):
     assert result.returncode == 0, result.stderr
     assert option(calls[-1], "--input-dir") == "previous sweep"
     assert option(calls[-1], "--output-dir") == "previous sweep/aggregate"
+
+
+@pytest.mark.parametrize("script", JOBS[:3])
+def test_background_liquidity_override_reaches_training(cluster, script):
+    _, _, _, _, run = cluster
+    result, calls = run(script, {"BACKGROUND_LIQUIDITY": "45000"})
+    assert result.returncode == 0, result.stderr
+    assert option(calls[-1], "--background-liquidity") == "45000"
 
 
 def test_setup_creates_environment_using_its_checkout_from_another_directory(cluster):

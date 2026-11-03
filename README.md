@@ -261,6 +261,7 @@ Important script defaults (also used by the HPC training launchers):
 | `--tick-stride` | `5` | Structured action grid spacing |
 | `--alpha3` | `4000.0` | arbitrage arrival rate (per-unit of mispricing) |
 | `--initial-wealth` | `1000.0` | LP starting capital in token1 units |
+| `--background-liquidity` | `30000.0` | Uniform background liquidity units per tick interval |
 | `--inventory-phi` | `0.4` | Running token0 inventory penalty coefficient |
 | `--nominal-sigma` | `0.03` | Fixed nominal GBM volatility |
 | `--nominal-arrival-rate` | `300.0` | Fixed nominal baseline order rate |
@@ -268,6 +269,16 @@ Important script defaults (also used by the HPC training launchers):
 | `--train-sigma-range` | `0.01 0.05` | Randomized training support for sigma |
 | `--train-arrival-rate-range` | `200.0 400.0` | Randomized training support for arrival rate |
 | `--evaluation-seed` | `100042` | Evaluation paths, independent of training seed |
+
+Background liquidity is separate from the LP's capital and is restored on every
+reset. The setting is saved in `config.json` and used for nominal training,
+domain-randomized training, and evaluation. For example,
+`--background-liquidity 100000` selects the former robust-training background.
+The value must be a finite, non-negative scalar; zero disables the background.
+The general `AMMEnvironment`, `ArbitrageurEnvironment`, and their helper factories
+also accept `background_liquidity`, retaining their legacy default of `100000.0`.
+The saved-policy evaluator interprets older configurations without this field
+as `100000.0`, preserving their original market setting.
 
 Nominal training and convergence validation default to sigma `0.03` and arrival
 rate `300.0`, the midpoints of the randomized training ranges. The final

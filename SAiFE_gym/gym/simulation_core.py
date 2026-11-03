@@ -28,6 +28,21 @@ from SAiFE_gym.gym.index_names import (
 )
 
 
+DEFAULT_BACKGROUND_LIQUIDITY = 100_000.0
+
+
+def validate_background_liquidity(value: float) -> float:
+    """Require one finite, non-negative liquidity amount per tick interval."""
+    message = "background_liquidity must be a finite, non-negative scalar"
+    try:
+        value = np.asarray(value, dtype=np.float64)
+    except (TypeError, ValueError) as exc:
+        raise ValueError(message) from exc
+    if value.ndim != 0 or not np.isfinite(value) or value < 0.0:
+        raise ValueError(message)
+    return float(value)
+
+
 def validate_gas_cost_model(
     model_dynamics: ModelDynamics,
     num_trajectories: int,
@@ -61,8 +76,10 @@ def create_uniswap_v3_initial_state(
     num_trajectories: int,
     initial_wealth: float,
     initial_pool_price: float = None,
+    background_liquidity: float = DEFAULT_BACKGROUND_LIQUIDITY,
 ) -> dict:
-    """Create the shared vectorized Uniswap-v3 initial state."""
+    """Create the initial state with uniform background liquidity per interval."""
+    background_liquidity = validate_background_liquidity(background_liquidity)
     initial_price = model_dynamics.initial_price
     pool_price = initial_pool_price if initial_pool_price is not None else initial_price
     pool_tick = price_to_tick(pool_price)
@@ -74,7 +91,6 @@ def create_uniswap_v3_initial_state(
     initial_sqrt_price = model_dynamics.sqrt_grid[
         pool_tick - model_dynamics.tick_lower_global
     ]
-    initial_liquidity = 100000.0
     gas_cost = np.full(num_trajectories, model_dynamics.gas_cost, dtype=np.float64)
     if model_dynamics.gas_cost_model is not None:
         model_dynamics.gas_cost_model.reset()
@@ -88,7 +104,7 @@ def create_uniswap_v3_initial_state(
             num_trajectories, pool_tick, dtype=np.int64
         ),
         POOL_LIQUIDITY_ARRAY_KEY: np.full(
-            (num_trajectories, num_ticks), initial_liquidity, dtype=np.float64
+            (num_trajectories, num_ticks), background_liquidity, dtype=np.float64
         ),
         FEES0_KEY: np.zeros((num_trajectories, num_ticks), dtype=np.float64),
         FEES1_KEY: np.zeros((num_trajectories, num_ticks), dtype=np.float64),

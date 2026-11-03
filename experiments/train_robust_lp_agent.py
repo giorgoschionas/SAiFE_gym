@@ -67,6 +67,10 @@ from SAiFE_gym.gym.domain_randomization import (  # noqa: E402
     UniformDomainRandomizationConfig,
 )
 from SAiFE_gym.gym.index_names import LP_LIQUIDITY_KEY  # noqa: E402
+from SAiFE_gym.gym.simulation_core import (  # noqa: E402
+    DEFAULT_BACKGROUND_LIQUIDITY,
+    validate_background_liquidity,
+)
 from SAiFE_gym.rewards.RewardFunctions import (  # noqa: E402
     RewardFunction,
     RunningInventoryPenalty,
@@ -144,6 +148,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     # The previous 1e6 default made fee income negligible relative to PnL;
     # 1e3 keeps the LP's capital scale close to the modeled trading volume.
     parser.add_argument("--initial-wealth", type=float, default=1_000.0)
+    parser.add_argument(
+        "--background-liquidity", type=float, default=30_000.0,
+        help="Uniform background liquidity units per tick interval, excluding the LP position.",
+    )
     # Risk charge on raw token0 inventory per unit time.
     parser.add_argument("--inventory-phi", type=float, default=0.4)
     parser.add_argument("--seed", type=int, default=SEED)
@@ -330,6 +338,9 @@ def resolve_train_domains_per_reset(args: argparse.Namespace) -> int:
 
 def validate_evaluation_configuration(args: argparse.Namespace) -> None:
     """Validate evaluation settings and diagnostic grids before training."""
+    args.background_liquidity = validate_background_liquidity(
+        getattr(args, "background_liquidity", DEFAULT_BACKGROUND_LIQUIDITY)
+    )
     for name, minimum in [
         ("n_eval_episodes", 1),
         ("periodic_width", 1),
@@ -429,6 +440,8 @@ def make_fixed_env(
             else RunningInventoryPenalty(per_step_inventory_aversion=args.inventory_phi)
         ),
         initial_wealth=args.initial_wealth,
+        # Namespaces saved before this option existed used the legacy background.
+        background_liquidity=getattr(args, "background_liquidity", DEFAULT_BACKGROUND_LIQUIDITY),
         num_trajectories=args.num_trajectories,
         seed=seed,
     )

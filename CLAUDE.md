@@ -340,6 +340,12 @@ When creating `UniswapV3ModelDynamics`:
 
 When creating `AMMEnvironment`:
 - **`initial_wealth`** (default `1e6`): LP's starting capital before first deployment
+- **`background_liquidity`** (default `100000.0`): finite, non-negative scalar
+  liquidity per tick interval, separate from the LP position and restored on
+  reset. Both LP and arbitrage environments and their factories accept it.
+  Robust LP training uses `--background-liquidity`, default `30000.0`, and
+  persists it for evaluation. Older saved configs without this field retain
+  the historical `100000.0` background when evaluated.
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`
 - **`gas_cost_model`** optionally overrides fixed gas with a `GasCostModel` from
   `stochastic_processes/gas_cost_models.py`; it can also be passed to `get_amm_env`.

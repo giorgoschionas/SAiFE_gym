@@ -1,4 +1,5 @@
 import json
+from argparse import Namespace
 from pathlib import Path
 from unittest.mock import Mock
 
@@ -8,6 +9,7 @@ import pytest
 from experiments import evaluate_robust_lp_agents as evaluation
 from experiments import train_robust_lp_agent as training
 from experiments.fast_lp_evaluation import make_evaluation_env
+from SAiFE_gym.gym.index_names import POOL_LIQUIDITY_ARRAY_KEY
 
 
 @pytest.fixture
@@ -24,6 +26,50 @@ def options(run_dir, tmp_path, *extra):
     return evaluation.parse_args([
         "--run-dirs", str(run_dir), "--output-dir", str(tmp_path / "output"), *extra,
     ])
+
+
+@pytest.mark.parametrize("background", [None, 0.0, 30_000.0, 75_000.0])
+def test_saved_background_reaches_evaluator_and_missing_field_uses_legacy(run_dir, tmp_path, background):
+    path = run_dir / "config.json"
+    config = json.loads(path.read_text())
+    if background is None:
+        del config["background_liquidity"]
+    else:
+        config["background_liquidity"] = background
+    path.write_text(json.dumps(config))
+    original = path.read_bytes()
+    _, jobs = evaluation.build_jobs(options(run_dir, tmp_path, "--num-trajectories", "2"))
+    expected = 100_000.0 if background is None else background
+    assert all(job["args"]["background_liquidity"] == expected for job in jobs)
+    args = Namespace(**jobs[0]["args"])
+    env = make_evaluation_env(args, training.DomainParameters(.03, 300), 123)
+    obs, _ = env.reset()
+    np.testing.assert_array_equal(obs[POOL_LIQUIDITY_ARRAY_KEY], expected)
+    env.close()
+    assert path.read_bytes() == original
+
+
+@pytest.mark.parametrize("background", [-1, float("nan"), float("inf"), [30_000, 30_000]])
+def test_invalid_saved_background_rejected_before_output(run_dir, tmp_path, background):
+    path = run_dir / "config.json"
+    config = json.loads(path.read_text())
+    config["background_liquidity"] = background
+    path.write_text(json.dumps(config))
+    with pytest.raises(ValueError, match="background_liquidity"):
+        evaluation.build_jobs(options(run_dir, tmp_path))
+    assert not (tmp_path / "output").exists()
+
+
+def test_evaluation_rejects_mixing_background_levels(run_dir, tmp_path):
+    other = tmp_path / "other_run"
+    other.mkdir()
+    config = json.loads((run_dir / "config.json").read_text())
+    config.update(seed=44, background_liquidity=100_000.0)
+    (other / "config.json").write_text(json.dumps(config))
+    cli = options(run_dir, tmp_path)
+    cli.run_dirs.append(other)
+    with pytest.raises(ValueError, match="matching configurations"):
+        evaluation.build_jobs(cli)
 
 
 def test_grid_preserves_old_seeds_and_is_stable_across_subsets(run_dir, tmp_path):
