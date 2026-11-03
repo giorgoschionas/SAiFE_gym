@@ -426,7 +426,7 @@ class LiquidityDepthUniswapV3PriceImpact(PriceImpactModel):
     def __init__(
         self,
         trade_size_sampler: Callable[[np.random.Generator, int], np.ndarray],
-        depth_window: int = 10,
+        depth_window: int = 15,
         min_depth: float = 1e-12,
         trade_size_unit: str = "input_token",
         num_trajectories: int = 1,

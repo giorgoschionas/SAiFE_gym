@@ -200,7 +200,7 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--kernel-window", type=int, default=10)
     parser.add_argument("--liquidity-scale", type=float, default=1e6)
     parser.add_argument("--trade-size-notional", type=float, default=250.0)
-    parser.add_argument("--price-impact-depth-window", type=int, default=10)
+    parser.add_argument("--price-impact-depth-window", type=int, default=15)
     parser.add_argument("--price-impact-min-depth", type=float, default=1e-12)
 
     parser.add_argument(
