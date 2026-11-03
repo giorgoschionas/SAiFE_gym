@@ -31,6 +31,7 @@ DECISION_STRIDE=${DECISION_STRIDE:-100}
 TAU=${TAU:-50}
 ALPHA3=${ALPHA3:-4000.0}
 INITIAL_WEALTH=${INITIAL_WEALTH:-1000.0}
+BACKGROUND_LIQUIDITY=${BACKGROUND_LIQUIDITY:-30000.0}
 INVENTORY_PHI=${INVENTORY_PHI:-0.4}
 SEED=${SEED:-42}
 EVALUATION_SEED=${EVALUATION_SEED:-100042}
@@ -112,6 +113,7 @@ python -u experiments/train_robust_lp_agent.py \
   --tau "$TAU" \
   --alpha3 "$ALPHA3" \
   --initial-wealth "$INITIAL_WEALTH" \
+  --background-liquidity "$BACKGROUND_LIQUIDITY" \
   --inventory-phi "$INVENTORY_PHI" \
   --seed "$SEED" \
   --evaluation-seed "$EVALUATION_SEED" \

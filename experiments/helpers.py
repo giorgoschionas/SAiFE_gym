@@ -23,6 +23,7 @@ from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
 from SAiFE_gym.agents.SbAgent import SbAgent
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
+from SAiFE_gym.gym.simulation_core import DEFAULT_BACKGROUND_LIQUIDITY
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import StableBaselinesAMMEnvironment
 from SAiFE_gym.rewards.RewardFunctions import PnL, RewardFunction
 from SAiFE_gym.stochastic_processes.arrival_models import PoissonLinearArrivalModel
@@ -68,6 +69,8 @@ def get_amm_env(
     reward_function: RewardFunction = None,
     seed: int = SEED,
     gas_cost_model: GasCostModel = None,
+    *,
+    background_liquidity: float = DEFAULT_BACKGROUND_LIQUIDITY,
 ) -> AMMEnvironment:
     """Build an AMMEnvironment for LP training / evaluation.
 
@@ -88,6 +91,8 @@ def get_amm_env(
         seed:             Random seed.
         gas_cost_model:   Optional stochastic gas process; overrides gas_cost.
                           Its batch size and timestep must match the environment.
+        background_liquidity: Uniform initial liquidity per tick interval,
+                          excluding the LP's position; finite and non-negative.
 
     Returns:
         Configured AMMEnvironment ready for reset / step.
@@ -136,6 +141,7 @@ def get_amm_env(
         model_dynamics=model_dynamics,
         reward_function=reward_function or PnL(),
         initial_wealth=INITIAL_WEALTH,
+        background_liquidity=background_liquidity,
         num_trajectories=num_trajectories,
         seed=seed,
     )

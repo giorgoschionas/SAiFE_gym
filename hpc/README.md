@@ -133,10 +133,16 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 
 Both the single-training and seed-sweep launchers default to
 `TOTAL_TIMESTEPS=10000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
-and `TAU=50`.
+`BACKGROUND_LIQUIDITY=30000.0`, and `TAU=50`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. These values can still be
 overridden through exported environment variables.
+
+`BACKGROUND_LIQUIDITY` sets uniform background liquidity units per tick interval,
+separately from LP capital. The smoke launcher supports it too. For example,
+`sbatch --export=ALL,BACKGROUND_LIQUIDITY=100000 hpc/sbatch_robust_lp_seed_sweep_cpu.sh`
+uses the previous background level. The chosen value is saved in each run's
+`config.json` for evaluation.
 
 Both launchers default to `NOMINAL_SIGMA=0.03` and
 `NOMINAL_ARRIVAL_RATE=300.0` for nominal training and convergence validation.

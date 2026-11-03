@@ -25,6 +25,7 @@ fi
 TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-2}
 DECISION_STRIDE=${DECISION_STRIDE:-100}
 TAU=${TAU:-50}
+BACKGROUND_LIQUIDITY=${BACKGROUND_LIQUIDITY:-30000.0}
 OUTPUT_DIR=${OUTPUT_DIR:-experiments/results/domain_randomized_ppo/smoke}
 
 if [ -n "${SAIFE_PYTHON_MODULE:-}" ]; then
@@ -69,6 +70,7 @@ python -u experiments/train_robust_lp_agent.py \
   --smoke-test \
   --decision-stride "$DECISION_STRIDE" \
   --tau "$TAU" \
+  --background-liquidity "$BACKGROUND_LIQUIDITY" \
   --convergence-eval-every-rollouts 1 \
   --train-domains-per-reset "$TRAIN_DOMAINS_PER_RESET" \
   --output-dir "$OUTPUT_DIR"

@@ -16,12 +16,14 @@ from SAiFE_gym.gym.index_names import (
     PORTFOLIO_VALUE_KEY, LP_ALPHA_KEY, LP_TOKEN0_AMOUNT_KEY,
 )
 from SAiFE_gym.gym.simulation_core import (
+    DEFAULT_BACKGROUND_LIQUIDITY,
     advance_market_state,
     compute_derived_obs,
     create_uniswap_v3_initial_state,
     reset_model_state,
     reset_stochastic_processes,
     terminated_flags,
+    validate_background_liquidity,
     validate_gas_cost_model,
 )
 
@@ -46,13 +48,17 @@ class AMMEnvironment(gymnasium.Env):
         initial_wealth: float = 1e6,
         num_trajectories: int = 1,
         initial_pool_price: float = None,
-        seed: int = None):
+        seed: int = None,
+        *,
+        background_liquidity: float = DEFAULT_BACKGROUND_LIQUIDITY,
+    ):
         super(AMMEnvironment, self).__init__()
         self.terminal_time = terminal_time
         self.n_steps = n_steps
         self.initial_wealth = initial_wealth
         self.num_trajectories = num_trajectories
         self.initial_pool_price = initial_pool_price
+        self.background_liquidity = validate_background_liquidity(background_liquidity)
         self._step_size = self.terminal_time / self.n_steps
 
         # Create model dynamics if not provided
@@ -147,6 +153,7 @@ class AMMEnvironment(gymnasium.Env):
             self.num_trajectories,
             self.initial_wealth,
             self.initial_pool_price,
+            background_liquidity=self.background_liquidity,
         )
 
     def seed(self, seed: int = None):

@@ -34,6 +34,10 @@ from experiments.evaluation_grid import configured_evaluation_grid  # noqa: E402
 from experiments.policy_behavior_diagnostics import BEHAVIOR_DIAGNOSTIC_COLUMNS  # noqa: E402
 from experiments import train_robust_lp_agent as training  # noqa: E402
 from experiments.fast_lp_evaluation import make_evaluation_env  # noqa: E402
+from SAiFE_gym.gym.simulation_core import (  # noqa: E402
+    DEFAULT_BACKGROUND_LIQUIDITY,
+    validate_background_liquidity,
+)
 
 
 POLICIES = ("periodic_rebalance", "nominal_ppo", "domain_randomized_ppo")
@@ -81,6 +85,10 @@ def parse_args(argv=None):
 
 def load_config(run_dir):
     config = json.loads((run_dir / "config.json").read_text())
+    # Old runs predate the configurable background and always used 100,000.
+    config["background_liquidity"] = validate_background_liquidity(
+        config.get("background_liquidity", DEFAULT_BACKGROUND_LIQUIDITY)
+    )
     missing = REQUIRED_CONFIG - config.keys()
     if missing:
         raise ValueError(f"missing configuration fields in {run_dir}: {sorted(missing)}")

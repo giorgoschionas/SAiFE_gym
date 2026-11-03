@@ -14,12 +14,14 @@ from SAiFE_gym.gym.index_names import (
 )
 from SAiFE_gym.gym.observation_features import compute_sb3_observation_features
 from SAiFE_gym.gym.simulation_core import (
+    DEFAULT_BACKGROUND_LIQUIDITY,
     advance_market_state,
     compute_derived_obs,
     create_uniswap_v3_initial_state,
     reset_model_state,
     reset_stochastic_processes,
     terminated_flags,
+    validate_background_liquidity,
     validate_gas_cost_model,
 )
 from SAiFE_gym.stochastic_processes.arrival_models import LiquidityKernelArrivalModel
@@ -62,6 +64,8 @@ class ArbitrageurEnvironment(gymnasium.Env):
         max_speed: float = np.inf,
         speed_cost_coefficient: float = 0.0,
         obs_keys: Optional[list[str]] = None,
+        *,
+        background_liquidity: float = DEFAULT_BACKGROUND_LIQUIDITY,
     ):
         if not isinstance(model_dynamics, UniswapV3ModelDynamics):
             raise TypeError("ArbitrageurEnvironment requires UniswapV3ModelDynamics")
@@ -77,6 +81,7 @@ class ArbitrageurEnvironment(gymnasium.Env):
         self.model_dynamics = model_dynamics
         self.num_trajectories = num_trajectories
         self.initial_pool_price = initial_pool_price
+        self.background_liquidity = validate_background_liquidity(background_liquidity)
         self._step_size = self.terminal_time / self.n_steps
         validate_gas_cost_model(self.model_dynamics, num_trajectories, self._step_size)
         self.max_speed = float(max_speed)
@@ -99,6 +104,7 @@ class ArbitrageurEnvironment(gymnasium.Env):
             self.num_trajectories,
             self.initial_wealth,
             self.initial_pool_price,
+            background_liquidity=self.background_liquidity,
         )
         reset_model_state(
             self.model_dynamics,
@@ -261,6 +267,8 @@ def build_arbitrageur_environment(
     max_speed: float = np.inf,
     speed_cost_coefficient: float = 0.0,
     price_impact_model: PriceImpactModel = None,
+    *,
+    background_liquidity: float = DEFAULT_BACKGROUND_LIQUIDITY,
 ) -> ArbitrageurEnvironment:
     """Build a SAiFE arbitrage speed-control environment."""
     step_size = terminal_time / n_steps
@@ -310,4 +318,5 @@ def build_arbitrageur_environment(
         seed=seed,
         max_speed=max_speed,
         speed_cost_coefficient=speed_cost_coefficient,
+        background_liquidity=background_liquidity,
     )
