@@ -126,6 +126,73 @@ All submission examples assume `logs/` exists before calling `sbatch`.
 
 ## Full training
 
+### Background liquidity versus learned position width
+
+`hpc/sbatch_rl_background_liquidity_cpu.sh` runs the complete
+`experiments/sweep_rl_background_liquidity.py` sweep in one CPU job. It trains
+five fresh nominal PPO policies sequentially at background liquidity
+`10000 15000 20000 25000 30000`, using training seed `42` and evaluation seed
+`100042` at every level. The fixed environment, structured action space,
+inventory penalty, and other defaults come from `train_robust_lp_agent.py`.
+There is no domain randomization. Each policy receives the same 100-million
+simulator-equivalent timestep budget.
+
+After the changes have been committed and pushed, run this from the HPC checkout
+root (using your existing private configuration and installed environment):
+
+```bash
+git pull --ff-only
+source hpc/.env
+cd "$SAIFE_PROJECT_DIR"
+mkdir -p logs
+sbatch hpc/sbatch_rl_background_liquidity_cpu.sh
+```
+
+The job requests one task with 16 CPUs and a 48-hour limit for the **whole
+sweep**, not per policy. Set partition/account in your private config and
+override resources or time with `sbatch` options to match your allocation.
+Thread limits follow `SLURM_CPUS_PER_TASK`. This job runs on CPU even when a GPU
+is visible. It does not submit an array or require a separate aggregation job.
+
+For a tiny cluster check before committing the full compute budget:
+
+```bash
+sbatch --time=00:15:00 --cpus-per-task=2 \
+  hpc/sbatch_rl_background_liquidity_cpu.sh --smoke-test --decision-stride 2
+```
+
+To inspect the configuration locally on the HPC without training, run
+`bash hpc/sbatch_rl_background_liquidity_cpu.sh --dry-run`.
+Arguments after the launcher name are forwarded to the Python sweep and
+override the corresponding launcher defaults. The launcher also accepts the
+usual exported training settings, including `TOTAL_TIMESTEPS`, `N_STEPS`,
+`NUM_TRAJECTORIES`, `DECISION_STRIDE`, `NOMINAL_SIGMA`, and `OUTPUT_DIR`.
+`BACKGROUND_VALUES` and `TRAINING_SEEDS` are space-separated lists. For example:
+
+```bash
+TRAINING_SEEDS="42 43 44" TOTAL_TIMESTEPS=10000000 \
+  sbatch hpc/sbatch_rl_background_liquidity_cpu.sh
+```
+
+That runs 15 policies sequentially, pairing each seed across liquidity levels.
+Use `BACKGROUND_VALUES`, rather than `BACKGROUND_LIQUIDITY`, to change the grid.
+Defaults preserve the Python sweep's configuration; any overrides apply equally
+to every liquidity level.
+
+Results are saved under
+`experiments/results/rl_background_liquidity/run_<timestamp>/` (or
+`smoke_<timestamp>/`). The job log prints the exact directory. It contains
+`width_by_background_liquidity.csv`, `width_by_background_liquidity.png`,
+`per_seed.csv`, `summary.json`, and the sweep configuration. Each liquidity/seed
+subdirectory contains the policy, normalization statistics, configuration,
+convergence trace, and metrics. Widths are full widths in ticks; missing widths
+are excluded when an agent never deploys. With multiple seeds, the plot shows
+the sample standard deviation across training-seed means.
+
+Each submission creates a fresh run directory. Completed policies and per-seed
+metrics survive a later failure, but this launcher does not resume interrupted
+training; rerunning starts a new sweep.
+
 ### Nominal volatility versus learned position width
 
 `experiments/sweep_nominal_lp_volatility.py` trains a separate nominal PPO
