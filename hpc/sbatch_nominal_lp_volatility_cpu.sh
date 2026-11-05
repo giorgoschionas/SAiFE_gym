@@ -66,7 +66,7 @@ python -u experiments/sweep_nominal_lp_volatility.py train \
   --seeds "${SWEEP_SEEDS[@]}" \
   --half-widths "${SWEEP_WIDTHS[@]}" \
   --output-dir "${OUTPUT_DIR:-experiments/results/nominal_lp_volatility}" \
-  --total-timesteps "${TOTAL_TIMESTEPS:-10000000}" \
+  --total-timesteps "${TOTAL_TIMESTEPS:-100000000}" \
   --num-trajectories "${NUM_TRAJECTORIES:-100}" \
   --n-steps "${N_STEPS:-10000}" \
   --decision-stride "${DECISION_STRIDE:-100}" \

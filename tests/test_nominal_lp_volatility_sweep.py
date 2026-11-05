@@ -48,7 +48,7 @@ def test_default_job_mapping_and_nominal_pnl_settings(tmp_path):
     assert (args.nominal_sigma, args.seed, args.inventory_phi) == (.045, 44, 0.0)
     assert args.evaluation_seed == cli.validation_seed != cli.evaluation_seed
     assert (args.n_steps, args.decision_stride, args.ppo_n_steps) == (10_000, 100, 100)
-    assert args.ppo_total_timesteps == 100_000
+    assert args.ppo_total_timesteps == 1_000_000
     assert (args.background_liquidity, args.trade_size_notional, args.price_impact_depth_window) == (30_000, 250, 15)
     assert args.half_widths == [2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     assert args.action_mode == "symmetric_width"
@@ -77,7 +77,7 @@ def test_dry_run_does_not_train_or_write(tmp_path, monkeypatch, capsys):
     sweep.main(["train", "--dry-run", "--output-dir", str(tmp_path / "runs")])
     plan = json.loads(capsys.readouterr().out)
     assert len(plan["jobs"]) == 15
-    assert plan["rollouts_per_policy"] == 10
+    assert plan["rollouts_per_policy"] == 100
     assert plan["n_actions"] == 11
     assert plan["half_widths"] == [2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     run.assert_not_called()

@@ -165,8 +165,8 @@ two list lengths. Other overrides include `OUTPUT_DIR`, `TOTAL_TIMESTEPS`,
 `NUM_TRAJECTORIES`, `N_STEPS`, `DECISION_STRIDE`, `HALF_WIDTHS`,
 `BACKGROUND_LIQUIDITY`, and `N_EVAL_EPISODES` (see the launcher).
 
-The default training budget is 10 million aggregate simulator transitions per
-policy, equivalent to 100,000 PPO decisions and 10 full rollouts with these
+The default training budget is 100 million aggregate simulator transitions per
+policy, equivalent to 1,000,000 PPO decisions and 100 full rollouts with these
 batch/episode settings. PPO finishes full rollouts, rounding the requested
 budget upward if necessary. This budget does not guarantee convergence;
 inspect each `nominal_convergence.csv` before interpreting the width curve,
@@ -216,7 +216,7 @@ sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
 ```
 
 Both the single-training and seed-sweep launchers default to
-`TOTAL_TIMESTEPS=10000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
+`TOTAL_TIMESTEPS=100000000`, `DECISION_STRIDE=100`, `INITIAL_WEALTH=1000.0`,
 `BACKGROUND_LIQUIDITY=30000.0`, and `TAU=50`.
 Here, `TAU` controls the policy's maximum center offset and half-width in ticks;
 it does not force every position to have width 200. These values can still be
@@ -237,7 +237,7 @@ exported environment variable when needed.
 
 `TOTAL_TIMESTEPS` is a simulator-equivalent budget. With the default
 `DECISION_STRIDE=100`, PPO acts once every 100 simulator steps, so the default
-run trains on 100,000 PPO decision timesteps and each 1,000-step episode exposes
+run trains on 1,000,000 PPO decision timesteps and each 1,000-step episode exposes
 at most 10 agent decisions. The simulator uses forced hold actions between
 agent decisions.
 

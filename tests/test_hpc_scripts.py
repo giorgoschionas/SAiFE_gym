@@ -150,7 +150,7 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
             suffix = "seed_sweep/seed_43" if "seed_sweep" in script else "full"
             assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/{suffix}"
             assert option(call, "--seed") == ("43" if "seed_sweep" in script else "42")
-            assert option(call, "--total-timesteps") == "10000000"
+            assert option(call, "--total-timesteps") == "100000000"
 
 
 @pytest.mark.parametrize("script", (*JOBS, NOMINAL_SWEEP, "setup_env.sh"))

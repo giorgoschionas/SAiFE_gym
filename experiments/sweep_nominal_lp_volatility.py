@@ -23,7 +23,7 @@ SCHEMA_VERSION = 1
 DEFAULT_OUTPUT = "experiments/results/nominal_lp_volatility"
 DEFAULT_HALF_WIDTHS = [2, *range(5, 51, 5)]
 CONFIG_OPTIONS = {
-    "total_timesteps": (int, 10_000_000),
+    "total_timesteps": (int, 100_000_000),
     "num_trajectories": (int, 100),
     "n_steps": (int, 10_000),
     "terminal_time": (float, 1.0),

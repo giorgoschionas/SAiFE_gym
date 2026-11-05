@@ -253,7 +253,7 @@ Important script defaults (also used by the HPC training launchers):
 
 | Parameter | Default | Meaning |
 |-----------|---------|---------|
-| `--total-timesteps` | `10_000_000` | Simulator-equivalent training budget |
+| `--total-timesteps` | `100_000_000` | Simulator-equivalent training budget per policy |
 | `--num-trajectories` | `100` | Vectorized paths per episode |
 | `--n-steps` | `1000` | Simulator steps per episode |
 | `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
@@ -294,7 +294,7 @@ rate `300.0`, the midpoints of the randomized training ranges. The final
 in-distribution evaluation grid includes this nominal condition.
 
 With the default decision stride, the default simulator budget corresponds to
-`100_000` PPO decision timesteps and each episode exposes at most 10 PPO
+`1_000_000` PPO decision timesteps and each episode exposes at most 10 PPO
 decisions. Forced hold actions are used between PPO decisions.
 
 By default, the Python script uses `min(10, num_trajectories)` balanced sampled
