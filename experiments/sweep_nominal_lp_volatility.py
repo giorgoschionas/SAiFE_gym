@@ -26,6 +26,7 @@ CONFIG_OPTIONS = {
     "total_timesteps": (int, 100_000_000),
     "num_trajectories": (int, 100),
     "n_steps": (int, 10_000),
+    "ppo_n_steps": (int, 100),
     "terminal_time": (float, 1.0),
     "decision_stride": (int, 100),
     "tau": (int, 50),
@@ -309,8 +310,12 @@ def main(argv=None):
             "jobs": [{"task_index": i, "sigma": sigma, "seed": seed} for i, (sigma, seed) in selected],
             "settings": {name: getattr(cli, name) for name in CONFIG_OPTIONS},
             "ppo_decisions_per_episode": cli.n_steps // cli.decision_stride,
+            "ppo_decisions_per_rollout_per_env": cli.ppo_n_steps,
+            "ppo_transitions_per_rollout": cli.ppo_n_steps * cli.num_trajectories,
             "requested_ppo_decisions_per_policy": cli.total_timesteps // cli.decision_stride,
-            "rollouts_per_policy": int(np.ceil(cli.total_timesteps / (cli.n_steps * cli.num_trajectories))),
+            "rollouts_per_policy": int(np.ceil(cli.total_timesteps / (
+                cli.decision_stride * cli.ppo_n_steps * cli.num_trajectories
+            ))),
             "inventory_penalty": 0.0,
             "action_mode": "symmetric_width",
             "half_widths": cli.half_widths,

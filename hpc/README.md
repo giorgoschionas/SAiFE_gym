@@ -229,7 +229,7 @@ Array indices enumerate volatility first, then seed: tasks 0–2 use 3%, tasks
 3–5 use 3.5%, and so on. Export `SIGMA_VALUES` and `TRAINING_SEEDS` to change
 the grid; also override `--array=0-N` so its size equals the product of the
 two list lengths. Other overrides include `OUTPUT_DIR`, `TOTAL_TIMESTEPS`,
-`NUM_TRAJECTORIES`, `N_STEPS`, `DECISION_STRIDE`, `HALF_WIDTHS`,
+`NUM_TRAJECTORIES`, `N_STEPS`, `PPO_N_STEPS`, `DECISION_STRIDE`, `HALF_WIDTHS`,
 `BACKGROUND_LIQUIDITY`, and `N_EVAL_EPISODES` (see the launcher).
 
 The default training budget is 100 million aggregate simulator transitions per
@@ -238,6 +238,13 @@ batch/episode settings. PPO finishes full rollouts, rounding the requested
 budget upward if necessary. This budget does not guarantee convergence;
 inspect each `nominal_convergence.csv` before interpreting the width curve,
 and increase `TOTAL_TIMESTEPS` in a fresh output directory if needed.
+
+`PPO_N_STEPS` independently sets decisions per environment per rollout (default
+100 for this sweep). For example, `PPO_N_STEPS=25` gives 2,500 transitions per
+rollout and 400 training cycles at the default budget, while episodes still
+contain 100 decisions. The dry run reports episode length, rollout size, and
+the rounded-up number of rollouts separately. Minibatch size continues to scale
+with rollout size; convergence checks remain scheduled in rollout units.
 
 Validation uses seed 100042, while final deterministic-policy evaluation uses
 seed 200042 and ten batches of 100 paths. Final external price shocks are shared
@@ -307,6 +314,13 @@ exported environment variable when needed.
 run trains on 1,000,000 PPO decision timesteps and each 1,000-step episode exposes
 at most 10 agent decisions. The simulator uses forced hold actions between
 agent decisions.
+
+Use `PPO_N_STEPS` (CLI `--ppo-n-steps`) to change rollout length independently
+of `N_STEPS` and `DECISION_STRIDE`. The robust single-run, robust seed-sweep,
+and background-liquidity launchers default to 10 decisions per environment
+per rollout; the nominal-volatility launcher defaults to 100. These preserve
+each entry point's previous default rollout length, but overriding episode
+length or stride no longer changes it. Smoke tests use one decision per rollout.
 
 With the default `TAU=50` and `tick_stride=5`, the PPO action space is
 `MultiDiscrete([21, 10, 2])`.

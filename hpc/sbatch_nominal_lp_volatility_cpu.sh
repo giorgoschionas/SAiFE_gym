@@ -69,6 +69,7 @@ python -u experiments/sweep_nominal_lp_volatility.py train \
   --total-timesteps "${TOTAL_TIMESTEPS:-100000000}" \
   --num-trajectories "${NUM_TRAJECTORIES:-100}" \
   --n-steps "${N_STEPS:-10000}" \
+  --ppo-n-steps "${PPO_N_STEPS:-100}" \
   --decision-stride "${DECISION_STRIDE:-100}" \
   --tau "${TAU:-50}" \
   --initial-wealth "${INITIAL_WEALTH:-1000}" \

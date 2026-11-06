@@ -647,6 +647,7 @@ def test_train_and_save_separates_environment_seed_from_ppo_seed(
         "--n-steps", "4",
         "--decision-stride", "2",
         "--total-timesteps", "8",
+        "--ppo-n-steps", "2",
         "--tau", "5",
         "--tick-stride", "1",
         "--seed", "42",
@@ -800,10 +801,58 @@ def test_decision_stride_defaults_derive_ppo_training_budget():
     assert args.ppo_total_timesteps == 1_000_000
 
 
+@pytest.mark.parametrize("n_steps,stride", [(1000, 100), (10000, 100), (10000, 50)])
+def test_rollout_length_is_independent_of_episode_and_stride(n_steps, stride):
+    args = parse_args([
+        "--n-steps", str(n_steps), "--decision-stride", str(stride),
+        "--ppo-n-steps", "25",
+    ])
+    validate_and_derive_decision_timing(args)
+    assert args.max_agent_decisions_per_episode == n_steps // stride
+    assert training.ppo_rollout_steps(args) == 25
+    assert args.ppo_total_timesteps == args.total_timesteps // stride
+
+
+@pytest.mark.parametrize("rollout_steps", [2, 5])
+def test_ppo_rollouts_continue_episodes_and_cross_terminal_boundaries(rollout_steps, monkeypatch):
+    # Three decisions per episode: neither rollout length aligns with its boundary.
+    args = parse_args([
+        "--n-steps", "6", "--decision-stride", "2", "--num-trajectories", "2",
+        "--ppo-n-steps", str(rollout_steps), "--tau", "5", "--tick-stride", "1",
+    ])
+    validate_and_derive_decision_timing(args)
+    env = create_test_amm_env(n_steps=6)
+    reset = Mock(wraps=env.reset)
+    monkeypatch.setattr(env, "reset", reset)
+    model, wrapped, _ = training.build_ppo(env, args)
+    model.n_epochs = 1
+    starts = []
+
+    class CaptureRollouts(training.BaseCallback):
+        def _on_step(self):
+            return True
+
+        def _on_rollout_end(self):
+            starts.append(self.model.rollout_buffer.episode_starts.copy())
+
+    try:
+        model.learn(total_timesteps=2 * rollout_steps * 2, callback=CaptureRollouts())
+        assert len(starts) == 2
+        expected = np.arange(2 * rollout_steps) % 3 == 0
+        np.testing.assert_array_equal(np.concatenate(starts), np.repeat(expected[:, None], 2, axis=1))
+        assert reset.call_count == 1 + (2 * rollout_steps) // 3
+        assert model.num_timesteps == 4 * rollout_steps
+    finally:
+        wrapped.close()
+
+
 @pytest.mark.parametrize(
     ("argv", "error"),
     [
         (["--decision-stride", "0"], "positive"),
+        (["--ppo-n-steps", "0"], "positive"),
+        (["--ppo-n-steps", "-1"], "positive"),
+        (["--ppo-n-steps", "1", "--num-trajectories", "1"], "two rollout samples"),
         (["--n-steps", "1000", "--decision-stride", "30"], "n_steps"),
         (["--total-timesteps", "1001", "--decision-stride", "20"], "total_timesteps"),
     ],

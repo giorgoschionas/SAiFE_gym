@@ -27,6 +27,7 @@ TOTAL_TIMESTEPS=${TOTAL_TIMESTEPS:-100000000}
 NUM_TRAJECTORIES=${NUM_TRAJECTORIES:-100}
 TRAIN_DOMAINS_PER_RESET=${TRAIN_DOMAINS_PER_RESET:-$NUM_TRAJECTORIES}
 N_STEPS=${N_STEPS:-1000}
+PPO_N_STEPS=${PPO_N_STEPS:-10}
 DECISION_STRIDE=${DECISION_STRIDE:-100}
 TAU=${TAU:-50}
 ALPHA3=${ALPHA3:-4000.0}
@@ -109,6 +110,7 @@ python -u experiments/train_robust_lp_agent.py \
   --total-timesteps "$TOTAL_TIMESTEPS" \
   --num-trajectories "$NUM_TRAJECTORIES" \
   --n-steps "$N_STEPS" \
+  --ppo-n-steps "$PPO_N_STEPS" \
   --decision-stride "$DECISION_STRIDE" \
   --tau "$TAU" \
   --alpha3 "$ALPHA3" \

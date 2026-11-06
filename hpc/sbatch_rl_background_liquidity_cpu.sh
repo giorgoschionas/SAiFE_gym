@@ -68,6 +68,7 @@ python -u "$PROJECT_DIR/experiments/sweep_rl_background_liquidity.py" \
   --total-timesteps "${TOTAL_TIMESTEPS:-100000000}" \
   --num-trajectories "${NUM_TRAJECTORIES:-100}" \
   --n-steps "${N_STEPS:-1000}" \
+  --ppo-n-steps "${PPO_N_STEPS:-10}" \
   --decision-stride "${DECISION_STRIDE:-100}" \
   --tau "${TAU:-50}" \
   --tick-stride "${TICK_STRIDE:-5}" \

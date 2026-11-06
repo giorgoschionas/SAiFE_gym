@@ -71,13 +71,18 @@ def test_invalid_plan_rejected_without_output(tmp_path, extra):
     assert not cli.output_dir.exists()
 
 
-def test_dry_run_does_not_train_or_write(tmp_path, monkeypatch, capsys):
+@pytest.mark.parametrize("rollout_steps,cycles", [(100, 100), (25, 400), (50, 200), (150, 67)])
+def test_dry_run_does_not_train_or_write(tmp_path, monkeypatch, capsys, rollout_steps, cycles):
     run = Mock(side_effect=AssertionError("training was requested"))
     monkeypatch.setattr(sweep, "run_cell", run)
-    sweep.main(["train", "--dry-run", "--output-dir", str(tmp_path / "runs")])
+    sweep.main(["train", "--dry-run", "--output-dir", str(tmp_path / "runs"),
+                "--ppo-n-steps", str(rollout_steps)])
     plan = json.loads(capsys.readouterr().out)
     assert len(plan["jobs"]) == 15
-    assert plan["rollouts_per_policy"] == 100
+    assert plan["rollouts_per_policy"] == cycles
+    assert plan["ppo_decisions_per_episode"] == 100
+    assert plan["ppo_transitions_per_rollout"] == rollout_steps * 100
+    assert plan["settings"]["ppo_n_steps"] == rollout_steps
     assert plan["n_actions"] == 11
     assert plan["half_widths"] == [2, 5, 10, 15, 20, 25, 30, 35, 40, 45, 50]
     run.assert_not_called()

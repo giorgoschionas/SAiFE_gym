@@ -91,6 +91,7 @@ from SAiFE_gym.wrappers import (  # noqa: E402
 
 DEFAULT_EVALUATION_SEED = SEED + 100_000
 DEFAULT_TRAIN_DOMAINS_PER_RESET = 10
+DEFAULT_PPO_N_STEPS = 10
 EvaluationLabel = EvaluationSet | Literal[
     "convergence_validation", "convergence_validation_final",
 ]
@@ -132,6 +133,10 @@ def parse_args(argv: Optional[Sequence[str]] = None) -> argparse.Namespace:
     parser.add_argument("--num-trajectories", type=int, default=100)
     parser.add_argument("--terminal-time", type=float, default=TERMINAL_TIME)
     parser.add_argument("--n-steps", type=int, default=1000)
+    parser.add_argument(
+        "--ppo-n-steps", type=int, default=DEFAULT_PPO_N_STEPS,
+        help="PPO decisions per environment per rollout, independent of episode length.",
+    )
     parser.add_argument(
         "--decision-stride",
         type=int,
@@ -266,6 +271,7 @@ def apply_smoke_overrides(args: argparse.Namespace) -> None:
     args.total_timesteps = 2 * args.decision_stride
     args.num_trajectories = 2
     args.n_steps = args.decision_stride
+    args.ppo_n_steps = 1
     args.n_eval_episodes = 1
     args.eval_in_distribution_sigma_values = [0.030]
     args.eval_in_distribution_arrival_rate_values = [300.0]
@@ -300,7 +306,12 @@ def validate_and_derive_decision_timing(args: argparse.Namespace) -> None:
         )
 
     args.max_agent_decisions_per_episode = int(args.n_steps // args.decision_stride)
-    args.ppo_n_steps = int(args.max_agent_decisions_per_episode)
+    if isinstance(args.ppo_n_steps, bool) or not isinstance(args.ppo_n_steps, (int, np.integer)):
+        raise ValueError("ppo_n_steps must be an integer")
+    if args.ppo_n_steps < 1:
+        raise ValueError("ppo_n_steps must be positive")
+    if args.num_trajectories < 1 or args.ppo_n_steps * args.num_trajectories < 2:
+        raise ValueError("PPO requires positive num_trajectories and at least two rollout samples")
     args.ppo_total_timesteps = int(args.total_timesteps // args.decision_stride)
 
 
@@ -315,7 +326,7 @@ def max_agent_decisions_per_episode(args: argparse.Namespace) -> int:
 
 
 def ppo_rollout_steps(args: argparse.Namespace) -> int:
-    return int(getattr(args, "ppo_n_steps", max_agent_decisions_per_episode(args)))
+    return int(getattr(args, "ppo_n_steps", DEFAULT_PPO_N_STEPS))
 
 
 def ppo_total_timesteps(args: argparse.Namespace) -> int:

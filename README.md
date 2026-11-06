@@ -256,6 +256,7 @@ Important script defaults (also used by the HPC training launchers):
 | `--total-timesteps` | `100_000_000` | Simulator-equivalent training budget per policy |
 | `--num-trajectories` | `100` | Vectorized paths per episode |
 | `--n-steps` | `1000` | Simulator steps per episode |
+| `--ppo-n-steps` | `10` | PPO decisions per environment per rollout, independent of episode length |
 | `--decision-stride` | `100` | PPO acts once every 100 simulator steps |
 | `--tau` | `50` | Maximum center offset and half-width in ticks |
 | `--tick-stride` | `5` | Structured action grid spacing |
@@ -296,6 +297,18 @@ in-distribution evaluation grid includes this nominal condition.
 With the default decision stride, the default simulator budget corresponds to
 `1_000_000` PPO decision timesteps and each episode exposes at most 10 PPO
 decisions. Forced hold actions are used between PPO decisions.
+
+Rollout length is configured separately with `--ppo-n-steps`. The robust trainer
+and background-liquidity sweep default to 10 decisions per environment per
+rollout; the nominal-volatility sweep defaults to 100. Changing simulator
+resolution or decision stride does not change these rollout lengths. Rollouts
+can end inside an episode or span multiple episodes; PPO bootstraps at a
+nonterminal rollout boundary and continues the environment without resetting.
+For example, the nominal sweep with `--ppo-n-steps 25` retains 100 decisions per
+episode but collects 2,500 transitions per rollout across 100 environments.
+Its 100-million simulator budget then gives 400 training cycles. Minibatch size
+is still derived from rollout size, and convergence evaluation intervals are
+still measured in rollouts. `--smoke-test` overrides rollout length to one.
 
 By default, the Python script uses `min(10, num_trajectories)` balanced sampled
 domains per reset. The hpc launchers pass `--train-domains-per-reset`

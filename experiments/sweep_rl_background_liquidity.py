@@ -58,7 +58,10 @@ def parse_args(argv=None):
     args = training.parse_args(remaining)
     args.output_dir = cli.output_dir
     training.apply_smoke_overrides(args)
-    training.validate_and_derive_decision_timing(args)
+    try:
+        training.validate_and_derive_decision_timing(args)
+    except ValueError as exc:
+        parser.error(str(exc))
     training.validate_evaluation_configuration(args)
     cli.seeds = cli.seeds if cli.seeds is not None else [args.seed]
     backgrounds = cli.background_values

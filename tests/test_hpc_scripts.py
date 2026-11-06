@@ -151,6 +151,7 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
             assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/{suffix}"
             assert option(call, "--seed") == ("43" if "seed_sweep" in script else "42")
             assert option(call, "--total-timesteps") == "100000000"
+            assert option(call, "--ppo-n-steps") == "10"
 
 
 @pytest.mark.parametrize("script", (*JOBS, NOMINAL_SWEEP, "setup_env.sh"))
@@ -243,6 +244,7 @@ def test_nominal_volatility_launcher_forwards_array_settings(cluster):
     result, calls = run(NOMINAL_SWEEP, {
         "SLURM_ARRAY_TASK_ID": "14", "SLURM_CPUS_PER_TASK": "8",
         "OUTPUT_DIR": "results with spaces", "BACKGROUND_LIQUIDITY": "42000",
+        "PPO_N_STEPS": "25",
     }, staged=True)
     assert result.returncode == 0, result.stderr
     assert len(calls) == 1
@@ -254,6 +256,7 @@ def test_nominal_volatility_launcher_forwards_array_settings(cluster):
     assert option(call, "--output-dir") == "results with spaces"
     assert option(call, "--background-liquidity") == "42000"
     assert option(call, "--n-steps") == "10000"
+    assert option(call, "--ppo-n-steps") == "25"
     widths_start = call["args"].index("--half-widths") + 1
     widths_end = call["args"].index("--output-dir")
     assert call["args"][widths_start:widths_end] == ["2", "5", "10", "15", "20", "25", "30", "35", "40", "45", "50"]
