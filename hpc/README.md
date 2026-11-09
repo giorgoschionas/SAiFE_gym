@@ -470,6 +470,30 @@ Every per-seed `evaluation_grid.csv` also reports policy behavior diagnostics:
   separately from the simulator-step diagnostics. These are populated for PPO
   rows; baseline rows leave the decision fractions blank.
 
+## Periodic width sweep with dense CARA rewards
+
+From the checkout root with the cluster environment configured:
+
+```bash
+mkdir -p logs
+sbatch hpc/sbatch_periodic_width_cara_sweep.sh
+```
+
+The periodic agent deploys at step 0 and recenters every 100 simulator steps.
+The six half-widths are 25, 50, 100, 150, 200, and 250 ticks on each side of
+the current tick. Every path starts with 1,000 token1. Each width uses the
+same ten episode seeds and 100 trajectories per seed over 1,000 steps.
+The job scores each path at five CARA coefficients in inverse token1 units:
+`0` (mean PnL), `0.0003`, `0.001`, `0.003`, and `0.01`.
+For a 100-token1 loss, the positive coefficients give exponent magnitudes
+of 0.03, 0.1, 0.3, and 1 respectively.
+
+Each run writes to a timestamped directory under
+`experiments/results/periodic_width_cara/`. Read `reward_grid.csv` for all
+30 combinations and `best_widths.csv` for the width with the highest sample
+mean utility at each risk aversion. To check the job with fewer paths, run
+`N_EVAL_EPISODES=2 NUM_TRAJECTORIES=2 sbatch hpc/sbatch_periodic_width_cara_sweep.sh`.
+
 ## Monitoring
 
 Useful Slurm commands:
