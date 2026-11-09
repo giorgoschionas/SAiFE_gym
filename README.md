@@ -13,7 +13,7 @@ The associated paper can be found at [https://arxiv.org/abs/2609.17788](https://
 - **Vectorized rollouts** - state, actions, arrivals, swaps, rewards and
   diagnostics are batched across `num_trajectories`.
 - **Domain-randomized PPO workflow** - episode-level randomization of volatility
-  (`sigma`) and baseline arrival rate for robust LP training.
+  (`sigma`) and baseline arrival rate for domain-randomized LP training.
 
 
 ## Installation
@@ -109,7 +109,7 @@ reward normalization would break the exact telescoping identity.
 ### Periodic baseline width sweep
 
 Run the periodic baseline with the nominal environment and defaults from
-`experiments/train_robust_lp_agent.py`, replacing its inventory-penalty reward:
+`experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py`, replacing its inventory-penalty reward:
 
 ```bash
 venv/bin/python experiments/sweep_dense_exponential_width.py
@@ -221,7 +221,7 @@ AMM derivation to this simulator:
 
 ## Domain-Randomized PPO
 
-`experiments/train_robust_lp_agent.py` trains two PPO policies with the same
+`experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py` trains two PPO policies with the same
 architecture and evaluation grid:
 
 - `nominal_ppo` trains on the fixed nominal domain.
@@ -229,7 +229,7 @@ architecture and evaluation grid:
   `DomainRandomizedAMMEnvironment`, sampling episode domains from
   `UniformDomainRandomizationConfig`.
 
-The robust training environment uses:
+The domain-randomized training environment uses:
 
 - `GeometricBrownianMotionMidpriceModel`
 - `LiquidityKernelArrivalModel`
@@ -273,7 +273,7 @@ Important script defaults (also used by the HPC training launchers):
 Background liquidity is separate from the LP's capital and is restored on every
 reset. The setting is saved in `config.json` and used for nominal training,
 domain-randomized training, and evaluation. For example,
-`--background-liquidity 100000` selects the former robust-training background.
+`--background-liquidity 100000` selects the previous background liquidity for domain-randomized training.
 The value must be a finite, non-negative scalar; zero disables the background.
 The general `AMMEnvironment`, `ArbitrageurEnvironment`, and their helper factories
 also accept `background_liquidity`, retaining their legacy default of `100000.0`.
@@ -357,20 +357,22 @@ SAiFE_gym/
 │   │   └── price_impact_models.py
 │   └── wrappers.py
 ├── experiments/
-│   ├── aggregate_domain_randomized_seed_sweep.py
-│   ├── evaluate_robust_lp_agents.py
-│   ├── evaluation_grid.py
-│   ├── fast_lp_evaluation.py
 │   ├── helpers.py
-│   ├── policy_behavior_diagnostics.py
-│   └── train_robust_lp_agent.py
+│   ├── domain_randomization_rl/
+│   │   ├── aggregate_domain_randomized_seed_sweep.py
+│   │   ├── evaluate_domain_randomization_lp_agents.py
+│   │   ├── evaluation_grid.py
+│   │   ├── fast_lp_evaluation.py
+│   │   ├── policy_behavior_diagnostics.py
+│   │   └── train_domain_randomization_lp_agent.py
+│   └── sweep_dense_exponential_width.py
 ├── hpc/
 │   ├── .env.example
 │   ├── README.md
 │   ├── sbatch_aggregate_domain_randomized_seed_sweep.sh
-│   ├── sbatch_robust_lp_seed_sweep_cpu.sh
-│   ├── sbatch_robust_lp_smoke.sh
-│   ├── sbatch_train_robust_lp_agent_cpu.sh
+│   ├── sbatch_domain_randomization_lp_seed_sweep_cpu.sh
+│   ├── sbatch_domain_randomization_lp_smoke.sh
+│   ├── sbatch_train_domain_randomization_lp_agent_cpu.sh
 │   └── setup_env.sh
 ├── skills/
 ├── tests/

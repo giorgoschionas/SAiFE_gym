@@ -12,9 +12,9 @@ import pytest
 
 HPC = Path(__file__).resolve().parents[1] / "hpc"
 JOBS = (
-    "sbatch_robust_lp_smoke.sh",
-    "sbatch_train_robust_lp_agent_cpu.sh",
-    "sbatch_robust_lp_seed_sweep_cpu.sh",
+    "sbatch_domain_randomization_lp_smoke.sh",
+    "sbatch_train_domain_randomization_lp_agent_cpu.sh",
+    "sbatch_domain_randomization_lp_seed_sweep_cpu.sh",
     "sbatch_aggregate_domain_randomized_seed_sweep.sh",
 )
 DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
@@ -23,8 +23,8 @@ DEFAULT_RESULTS = "experiments/results/domain_randomized_ppo"
 @pytest.fixture
 def cluster(tmp_path):
     project = tmp_path / "checkout with spaces"
-    (project / "experiments").mkdir(parents=True)
-    (project / "experiments/train_robust_lp_agent.py").touch()
+    (project / "experiments/domain_randomization_rl").mkdir(parents=True)
+    (project / "experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py").touch()
     (project / "requirements.txt").touch()
     shutil.copytree(HPC, project / "hpc", ignore=shutil.ignore_patterns(".env"))
     capture = tmp_path / "python_calls.jsonl"
@@ -132,11 +132,11 @@ def test_jobs_find_checkout_and_environment_without_modules(cluster, script, loc
     assert call["env"]["NUMEXPR_NUM_THREADS"] == "16"
     assert call["env"]["PYTHONUNBUFFERED"] == "1"
     if "aggregate" in script:
-        assert call["args"][:2] == ["-u", "experiments/aggregate_domain_randomized_seed_sweep.py"]
+        assert call["args"][:2] == ["-u", "experiments/domain_randomization_rl/aggregate_domain_randomized_seed_sweep.py"]
         assert option(call, "--input-dir") == f"{DEFAULT_RESULTS}/seed_sweep"
         assert option(call, "--output-dir") == f"{DEFAULT_RESULTS}/seed_sweep/aggregate"
     else:
-        assert call["args"][:2] == ["-u", "experiments/train_robust_lp_agent.py"]
+        assert call["args"][:2] == ["-u", "experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py"]
         assert option(call, "--background-liquidity") == "30000.0"
         cache = Path(call["env"]["MPLCONFIGDIR"])
         assert cache.parent == scratch

@@ -29,11 +29,11 @@ from stable_baselines3.common.vec_env.base_vec_env import (
     VecEnvStepReturn,
 )
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.evaluation_grid import (  # noqa: E402
+from experiments.domain_randomization_rl.evaluation_grid import (  # noqa: E402
     EVALUATION_GRID_VERSION,
     EVALUATION_SETS,
     EvaluationSet,
@@ -47,7 +47,7 @@ from experiments.helpers import (  # noqa: E402
     TERMINAL_TIME,
     wrap_env,
 )
-from experiments.policy_behavior_diagnostics import (  # noqa: E402
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import (  # noqa: E402
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     BEHAVIOR_DIAGNOSTICS_SCHEMA_VERSION,
     PolicyBehaviorAccumulator,
@@ -469,11 +469,6 @@ def make_domain_randomized_env(args: argparse.Namespace):
         num_domains=num_domains,
         domain_seed_offset=DEFAULT_DOMAIN_RANDOMIZATION_SEED_OFFSET,
     )
-
-
-def make_robust_env(args: argparse.Namespace):
-    """Compatibility alias for :func:`make_domain_randomized_env`."""
-    return make_domain_randomized_env(args)
 
 
 class DecisionStrideVecEnv(VecEnv):

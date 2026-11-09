@@ -3,7 +3,8 @@
 import numpy as np
 import pytest
 
-from experiments import helpers, train_robust_lp_agent as training
+from experiments import helpers
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as training
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ArbitrageurEnvironment import build_arbitrageur_environment
 from SAiFE_gym.gym.index_names import (

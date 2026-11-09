@@ -60,7 +60,7 @@ Use the [SB3 algorithm table][sb3-algorithms] for supported action spaces. Quick
 
 For repository training examples, see the nominal PPO helper in
 [experiments/helpers.py](../../experiments/helpers.py) and the complete
-[robust LP training script](../../experiments/train_robust_lp_agent.py).
+[domain-randomized LP training script](../../experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py).
 The [README training section](../../README.md#training) provides runnable commands;
 the [SB3 examples][sb3-examples] cover generic environments.
 
@@ -176,7 +176,7 @@ model.learn(total_timesteps=10000, callback=callback)
 See the [SB3 callback guide][sb3-callbacks]. Evaluation needs a separate
 environment, and `eval_freq` counts callback calls: one per vector batch step.
 The nominal helper creates an independent evaluation simulator and evaluates
-every ten rollouts. The robust training script implements its own convergence
+every ten rollouts. The domain randomization training script implements its own convergence
 callback; follow those shipped examples when changing evaluation behavior.
 
 ### 5. Model Persistence and Inspection
@@ -244,7 +244,7 @@ env = VecVideoRecorder(
 ```
 
 For SAiFE_gym, use the
-[standalone evaluator](../../experiments/evaluate_robust_lp_agents.py) and its
+[standalone evaluator](../../experiments/domain_randomization_rl/evaluate_domain_randomization_lp_agents.py) and its
 [saved-run walkthrough](../../hpc/README.md#evaluate-higher-arrival-rates-without-training).
 It restores the saved run's configuration and matching normalization for PPO.
 Generic evaluation is documented in the [SB3 evaluation helper][sb3-evaluation].
@@ -316,8 +316,8 @@ model.learn(total_timesteps=10000)
 ### Shipped repository examples
 
 - [Nominal PPO helper](../../experiments/helpers.py): training and independent evaluation setup
-- [Robust LP training](../../experiments/train_robust_lp_agent.py): domain randomization, convergence callbacks, model and normalization persistence
-- [Standalone evaluation](../../experiments/evaluate_robust_lp_agents.py): evaluation of saved runs
+- [Domain-randomized LP training](../../experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py): domain randomization, convergence callbacks, model and normalization persistence
+- [Standalone evaluation](../../experiments/domain_randomization_rl/evaluate_domain_randomization_lp_agents.py): evaluation of saved runs
 - [Gymnasium adapters](../../SAiFE_gym/gym/GymnasiumAMMEnvironment.py): single and vector Gymnasium interfaces
 - [Native SB3 adapter](../../SAiFE_gym/gym/StableBaselinesAMMEnvironment.py): batched simulation through SB3's VecEnv API
 

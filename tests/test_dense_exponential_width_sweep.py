@@ -3,7 +3,7 @@
 import numpy as np
 import pytest
 
-from experiments import train_robust_lp_agent as trainer
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as trainer
 from experiments.sweep_dense_exponential_width import (
     parse_args,
     replay_dense_rewards,

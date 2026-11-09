@@ -3,7 +3,7 @@ from itertools import product
 
 import pytest
 
-from experiments.evaluation_grid import configured_evaluation_grid
+from experiments.domain_randomization_rl.evaluation_grid import configured_evaluation_grid
 
 
 def grid_config():
