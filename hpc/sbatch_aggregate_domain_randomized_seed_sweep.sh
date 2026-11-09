@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}
-if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+if [ ! -f "$PROJECT_DIR/experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
   echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR or submit from the project root." >&2
   exit 1
 fi
@@ -56,7 +56,7 @@ echo "Aggregating training-seed runs under: $INPUT_DIR"
 echo "Bootstrap: resamples=$BOOTSTRAP_RESAMPLES seed=$BOOTSTRAP_SEED confidence=$CONFIDENCE_LEVEL"
 echo "Output dir: $OUTPUT_DIR"
 
-python -u experiments/aggregate_domain_randomized_seed_sweep.py \
+python -u experiments/domain_randomization_rl/aggregate_domain_randomized_seed_sweep.py \
   --input-dir "$INPUT_DIR" \
   --output-dir "$OUTPUT_DIR" \
   --bootstrap-resamples "$BOOTSTRAP_RESAMPLES" \

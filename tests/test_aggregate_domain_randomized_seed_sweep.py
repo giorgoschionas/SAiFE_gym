@@ -5,13 +5,13 @@ from pathlib import Path
 import numpy as np
 import pytest
 
-from experiments.aggregate_domain_randomized_seed_sweep import (
+from experiments.domain_randomization_rl.aggregate_domain_randomized_seed_sweep import (
     GAP_COLUMNS,
     aggregate_seed_sweep,
     discover_seed_runs,
     parse_args,
 )
-from experiments.policy_behavior_diagnostics import (
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import (
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     cash_behavior_diagnostics,
     zero_behavior_diagnostics,

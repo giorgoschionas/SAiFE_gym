@@ -122,7 +122,7 @@ The environment follows a standard RL cycle with AMM-specific components:
   They accept raw or domain-randomized AMM environments and support no rendering.
 - `StableBaselinesAMMEnvironment` remains the SB3 adapter with the existing
   float32 feature vector and same-step autoreset. Preserve this interface for
-  `experiments/train_robust_lp_agent.py`, including observation ordering,
+  `experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py`, including observation ordering,
   normalization, and structured action mappings.
 - `DiscreteActionWrapper` is a native batched action converter; it does not
   convert the raw simulator's returns into a single Gymnasium Env API.
@@ -343,7 +343,7 @@ When creating `AMMEnvironment`:
 - **`background_liquidity`** (default `100000.0`): finite, non-negative scalar
   liquidity per tick interval, separate from the LP position and restored on
   reset. Both LP and arbitrage environments and their factories accept it.
-  Robust LP training uses `--background-liquidity`, default `30000.0`, and
+  Domain-randomized LP training uses `--background-liquidity`, default `30000.0`, and
   persists it for evaluation. Older saved configs without this field retain
   the historical `100000.0` background when evaluated.
 - **`gas_cost`** is a parameter of `UniswapV3ModelDynamics`, stored in state as `GAS_COST_KEY`

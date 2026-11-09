@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from experiments.policy_behavior_diagnostics import (
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import (
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     PolicyBehaviorAccumulator,
     cash_behavior_diagnostics,

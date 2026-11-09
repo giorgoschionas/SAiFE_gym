@@ -10,12 +10,12 @@ from typing import Optional, Sequence
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.evaluation_grid import configured_evaluation_grid  # noqa: E402
-from experiments.policy_behavior_diagnostics import (  # noqa: E402
+from experiments.domain_randomization_rl.evaluation_grid import configured_evaluation_grid  # noqa: E402
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import (  # noqa: E402
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     FRACTION_BEHAVIOR_DIAGNOSTIC_COLUMNS,
     NONNEGATIVE_BEHAVIOR_DIAGNOSTIC_COLUMNS,

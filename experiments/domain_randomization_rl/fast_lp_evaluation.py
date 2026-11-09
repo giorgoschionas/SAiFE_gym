@@ -63,7 +63,7 @@ class InventoryEvaluationEnvironment(AMMEnvironment):
 
 
 def make_evaluation_env(args, params, seed):
-    from experiments.train_robust_lp_agent import make_fixed_env
+    from experiments.domain_randomization_rl.train_domain_randomization_lp_agent import make_fixed_env
     return make_fixed_env(
         args, params, seed,
         dynamics_class=RangeFeeDynamics,

@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}
-if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+if [ ! -f "$PROJECT_DIR/experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
   echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR or submit from the project root." >&2
   exit 1
 fi
@@ -104,7 +104,7 @@ echo "Evaluation groups: in_distribution, sigma_only_stress, arrival_only_stress
 echo "Convergence evaluation: every_rollouts=$CONVERGENCE_EVAL_EVERY_ROLLOUTS episodes=$CONVERGENCE_N_EVAL_EPISODES"
 echo "Output dir: $OUTPUT_DIR"
 
-python -u experiments/train_robust_lp_agent.py \
+python -u experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py \
   --output-dir "$OUTPUT_DIR" \
   --total-timesteps "$TOTAL_TIMESTEPS" \
   --num-trajectories "$NUM_TRAJECTORIES" \

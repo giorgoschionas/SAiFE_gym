@@ -1,6 +1,6 @@
 """Evaluate periodic LP widths under dense extended CARA utility.
 
-Uses the nominal environment factory and defaults from train_robust_lp_agent.
+Uses the nominal environment factory and defaults from train_domain_randomization_lp_agent.
 Additional trainer arguments can be passed directly, e.g. --nominal-sigma 0.05.
 No PPO training, reward normalization, or inventory penalty is applied.
 """
@@ -30,8 +30,8 @@ ROOT = Path(__file__).resolve().parents[1]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments import train_robust_lp_agent as trainer
-from experiments.policy_behavior_diagnostics import PolicyBehaviorAccumulator
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as trainer
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import PolicyBehaviorAccumulator
 from SAiFE_gym.agents.BaselineAgents import PeriodicRebalanceAgent
 from SAiFE_gym.gym.index_names import INITIAL_WEALTH_KEY, PORTFOLIO_VALUE_KEY
 from SAiFE_gym.rewards.RewardFunctions import DenseExponentialUtility

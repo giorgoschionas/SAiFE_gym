@@ -6,9 +6,9 @@ from unittest.mock import Mock
 import numpy as np
 import pytest
 
-from experiments import evaluate_robust_lp_agents as evaluation
-from experiments import train_robust_lp_agent as training
-from experiments.fast_lp_evaluation import make_evaluation_env
+from experiments.domain_randomization_rl import evaluate_domain_randomization_lp_agents as evaluation
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as training
+from experiments.domain_randomization_rl.fast_lp_evaluation import make_evaluation_env
 from SAiFE_gym.gym.index_names import POOL_LIQUIDITY_ARRAY_KEY
 
 

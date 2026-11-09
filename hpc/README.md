@@ -108,13 +108,13 @@ Submit a tiny end-to-end job first:
 
 ```bash
 cd "$SAIFE_PROJECT_DIR"
-sbatch hpc/sbatch_robust_lp_smoke.sh
+sbatch hpc/sbatch_domain_randomization_lp_smoke.sh
 ```
 
 If your cluster has a separate short-job partition, select it explicitly:
 
 ```bash
-sbatch --partition=YOUR_SHORT_PARTITION hpc/sbatch_robust_lp_smoke.sh
+sbatch --partition=YOUR_SHORT_PARTITION hpc/sbatch_domain_randomization_lp_smoke.sh
 ```
 
 Check that the job finishes successfully and saves both PPO models and an
@@ -128,7 +128,7 @@ Submit the default production run:
 
 ```bash
 cd "$SAIFE_PROJECT_DIR"
-sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh
+sbatch hpc/sbatch_train_domain_randomization_lp_agent_cpu.sh
 ```
 
 Both the single-training and seed-sweep launchers default to
@@ -140,7 +140,7 @@ overridden through exported environment variables.
 
 `BACKGROUND_LIQUIDITY` sets uniform background liquidity units per tick interval,
 separately from LP capital. The smoke launcher supports it too. For example,
-`sbatch --export=ALL,BACKGROUND_LIQUIDITY=100000 hpc/sbatch_robust_lp_seed_sweep_cpu.sh`
+`sbatch --export=ALL,BACKGROUND_LIQUIDITY=100000 hpc/sbatch_domain_randomization_lp_seed_sweep_cpu.sh`
 uses the previous background level. The chosen value is saved in each run's
 `config.json` for evaluation.
 
@@ -164,13 +164,13 @@ Override parameters at submission time when needed:
 
 ```bash
 sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,NUM_TRAJECTORIES=128,N_EVAL_EPISODES=20 \
-  hpc/sbatch_train_robust_lp_agent_cpu.sh
+  hpc/sbatch_train_domain_randomization_lp_agent_cpu.sh
 ```
 
 With `--export=ALL,NAME=value`, an already exported `NAME` takes precedence
 over the value in the option. To replace an existing exported value for one
 submission, use a shell assignment instead, such as
-`NUM_TRAJECTORIES=128 sbatch hpc/sbatch_train_robust_lp_agent_cpu.sh`.
+`NUM_TRAJECTORIES=128 sbatch hpc/sbatch_train_domain_randomization_lp_agent_cpu.sh`.
 
 The training job writes convergence traces during learning:
 `domain_randomized_convergence.csv` and `nominal_convergence.csv`. By default
@@ -217,7 +217,7 @@ grids. For example:
 
 ```bash
 sbatch --export=ALL,EVAL_STRESS_SIGMA_VALUES="0.065 0.08",NOMINAL_GAS_COST=2.0 \
-  hpc/sbatch_train_robust_lp_agent_cpu.sh
+  hpc/sbatch_train_domain_randomization_lp_agent_cpu.sh
 ```
 
 Every in-distribution value must lie within its corresponding training range,
@@ -235,7 +235,7 @@ rows.
 ## Moderate-arrival seed sweep
 
 This experiment uses submission-time overrides for
-`hpc/sbatch_robust_lp_seed_sweep_cpu.sh`; the Python and launcher defaults remain
+`hpc/sbatch_domain_randomization_lp_seed_sweep_cpu.sh`; the Python and launcher defaults remain
 as documented above. It trains on the following market parameters:
 
 | Parameter | Domain-randomized PPO | Nominal PPO |
@@ -276,7 +276,7 @@ From the HPC project root, with the full Cartesian evaluation update present,
 paste this single line to submit seeds 43 through 52:
 
 ```bash
-mkdir -p logs && sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,N_STEPS=1000,DECISION_STRIDE=100,NUM_TRAJECTORIES=100,TRAIN_DOMAINS_PER_RESET=100,N_EVAL_EPISODES=10,EVALUATION_SEED=100042,TAU=50,ALPHA3=4000,INITIAL_WEALTH=1000,INVENTORY_PHI=0.4,NOMINAL_GAS_COST=2,PERIODIC_REBALANCE_EVERY=100,PERIODIC_WIDTH=50,NOMINAL_SIGMA=0.030,NOMINAL_ARRIVAL_RATE=450,TRAIN_SIGMA_MIN=0.015,TRAIN_SIGMA_MAX=0.045,TRAIN_ARRIVAL_RATE_MIN=300,TRAIN_ARRIVAL_RATE_MAX=600,EVAL_IN_DISTRIBUTION_SIGMA_VALUES="0.015 0.030 0.045",EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES="300 450 600",EVAL_STRESS_SIGMA_VALUES=0.050,EVAL_STRESS_ARRIVAL_RATE_VALUES="250 800",OUTPUT_DIR=experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m hpc/sbatch_robust_lp_seed_sweep_cpu.sh
+mkdir -p logs && sbatch --export=ALL,TOTAL_TIMESTEPS=10000000,N_STEPS=1000,DECISION_STRIDE=100,NUM_TRAJECTORIES=100,TRAIN_DOMAINS_PER_RESET=100,N_EVAL_EPISODES=10,EVALUATION_SEED=100042,TAU=50,ALPHA3=4000,INITIAL_WEALTH=1000,INVENTORY_PHI=0.4,NOMINAL_GAS_COST=2,PERIODIC_REBALANCE_EVERY=100,PERIODIC_WIDTH=50,NOMINAL_SIGMA=0.030,NOMINAL_ARRIVAL_RATE=450,TRAIN_SIGMA_MIN=0.015,TRAIN_SIGMA_MAX=0.045,TRAIN_ARRIVAL_RATE_MIN=300,TRAIN_ARRIVAL_RATE_MAX=600,EVAL_IN_DISTRIBUTION_SIGMA_VALUES="0.015 0.030 0.045",EVAL_IN_DISTRIBUTION_ARRIVAL_RATE_VALUES="300 450 600",EVAL_STRESS_SIGMA_VALUES=0.050,EVAL_STRESS_ARRIVAL_RATE_VALUES="250 800",OUTPUT_DIR=experiments/results/domain_randomized_ppo/seed_sweep/moderate_arrivals_10m hpc/sbatch_domain_randomization_lp_seed_sweep_cpu.sh
 ```
 
 Each policy retains a budget of 10 million simulator-equivalent steps: 100,000
@@ -304,14 +304,14 @@ rebalancing and cash, and report reward and PnL separately.
 
 ## Evaluate higher arrival rates without training
 
-`experiments/evaluate_robust_lp_agents.py` loads a saved run's configuration and
+`experiments/domain_randomization_rl/evaluate_domain_randomization_lp_agents.py` loads a saved run's configuration and
 evaluates the periodic baseline by default. It does not call PPO training or
 change the saved models/results. Use a completed run from the smoke or full
 training instructions above. Alternatively, generate a small example run
 from the project root with the project environment activated:
 
 ```bash
-python experiments/train_robust_lp_agent.py \
+python experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py \
   --smoke-test \
   --output-dir experiments/results/domain_randomized_ppo/evaluator_example
 ```
@@ -326,7 +326,7 @@ for the small example), run:
 
 ```bash
 SAIFE_RUN_DIR="experiments/results/domain_randomized_ppo/evaluator_example/smoke_<timestamp>"
-python experiments/evaluate_robust_lp_agents.py \
+python experiments/domain_randomization_rl/evaluate_domain_randomization_lp_agents.py \
   --run-dirs "$SAIFE_RUN_DIR" \
   --output-dir experiments/results/periodic_high_arrival/main_grid \
   --n-eval-episodes 2 \
@@ -395,7 +395,7 @@ dependency:
 
 ```bash
 cd "$SAIFE_PROJECT_DIR"
-SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_robust_lp_seed_sweep_cpu.sh)
+SWEEP_JOB_ID=$(sbatch --parsable hpc/sbatch_domain_randomization_lp_seed_sweep_cpu.sh)
 sbatch --dependency=afterok:$SWEEP_JOB_ID \
   hpc/sbatch_aggregate_domain_randomized_seed_sweep.sh
 ```

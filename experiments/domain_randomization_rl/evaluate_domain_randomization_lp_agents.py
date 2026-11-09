@@ -26,14 +26,14 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/saife_matplotlib")
 
 import numpy as np
 
-ROOT = Path(__file__).resolve().parents[1]
+ROOT = Path(__file__).resolve().parents[2]
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-from experiments.evaluation_grid import configured_evaluation_grid  # noqa: E402
-from experiments.policy_behavior_diagnostics import BEHAVIOR_DIAGNOSTIC_COLUMNS  # noqa: E402
-from experiments import train_robust_lp_agent as training  # noqa: E402
-from experiments.fast_lp_evaluation import make_evaluation_env  # noqa: E402
+from experiments.domain_randomization_rl.evaluation_grid import configured_evaluation_grid  # noqa: E402
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import BEHAVIOR_DIAGNOSTIC_COLUMNS  # noqa: E402
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as training  # noqa: E402
+from experiments.domain_randomization_rl.fast_lp_evaluation import make_evaluation_env  # noqa: E402
 from SAiFE_gym.gym.simulation_core import (  # noqa: E402
     DEFAULT_BACKGROUND_LIQUIDITY,
     validate_background_liquidity,
@@ -426,8 +426,9 @@ def main(argv=None):
 
 
 def run_jobs(cli, configs, jobs, argv):
-    source_files = [Path(__file__), ROOT / "experiments/train_robust_lp_agent.py",
-                    ROOT / "experiments/fast_lp_evaluation.py"]
+    runner_path = Path(__file__).resolve()
+    source_files = [runner_path, runner_path.with_name("train_domain_randomization_lp_agent.py"),
+                    runner_path.with_name("fast_lp_evaluation.py")]
     source_files += sorted((ROOT / "SAiFE_gym").rglob("*.py"))
     revision = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True, check=False)
     manifest = dict(
@@ -445,7 +446,7 @@ def run_jobs(cli, configs, jobs, argv):
         previous = json.loads(manifest_path.read_text())
         if previous["jobs"] != jobs:
             raise ValueError("resume requires the same policies, grid, seeds, and evaluation settings")
-        runner = str(Path(__file__).relative_to(ROOT))
+        runner = str(runner_path.relative_to(ROOT))
         for name, digest in previous["source_sha256"].items():
             if name != runner and manifest["source_sha256"].get(name) != digest:
                 raise ValueError(f"cannot resume after changing simulation source: {name}")

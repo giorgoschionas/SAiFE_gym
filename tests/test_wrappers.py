@@ -3,7 +3,7 @@ import numpy as np
 import pytest
 from stable_baselines3.common.vec_env import VecEnv
 
-from experiments.train_robust_lp_agent import DecisionStrideVecEnv
+from experiments.domain_randomization_rl.train_domain_randomization_lp_agent import DecisionStrideVecEnv
 from SAiFE_gym.gym.AMMEnvironment import AMMEnvironment
 from SAiFE_gym.gym.ModelDynamics import UniswapV3ModelDynamics
 from SAiFE_gym.gym.StableBaselinesAMMEnvironment import (

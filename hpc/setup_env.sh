@@ -4,7 +4,7 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}
-if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+if [ ! -f "$PROJECT_DIR/experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
   echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR to the project root." >&2
   exit 1
 fi

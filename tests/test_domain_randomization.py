@@ -10,13 +10,13 @@ import numpy as np
 import pytest
 from stable_baselines3 import PPO
 
-from experiments import train_robust_lp_agent as training
+from experiments.domain_randomization_rl import train_domain_randomization_lp_agent as training
 from experiments.helpers import INITIAL_WEALTH
-from experiments.policy_behavior_diagnostics import (
+from experiments.domain_randomization_rl.policy_behavior_diagnostics import (
     BEHAVIOR_DIAGNOSTIC_COLUMNS,
     zero_behavior_diagnostics,
 )
-from experiments.train_robust_lp_agent import (
+from experiments.domain_randomization_rl.train_domain_randomization_lp_agent import (
     add_gap_columns,
     apply_smoke_overrides,
     evaluate_cash,
@@ -24,7 +24,6 @@ from experiments.train_robust_lp_agent import (
     evaluation_regimes,
     make_domain_randomized_env,
     make_fixed_env,
-    make_robust_env,
     parse_args,
     resolve_train_domains_per_reset,
     summarize_running_inventory_objective,
@@ -958,7 +957,7 @@ def test_invalid_evaluation_settings_fail_before_directory_creation_or_training(
 ):
     output_dir = tmp_path / "runs"
     monkeypatch.setattr(sys, "argv", [
-        "train_robust_lp_agent.py", "--output-dir", str(output_dir), *argv,
+        "train_domain_randomization_lp_agent.py", "--output-dir", str(output_dir), *argv,
     ])
     create_run = Mock(side_effect=AssertionError("run directory creation reached"))
     train = Mock(side_effect=AssertionError("training reached"))
@@ -1031,7 +1030,7 @@ def test_valid_evaluation_boundaries_are_preserved(argv, integer_type):
 def test_script_smoke_runs_with_valid_evaluation_settings(argv, monkeypatch, tmp_path):
     output_dir = tmp_path / "smoke"
     monkeypatch.setattr(sys, "argv", [
-        "train_robust_lp_agent.py", "--output-dir", str(output_dir),
+        "train_domain_randomization_lp_agent.py", "--output-dir", str(output_dir),
         "--smoke-test", "--decision-stride", "2", *argv,
     ])
 
@@ -1069,11 +1068,11 @@ def test_script_smoke_runs_with_valid_evaluation_settings(argv, monkeypatch, tmp
 
 
 def test_full_grid_training_smoke_sweep_can_be_aggregated(monkeypatch, tmp_path):
-    from experiments import aggregate_domain_randomized_seed_sweep as aggregation
+    from experiments.domain_randomization_rl import aggregate_domain_randomized_seed_sweep as aggregation
 
     for seed in [43, 44]:
         monkeypatch.setattr(sys, "argv", [
-            "train_robust_lp_agent.py", "--smoke-test", "--decision-stride", "2",
+            "train_domain_randomization_lp_agent.py", "--smoke-test", "--decision-stride", "2",
             "--seed", str(seed), "--output-dir", str(tmp_path / f"seed_{seed}"),
             "--convergence-eval-every-rollouts", "0",
         ])
@@ -1127,8 +1126,10 @@ def test_stress_grid_rejects_any_fully_in_support_cartesian_regime():
 
 def test_domain_randomized_factory_default_domains_are_capped_by_trajectory_count():
     args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
+    env = make_domain_randomized_env(args)
 
-    assert resolve_train_domains_per_reset(args) == 3
+    assert isinstance(env, DomainRandomizedAMMEnvironment)
+    assert env.num_domains == 3
     assert args.train_domains_per_reset == 3
 
 
@@ -1137,18 +1138,6 @@ def test_domain_randomized_factory_default_uses_ten_domains_for_standard_batch()
 
     assert resolve_train_domains_per_reset(args) == 10
     assert args.train_domains_per_reset == 10
-
-
-def test_robust_factory_alias_preserves_existing_imports():
-    canonical_args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
-    compatibility_args = parse_args(["--num-trajectories", "3", "--n-steps", "5"])
-
-    canonical_env = make_domain_randomized_env(canonical_args)
-    compatibility_env = make_robust_env(compatibility_args)
-
-    assert isinstance(canonical_env, DomainRandomizedAMMEnvironment)
-    assert isinstance(compatibility_env, DomainRandomizedAMMEnvironment)
-    assert compatibility_env.num_domains == canonical_env.num_domains == 3
 
 
 @pytest.mark.parametrize("num_domains", [0, 4, 1.5])

@@ -1,6 +1,6 @@
 #!/bin/bash -l
 
-# Slurm smoke-test job for experiments/train_robust_lp_agent.py.
+# Slurm smoke-test job for experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py.
 
 #SBATCH -J dr_ppo_smoke
 #SBATCH -N 1
@@ -13,7 +13,7 @@
 set -euo pipefail
 
 PROJECT_DIR=${SAIFE_PROJECT_DIR:-${SLURM_SUBMIT_DIR:-$PWD}}
-if [ ! -f "$PROJECT_DIR/experiments/train_robust_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
+if [ ! -f "$PROJECT_DIR/experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py" ] || [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
   echo "ERROR: no SAiFE_gym checkout at $PROJECT_DIR. Set SAIFE_PROJECT_DIR or submit from the project root." >&2
   exit 1
 fi
@@ -66,7 +66,7 @@ echo "Training domains per reset: $TRAIN_DOMAINS_PER_RESET"
 echo "Decision stride: $DECISION_STRIDE"
 echo "Tau: $TAU"
 
-python -u experiments/train_robust_lp_agent.py \
+python -u experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py \
   --smoke-test \
   --decision-stride "$DECISION_STRIDE" \
   --tau "$TAU" \
