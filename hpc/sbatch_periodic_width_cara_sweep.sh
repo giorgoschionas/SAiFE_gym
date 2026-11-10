@@ -28,10 +28,11 @@ export OPENBLAS_NUM_THREADS=1 OMP_NUM_THREADS=1 MKL_NUM_THREADS=1 NUMEXPR_NUM_TH
 export MPLBACKEND=Agg
 
 python -u experiments/sweep_dense_exponential_width.py \
-  --half-widths 25 50 100 150 200 250 --tau 250 \
-  --risk-aversion-values 0 0.0003 0.001 0.003 0.01 \
+  --half-widths 25 40 50 60 70 80 90 100 110 125 150 200 250 --tau 250 \
+  --risk-aversion-values 0 0.003 0.01 0.02 0.03 0.04 0.05 0.075 0.1 \
   --periodic-rebalance-every 100 --initial-wealth 1000 \
+  --background-liquidity 30000 \
   --n-steps 1000 --evaluation-seed 100042 \
-  --n-eval-episodes "${N_EVAL_EPISODES:-10}" --num-trajectories "${NUM_TRAJECTORIES:-100}" \
+  --n-eval-episodes "${N_EVAL_EPISODES:-50}" --num-trajectories "${NUM_TRAJECTORIES:-100}" \
   --workers "${SLURM_CPUS_PER_TASK:-4}" \
   --output-dir "${OUTPUT_DIR:-experiments/results/periodic_width_cara}"
