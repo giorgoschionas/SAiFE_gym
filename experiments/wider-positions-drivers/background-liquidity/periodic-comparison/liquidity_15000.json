@@ -1,0 +1,213 @@
+{
+  "original_ppo_cell": "/home/gchionas/Programming/Blockchain/Ethereum/defi-trading/SAiFE_gym/experiments/results/rl_background_liquidity/run_20261105_202057/run_20261105_202057/background_15000.0/seed_42",
+  "periodic_config": {
+    "action_mode": "structured",
+    "alpha3": 4000.0,
+    "arrival_alpha2": 0.0,
+    "background_liquidity": 15000.0,
+    "convergence_eval_every_rollouts": 10,
+    "convergence_n_eval_episodes": 1,
+    "decision_stride": 100,
+    "eval_in_distribution_arrival_rate_values": [
+      250.0,
+      300.0,
+      350.0
+    ],
+    "eval_in_distribution_sigma_values": [
+      0.015,
+      0.03,
+      0.045
+    ],
+    "eval_stress_arrival_rate_values": [
+      150.0,
+      450.0
+    ],
+    "eval_stress_sigma_values": [
+      0.065,
+      0.08
+    ],
+    "evaluation_seed": 100042,
+    "half_widths": null,
+    "initial_wealth": 1000.0,
+    "inventory_phi": 0.4,
+    "kernel_beta": 0.5,
+    "kernel_window": 10,
+    "learning_rate": 0.0003,
+    "liquidity_scale": 1000000.0,
+    "max_agent_decisions_per_episode": 10,
+    "n_eval_episodes": 10,
+    "n_steps": 1000,
+    "nominal_arrival_rate": 300.0,
+    "nominal_gas_cost": 2.0,
+    "nominal_sigma": 0.03,
+    "normalise_obs": true,
+    "num_trajectories": 100,
+    "output_dir": "experiments/results/rl_background_liquidity",
+    "periodic_rebalance_every": 100,
+    "periodic_width": 43,
+    "ppo_n_steps": 10,
+    "ppo_total_timesteps": 1000000,
+    "price_impact_depth_window": 15,
+    "price_impact_min_depth": 1e-12,
+    "seed": 42,
+    "smoke_test": false,
+    "tau": 50,
+    "terminal_time": 1.0,
+    "tick_stride": 5,
+    "total_timesteps": 100000000,
+    "trade_size_notional": 250.0,
+    "train_arrival_rate_range": [
+      200.0,
+      400.0
+    ],
+    "train_domains_per_reset": null,
+    "train_sigma_range": [
+      0.01,
+      0.05
+    ]
+  },
+  "periodic_metrics": {
+    "evaluation_set": "in_distribution",
+    "training_seed": 42,
+    "evaluation_seed": 100042,
+    "policy": "periodic_rebalance",
+    "sigma": 0.03,
+    "arrival_rate": 300.0,
+    "mean_running_inventory_objective": 159.42112106128,
+    "evaluation_path_std_running_inventory_objective": 43.67410517375058,
+    "n_evaluation_paths": 1000,
+    "never_deployed_fraction": 0.0,
+    "bankruptcy_fraction": 0.0,
+    "hold_action_fraction": 0.99,
+    "rebalance_action_fraction": 0.01,
+    "mean_rebalances_after_deployment_per_path": 9.0,
+    "mean_selected_range_width_ticks": 86.0,
+    "mean_active_range_width_ticks": 86.0,
+    "mean_gas_spend_per_path": 18.0,
+    "mean_fee_income_token1_per_path": 227.42886463847648,
+    "mean_pnl_per_path": 178.44434979997305,
+    "mean_inventory_penalty_per_path": 19.023228738692456,
+    "mean_in_range_fraction_among_deployed_paths": 0.590854,
+    "agent_decision_stride": 100.0,
+    "agent_decisions_per_episode": 10.0,
+    "agent_hold_decision_fraction": "",
+    "agent_rebalance_decision_fraction": "",
+    "mean_agent_rebalances_after_deployment_per_path": "",
+    "mean_agent_selected_range_width_ticks": ""
+  },
+  "ppo_metrics": {
+    "agent_decision_stride": 100.0,
+    "agent_decisions_per_episode": 10.0,
+    "agent_hold_decision_fraction": 0.0823,
+    "agent_rebalance_decision_fraction": 0.9177,
+    "arrival_rate": 300.0,
+    "background_liquidity": 15000.0,
+    "bankruptcy_fraction": 0.0,
+    "deployed_width_ticks": 86.2495,
+    "evaluation_path_std_running_inventory_objective": 44.29676559416989,
+    "evaluation_seed": 100042,
+    "evaluation_set": "in_distribution",
+    "hold_action_fraction": 0.990823,
+    "mean_active_range_width_ticks": 86.2495,
+    "mean_agent_rebalances_after_deployment_per_path": 8.177,
+    "mean_agent_selected_range_width_ticks": 86.19047619047619,
+    "mean_fee_income_token1_per_path": 229.75060975427866,
+    "mean_gas_spend_per_path": 16.354,
+    "mean_in_range_fraction_among_deployed_paths": 0.585491,
+    "mean_inventory_penalty_per_path": 17.76638073860376,
+    "mean_pnl_per_path": 181.49966777517346,
+    "mean_rebalances_after_deployment_per_path": 8.177,
+    "mean_running_inventory_objective": 163.73328703656972,
+    "mean_selected_range_width_ticks": 86.19047619047619,
+    "n_evaluation_paths": 1000,
+    "never_deployed_fraction": 0.0,
+    "policy": "nominal_ppo",
+    "rebalance_action_fraction": 0.009177,
+    "selected_width_ticks": 86.19047619047619,
+    "sigma": 0.03,
+    "training_seed": 42
+  },
+  "comparison": {
+    "background_liquidity": 15000.0,
+    "sigma": 0.03,
+    "ppo_target_full_width_ticks": 86.2495,
+    "periodic_half_width_ticks": 43,
+    "periodic_full_width_ticks": 86,
+    "periodic_minus_target_width_ticks": -0.2494999999999976,
+    "rebalance_every": 100,
+    "n_evaluation_paths": 1000,
+    "periodic_pnl": 178.44434979997305,
+    "ppo_pnl": 181.49966777517346,
+    "ppo_minus_periodic_pnl": 3.05531797520041,
+    "periodic_objective": 159.42112106128,
+    "ppo_objective": 163.73328703656972,
+    "ppo_minus_periodic_objective": 4.31216597528973,
+    "periodic_fees": 227.42886463847648,
+    "ppo_fees": 229.75060975427866,
+    "ppo_minus_periodic_fees": 2.321745115802173,
+    "periodic_gas": 18.0,
+    "ppo_gas": 16.354,
+    "ppo_minus_periodic_gas": -1.6460000000000008,
+    "periodic_inventory_penalty": 19.023228738692456,
+    "ppo_inventory_penalty": 17.76638073860376,
+    "ppo_minus_periodic_inventory_penalty": -1.256848000088695,
+    "periodic_in_range_fraction": 0.590854,
+    "ppo_in_range_fraction": 0.585491,
+    "ppo_minus_periodic_in_range_fraction": -0.005363000000000007,
+    "periodic_rebalances_after_deployment": 9.0,
+    "ppo_rebalances_after_deployment": 8.177,
+    "ppo_minus_periodic_rebalances_after_deployment": -0.8230000000000004
+  },
+  "periodic_episodes": [
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100042,
+      "periodic_mean_pnl": 186.86561724760958
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100043,
+      "periodic_mean_pnl": 169.5149886140675
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100044,
+      "periodic_mean_pnl": 176.10186304621345
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100045,
+      "periodic_mean_pnl": 184.5263707966986
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100046,
+      "periodic_mean_pnl": 177.27188420511
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100047,
+      "periodic_mean_pnl": 180.63178135630724
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100048,
+      "periodic_mean_pnl": 178.04363531333667
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100049,
+      "periodic_mean_pnl": 176.91911769919076
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100050,
+      "periodic_mean_pnl": 179.95200124145035
+    },
+    {
+      "background_liquidity": 15000.0,
+      "episode_seed": 100051,
+      "periodic_mean_pnl": 174.61623847974042
+    }
+  ]
+}

@@ -1,0 +1,163 @@
+{
+  "configuration": {
+    "background_values": [
+      10000.0,
+      15000.0,
+      20000.0,
+      25000.0,
+      30000.0
+    ],
+    "deployed_width": "Full width averaged over deployed trajectory-steps, including out-of-range positions.",
+    "evaluation": "Deterministic final policies on paired evaluation seeds at each training liquidity.",
+    "missing_width": "null/blank when no deployed positions or rebalance decisions exist",
+    "seeds": [
+      42
+    ],
+    "selected_width": "Full width averaged over rebalance decisions; hold decisions excluded.",
+    "training_mode": "fresh nominal PPO per liquidity/seed; no domain randomization",
+    "training_settings": {
+      "action_mode": "structured",
+      "alpha3": 4000.0,
+      "arrival_alpha2": 0.0,
+      "background_liquidity": 30000.0,
+      "convergence_eval_every_rollouts": 10,
+      "convergence_n_eval_episodes": 1,
+      "decision_stride": 100,
+      "eval_in_distribution_arrival_rate_values": [
+        250.0,
+        300.0,
+        350.0
+      ],
+      "eval_in_distribution_sigma_values": [
+        0.015,
+        0.03,
+        0.045
+      ],
+      "eval_stress_arrival_rate_values": [
+        150.0,
+        450.0
+      ],
+      "eval_stress_sigma_values": [
+        0.065,
+        0.08
+      ],
+      "evaluation_seed": 100042,
+      "half_widths": null,
+      "initial_wealth": 1000.0,
+      "inventory_phi": 0.4,
+      "kernel_beta": 0.5,
+      "kernel_window": 10,
+      "learning_rate": 0.0003,
+      "liquidity_scale": 1000000.0,
+      "max_agent_decisions_per_episode": 10,
+      "n_eval_episodes": 10,
+      "n_steps": 1000,
+      "nominal_arrival_rate": 300.0,
+      "nominal_gas_cost": 2.0,
+      "nominal_sigma": 0.03,
+      "normalise_obs": true,
+      "num_trajectories": 100,
+      "output_dir": "experiments/results/rl_background_liquidity",
+      "periodic_rebalance_every": 100,
+      "periodic_width": 50,
+      "ppo_n_steps": 10,
+      "ppo_total_timesteps": 1000000,
+      "price_impact_depth_window": 15,
+      "price_impact_min_depth": 1e-12,
+      "seed": 42,
+      "smoke_test": false,
+      "tau": 50,
+      "terminal_time": 1.0,
+      "tick_stride": 5,
+      "total_timesteps": 100000000,
+      "trade_size_notional": 250.0,
+      "train_arrival_rate_range": [
+        200.0,
+        400.0
+      ],
+      "train_domains_per_reset": null,
+      "train_sigma_range": [
+        0.01,
+        0.05
+      ]
+    },
+    "uncertainty": "Sample standard deviation across training seeds; null for fewer than two valid seeds."
+  },
+  "results": [
+    {
+      "agent_hold_decision_fraction": 0.1315,
+      "background_liquidity": 10000.0,
+      "mean_agent_rebalances_after_deployment_per_path": 7.685,
+      "mean_deployed_width_ticks": 93.778,
+      "mean_pnl_per_path": 223.33085033883881,
+      "mean_running_inventory_objective": 205.18418334661627,
+      "mean_selected_width_ticks": 93.64766839378238,
+      "n_seeds_with_deployed_width_ticks": 1,
+      "n_seeds_with_selected_width_ticks": 1,
+      "n_training_seeds": 1,
+      "never_deployed_fraction": 0.0,
+      "seed_std_deployed_width_ticks": null,
+      "seed_std_selected_width_ticks": null
+    },
+    {
+      "agent_hold_decision_fraction": 0.0823,
+      "background_liquidity": 15000.0,
+      "mean_agent_rebalances_after_deployment_per_path": 8.177,
+      "mean_deployed_width_ticks": 86.2495,
+      "mean_pnl_per_path": 181.49966777517346,
+      "mean_running_inventory_objective": 163.73328703656972,
+      "mean_selected_width_ticks": 86.19047619047619,
+      "n_seeds_with_deployed_width_ticks": 1,
+      "n_seeds_with_selected_width_ticks": 1,
+      "n_training_seeds": 1,
+      "never_deployed_fraction": 0.0,
+      "seed_std_deployed_width_ticks": null,
+      "seed_std_selected_width_ticks": null
+    },
+    {
+      "agent_hold_decision_fraction": 0.0024,
+      "background_liquidity": 20000.0,
+      "mean_agent_rebalances_after_deployment_per_path": 8.976,
+      "mean_deployed_width_ticks": 85.809,
+      "mean_pnl_per_path": 153.11756918837295,
+      "mean_running_inventory_objective": 135.38179655364624,
+      "mean_selected_width_ticks": 85.78137530072173,
+      "n_seeds_with_deployed_width_ticks": 1,
+      "n_seeds_with_selected_width_ticks": 1,
+      "n_training_seeds": 1,
+      "never_deployed_fraction": 0.0,
+      "seed_std_deployed_width_ticks": null,
+      "seed_std_selected_width_ticks": null
+    },
+    {
+      "agent_hold_decision_fraction": 0.1639,
+      "background_liquidity": 25000.0,
+      "mean_agent_rebalances_after_deployment_per_path": 7.361,
+      "mean_deployed_width_ticks": 77.406,
+      "mean_pnl_per_path": 134.29318087552926,
+      "mean_running_inventory_objective": 117.51222246729431,
+      "mean_selected_width_ticks": 77.26527927281425,
+      "n_seeds_with_deployed_width_ticks": 1,
+      "n_seeds_with_selected_width_ticks": 1,
+      "n_training_seeds": 1,
+      "never_deployed_fraction": 0.0,
+      "seed_std_deployed_width_ticks": null,
+      "seed_std_selected_width_ticks": null
+    },
+    {
+      "agent_hold_decision_fraction": 0.1982,
+      "background_liquidity": 30000.0,
+      "mean_agent_rebalances_after_deployment_per_path": 7.018,
+      "mean_deployed_width_ticks": 77.6935,
+      "mean_pnl_per_path": 119.38390113442736,
+      "mean_running_inventory_objective": 102.53323953637118,
+      "mean_selected_width_ticks": 77.68645547518085,
+      "n_seeds_with_deployed_width_ticks": 1,
+      "n_seeds_with_selected_width_ticks": 1,
+      "n_training_seeds": 1,
+      "never_deployed_fraction": 0.0,
+      "seed_std_deployed_width_ticks": null,
+      "seed_std_selected_width_ticks": null
+    }
+  ]
+}

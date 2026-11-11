@@ -108,6 +108,11 @@ reward normalization would break the exact telescoping identity.
 
 ### Periodic baseline width sweep
 
+Completed sweeps of background liquidity, midprice volatility, and CARA risk
+aversion are collected in
+[`experiments/wider-positions-drivers`](experiments/wider-positions-drivers/README.md),
+with a combined comparison, original result snapshots, and provenance.
+
 Run the periodic baseline with the nominal environment and defaults from
 `experiments/domain_randomization_rl/train_domain_randomization_lp_agent.py`, replacing its inventory-penalty reward:
 

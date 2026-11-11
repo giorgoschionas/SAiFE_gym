@@ -1,0 +1,13 @@
+# Preserve the byte-for-byte snapshots and their manifest checksums on checkout.
+background-liquidity/fixed-width/** -text
+background-liquidity/ppo/** -text
+background-liquidity/periodic-comparison/** -text
+volatility/fixed-width-bg30000/** -text
+volatility/fixed-width-bg100000/** -text
+volatility/ppo/** -text
+risk-aversion/cara/** -text
+risk-aversion/legacy-cara/** -text
+
+# Python's CSV writer uses CRLF; the archived patch contains context-only spaces.
+*.csv -text whitespace=cr-at-eol
+risk-aversion/legacy-cara/source_snapshot/tracked_changes.patch -whitespace

@@ -1,0 +1,103 @@
+{
+  "experiment": {
+    "half_widths": [
+      25,
+      40,
+      50,
+      60,
+      70,
+      80,
+      90,
+      100,
+      110,
+      125,
+      150,
+      200,
+      250
+    ],
+    "risk_aversion_values": [
+      0.0,
+      0.003,
+      0.01,
+      0.02,
+      0.03,
+      0.04,
+      0.05,
+      0.075,
+      0.1
+    ],
+    "workers": 4,
+    "bootstrap_resamples": 2000,
+    "bootstrap_seed": 98765,
+    "output_dir": "experiments/results/periodic_width_cara"
+  },
+  "trainer_configuration": {
+    "output_dir": "experiments/results/domain_randomized_ppo",
+    "total_timesteps": 10000000,
+    "num_trajectories": 100,
+    "terminal_time": 1.0,
+    "n_steps": 1000,
+    "decision_stride": 100,
+    "tau": 250,
+    "tick_stride": 5,
+    "alpha3": 4000.0,
+    "initial_wealth": 1000.0,
+    "background_liquidity": 30000.0,
+    "inventory_phi": 0.4,
+    "seed": 42,
+    "evaluation_seed": 100042,
+    "n_eval_episodes": 50,
+    "convergence_eval_every_rollouts": 10,
+    "convergence_n_eval_episodes": 1,
+    "learning_rate": 0.0003,
+    "periodic_rebalance_every": 100,
+    "periodic_width": 50,
+    "normalise_obs": true,
+    "nominal_sigma": 0.03,
+    "nominal_arrival_rate": 300.0,
+    "nominal_gas_cost": 2.0,
+    "train_sigma_range": [
+      0.01,
+      0.05
+    ],
+    "train_arrival_rate_range": [
+      200.0,
+      400.0
+    ],
+    "train_domains_per_reset": null,
+    "arrival_alpha2": 0.0,
+    "kernel_beta": 0.5,
+    "kernel_window": 10,
+    "liquidity_scale": 1000000.0,
+    "trade_size_notional": 250.0,
+    "price_impact_depth_window": 15,
+    "price_impact_min_depth": 1e-12,
+    "eval_in_distribution_sigma_values": [
+      0.015,
+      0.03,
+      0.045
+    ],
+    "eval_in_distribution_arrival_rate_values": [
+      250.0,
+      300.0,
+      350.0
+    ],
+    "eval_stress_sigma_values": [
+      0.065,
+      0.08
+    ],
+    "eval_stress_arrival_rate_values": [
+      150.0,
+      450.0
+    ],
+    "smoke_test": false
+  },
+  "environment_mode": "fixed nominal; no domain randomization",
+  "reward": "DenseExponentialUtility (extended CARA); discount=1; no clipping or normalization",
+  "utility": "U(G)=-expm1(-a*G)/a for a!=0; U(G)=G for a=0; G=wealth-initial_wealth",
+  "width_definition": "half-width in ticks; full span is 2 * half_width",
+  "risk_replay": "production reward applied to every transition of the same wealth paths; first risk also runs inside the environment",
+  "seed_pairing": "same episode seed across widths; identical external price shocks, but endogenous swap paths can differ",
+  "git_commit": "0c8c8290c2fc3b1a869ed477bd0bfd1eba721fec",
+  "git_status": " M hpc/sbatch_periodic_width_cara_sweep.sh\n?? .claude/scheduled_tasks.lock\n?? nominal_lp_training_rewards.txt\n?? notebooks/\n?? results/\n?? sbatch_agent_alpha3_sweep.sh\n?? sbatch_agent_gas_sweep_ext.sh\n?? sbatch_agent_sweep.sh\n?? sbatch_agent_vol3.sh\n?? scripts/\n"
+}

@@ -1,0 +1,76 @@
+{
+  "checked_cells": 55,
+  "paths_per_cell": 100,
+  "matched_price_shocks": true,
+  "independent_price_path_checks": true,
+  "accounting_and_cadence_checks": true,
+  "finite_pnl_and_no_tracked_boundary": true,
+  "archive_matches_json": true,
+  "best_by_volatility": [
+    {
+      "sigma": 0.03,
+      "best_half_width": 15,
+      "mean_pnl": 121.33160030681505,
+      "narrow_pnl": 91.2650353718144,
+      "widest_pnl": 67.74286331794745,
+      "fees": 414.1749698813066,
+      "other_pnl": -94.84336957449153,
+      "mean_impact": 8.195207588444534,
+      "over_ten_fraction": 0.27636791455646753,
+      "best_beats_narrow_path_fraction": 0.96,
+      "best_narrow_mean_difference": 30.066564935000624
+    },
+    {
+      "sigma": 0.035,
+      "best_half_width": 20,
+      "mean_pnl": 100.10601955556415,
+      "narrow_pnl": 68.03774790036493,
+      "widest_pnl": 58.993833590444574,
+      "fees": 402.52223645826217,
+      "other_pnl": -104.41621690269801,
+      "mean_impact": 8.709043564813992,
+      "over_ten_fraction": 0.28420220045857697,
+      "best_beats_narrow_path_fraction": 0.97,
+      "best_narrow_mean_difference": 32.06827165519924
+    },
+    {
+      "sigma": 0.04,
+      "best_half_width": 20,
+      "mean_pnl": 79.14273688404133,
+      "narrow_pnl": 46.631112032379804,
+      "widest_pnl": 47.355656732232774,
+      "fees": 400.5117165790423,
+      "other_pnl": -123.36897969500097,
+      "mean_impact": 9.06269311528022,
+      "over_ten_fraction": 0.31355093122108607,
+      "best_beats_narrow_path_fraction": 0.97,
+      "best_narrow_mean_difference": 32.51162485166153
+    },
+    {
+      "sigma": 0.045,
+      "best_half_width": 25,
+      "mean_pnl": 57.5268182841276,
+      "narrow_pnl": 22.699876673611897,
+      "widest_pnl": 34.74128487461472,
+      "fees": 388.2781663510175,
+      "other_pnl": -132.75134806688988,
+      "mean_impact": 9.524654326401933,
+      "over_ten_fraction": 0.3047306186957493,
+      "best_beats_narrow_path_fraction": 0.96,
+      "best_narrow_mean_difference": 34.82694161051572
+    },
+    {
+      "sigma": 0.05,
+      "best_half_width": 25,
+      "mean_pnl": 36.596412610724975,
+      "narrow_pnl": 2.3456728971363874,
+      "widest_pnl": 19.549042017114118,
+      "fees": 386.1746215898807,
+      "other_pnl": -151.5782089791557,
+      "mean_impact": 9.815253668897016,
+      "over_ten_fraction": 0.33425687868286996,
+      "best_beats_narrow_path_fraction": 0.98,
+      "best_narrow_mean_difference": 34.25073971358859
+    }
+  ]
+}

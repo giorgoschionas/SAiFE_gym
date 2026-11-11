@@ -1,0 +1,6 @@
+background_liquidity,n_training_seeds,mean_deployed_width_ticks,seed_std_deployed_width_ticks,n_seeds_with_deployed_width_ticks,mean_selected_width_ticks,seed_std_selected_width_ticks,n_seeds_with_selected_width_ticks,never_deployed_fraction,agent_hold_decision_fraction,mean_agent_rebalances_after_deployment_per_path,mean_pnl_per_path,mean_running_inventory_objective
+10000.0,1,93.778,,1,93.64766839378238,,1,0.0,0.1315,7.685,223.33085033883881,205.18418334661627
+15000.0,1,86.2495,,1,86.19047619047619,,1,0.0,0.0823,8.177,181.49966777517346,163.73328703656972
+20000.0,1,85.809,,1,85.78137530072173,,1,0.0,0.0024,8.976,153.11756918837295,135.38179655364624
+25000.0,1,77.406,,1,77.26527927281425,,1,0.0,0.1639,7.361,134.29318087552926,117.51222246729431
+30000.0,1,77.6935,,1,77.68645547518085,,1,0.0,0.1982,7.018,119.38390113442736,102.53323953637118
