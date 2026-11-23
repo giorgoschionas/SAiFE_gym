@@ -23,30 +23,6 @@ source venv/bin/activate
 pip install -r requirements.txt
 ```
 
-## Quick Start
-
-```python
-import numpy as np
-
-from experiments.helpers import get_amm_env
-from SAiFE_gym.agents.BaselineAgents import UniformAllocationAgent
-
-env = get_amm_env(num_trajectories=10, tau=5, volatility=2.0, arrival_rate=100.0)
-agent = UniformAllocationAgent(env)
-
-obs, _ = env.reset()
-cumulative_rewards = np.zeros(env.num_trajectories)
-
-for _ in range(env.n_steps):
-    action = agent.get_action(obs)
-    obs, rewards, terminated, truncated, info = env.step(action)
-    cumulative_rewards += rewards
-    if (terminated | truncated).all():
-        break
-
-print("Episode rewards:", cumulative_rewards)
-```
-
 ## Architecture
 
 ```text
