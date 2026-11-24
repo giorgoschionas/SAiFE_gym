@@ -1,5 +1,6 @@
 
 import abc
+from typing import NamedTuple
 
 import gymnasium
 import numpy as np
@@ -23,6 +24,42 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (
     PriceImpactModel,
     OneTickUniswapV3PriceImpact,
 )
+
+class _PositionFeeInputs(NamedTuple):
+    """Detached LP inputs in tracked tick order, padded with zeros across paths."""
+
+    start: np.ndarray
+    width: np.ndarray
+    lp_liquidity: np.ndarray
+    pool_liquidity: np.ndarray
+    fees0: np.ndarray
+    fees1: np.ndarray
+
+    def gross_fees(self, num_ticks, include_shares=False):
+        offsets = np.arange(self.pool_liquidity.shape[1])
+        paths, offsets = np.nonzero(offsets < self.width[:, None])
+        columns = self.start[paths] + offsets
+        liquidity = self.pool_liquidity[paths, offsets]
+        shares = np.divide(self.lp_liquidity[paths], liquidity,
+                           out=np.zeros_like(liquidity), where=liquidity > 0)
+
+        # NumPy's pairwise sum depends on the column placement and row width.
+        weighted = np.zeros((len(self.start), num_ticks), dtype=np.float64)
+        weighted[paths, columns] = self.fees0[paths, offsets] * shares
+        gross0 = weighted.sum(axis=1)
+        weighted[paths, columns] = self.fees1[paths, offsets] * shares
+        gross1 = weighted.sum(axis=1)
+        if include_shares:
+            weighted[paths, columns] = shares
+        return gross0, gross1, weighted if include_shares else None
+
+    def changed_paths(self, previous):
+        changed = np.zeros(len(self.start), dtype=bool)
+        for current, old in zip(self, previous):
+            different = current != old
+            changed |= different if current.ndim == 1 else different.any(axis=1)
+        return changed
+
 
 class ModelDynamics(metaclass=abc.ABCMeta):
     def __init__(
@@ -92,6 +129,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         swap_fee_rate: float = 0.0,        # Fee rate on imbalanced swap amount
         seed: int = None,
         gas_cost_model: GasCostModel = None,
+        *,
+        cache_lp_fees: bool = True,
     ):
         super().__init__(midprice_model = midprice_model,
                          arrival_model = arrival_model,
@@ -113,6 +152,8 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.exponential_value = exponential_value
         self.gas_cost = gas_cost
         self.swap_fee_rate = swap_fee_rate
+        self.cache_lp_fees = cache_lp_fees
+        self._fee_cache = None
 
         # Track the center of the liquidity array (set during state initialization)
         self.tick_lower_global = None
@@ -321,17 +362,36 @@ class UniswapV3ModelDynamics(ModelDynamics):
         )
         return sqrt_p_lower, sqrt_p_upper
 
-    def _compute_gross_lp_fees(self, state: dict = None):
-        """
-        Compute LP's gross share of pool fees (read-only, does not modify state).
+    def _position_fee_inputs(self, state):
+        """Gather only the intersection of each LP position with the tracked grid."""
+        lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
+        upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
+        start = np.clip(lower - self.tick_lower_global, 0, self.num_ticks)
+        stop = np.clip(upper - self.tick_lower_global, 0, self.num_ticks)
+        width = np.maximum(stop - start, 0)
+        offsets = np.arange(width.max(initial=0))
+        valid = offsets < width[:, None]
+        columns = np.minimum(start[:, None] + offsets, self.num_ticks - 1)
+        paths = np.arange(len(start))[:, None]
+        grids = (POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY)
+        in_range = (np.where(valid, state[key][paths, columns], 0.0) for key in grids)
+        return _PositionFeeInputs(start, width, state[LP_LIQUIDITY_KEY].copy(), *in_range)
 
-        Returns:
-            (gross_fee0, gross_fee1, lp_share_in_range):
-                gross_fee0: shape (num_trajectories,)
-                gross_fee1: shape (num_trajectories,)
-                lp_share_in_range: shape (num_trajectories, num_ticks) — for pool subtraction
-        """
+    def _standard_fee_grids(self, state):
+        # Shared arrays need broadcasting. Other layouts can change reduction order.
+        shape = (state[LP_LIQUIDITY_KEY].size, self.num_ticks)
+        return (state[LP_LIQUIDITY_KEY].dtype == np.float64
+                and all(state[key].shape == shape and state[key].dtype == np.float64
+                        and state[key].flags.c_contiguous
+                        for key in (POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY)))
+
+    def _compute_gross_lp_fees(self, state: dict = None):
+        """Return gross fees and the per-tick share matrix for collection."""
         state = self._state_or_current(state)
+        if self._standard_fee_grids(state):
+            return self._position_fee_inputs(state).gross_fees(self.num_ticks, include_shares=True)
+
+        # Preserve dense arithmetic for externally supplied nonstandard arrays.
         lp_liq = state[LP_LIQUIDITY_KEY]
         lp_lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
         lp_upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
@@ -352,9 +412,17 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return gross_fee0, gross_fee1, lp_share_in_range
 
+    def _gross_lp_fee_totals(self, state):
+        if type(self) is UniswapV3ModelDynamics and self._standard_fee_grids(state):
+            return self._position_fee_inputs(state).gross_fees(self.num_ticks)[:2]
+        return self._compute_gross_lp_fees(state)[:2]
+
     def _claimable_lp_fees(self, state: dict = None, include_gross: bool = False):
         state = self._state_or_current(state)
-        gross0, gross1, lp_share_in_range = self._compute_gross_lp_fees(state)
+        if include_gross:
+            gross0, gross1, lp_share_in_range = self._compute_gross_lp_fees(state)
+        else:
+            gross0, gross1 = self._gross_lp_fee_totals(state)
         claimable0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY], 0.0)
         claimable1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY], 0.0)
         if include_gross:
@@ -392,7 +460,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         token0_amount = np.where(above, 0.0, np.where(below, x_below, x_in))
         return np.where(has_position, token0_amount, 0.0)
 
-    def compute_portfolio_value(self, state: dict = None) -> np.ndarray:
+    def compute_portfolio_value(self, state: dict = None, *, unclaimed_fees=None) -> np.ndarray:
         """Return LP mark-to-market wealth including currently unclaimed fees."""
         state = self._state_or_current(state)
         lp_liq = state[LP_LIQUIDITY_KEY]
@@ -406,7 +474,9 @@ class UniswapV3ModelDynamics(ModelDynamics):
             sqrt_p_lower,
             sqrt_p_upper,
         )
-        unclaimed0, unclaimed1 = self.compute_unclaimed_fees(state)
+        if unclaimed_fees is None:
+            unclaimed_fees = self.compute_unclaimed_fees(state)
+        unclaimed0, unclaimed1 = unclaimed_fees
         unclaimed_value = unclaimed0 * state[ASSET_PRICE_KEY] + unclaimed1
         no_pos_value = np.where(
             state[LP_EVER_DEPLOYED_KEY], 0.0, state[INITIAL_WEALTH_KEY]
@@ -443,6 +513,23 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
         return net_fee0, net_fee1
 
+    def _cached_claimable_lp_fees(self):
+        """Reuse gross totals for paths with identical fee inputs; snapshots stay live."""
+        inputs = self._position_fee_inputs(self.state)
+        cache = self._fee_cache
+        if (cache is None or cache[0] != self.num_ticks
+                or cache[1].pool_liquidity.shape != inputs.pool_liquidity.shape):
+            gross0, gross1, _ = inputs.gross_fees(self.num_ticks)
+        else:
+            _, previous, gross0, gross1 = cache
+            changed = inputs.changed_paths(previous)
+            if changed.any():
+                subset = _PositionFeeInputs(*(field[changed] for field in inputs))
+                gross0[changed], gross1[changed], _ = subset.gross_fees(self.num_ticks)
+        self._fee_cache = self.num_ticks, inputs, gross0, gross1
+        return (np.maximum(gross0 - self.state[LP_FEE_SNAPSHOT0_KEY], 0.0),
+                np.maximum(gross1 - self.state[LP_FEE_SNAPSHOT1_KEY], 0.0))
+
     def _accrue_lp_fees(self):
         """Refresh LP_UNCLAIMED_FEES and roll the per-step delta into LP_COLLECTED_FEES.
 
@@ -454,7 +541,12 @@ class UniswapV3ModelDynamics(ModelDynamics):
         Delta is clamped at zero so that a rebalance (which drops unclaimed back to 0)
         does not subtract from the cumulative lifetime counter.
         """
-        new_unclaimed0, new_unclaimed1 = self._claimable_lp_fees()
+        if (self.cache_lp_fees and type(self) is UniswapV3ModelDynamics
+                and self._standard_fee_grids(self.state)):
+            new_unclaimed0, new_unclaimed1 = self._cached_claimable_lp_fees()
+        else:
+            self._fee_cache = None
+            new_unclaimed0, new_unclaimed1 = self._claimable_lp_fees()
         delta0 = new_unclaimed0 - self.state[LP_UNCLAIMED_FEES0_KEY]
         delta1 = new_unclaimed1 - self.state[LP_UNCLAIMED_FEES1_KEY]
         self.state[LP_COLLECTED_FEES0_KEY] += np.maximum(delta0, 0.0)
@@ -606,7 +698,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
         self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---
-        snapshot0, snapshot1, _ = self._compute_gross_lp_fees()
+        snapshot0, snapshot1 = self._gross_lp_fee_totals(self.state)
         self.state[LP_FEE_SNAPSHOT0_KEY] = snapshot0
         self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
 
