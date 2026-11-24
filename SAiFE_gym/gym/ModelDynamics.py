@@ -25,6 +25,22 @@ from SAiFE_gym.stochastic_processes.price_impact_models import (
     OneTickUniswapV3PriceImpact,
 )
 
+def _tick_fees(num_ticks, rows, columns, lp_liquidity, liquidity, fees0, fees1, *, dense_shares=False):
+    """Compute each position's exact gross totals and its share at the given ticks."""
+    shares = np.divide(lp_liquidity[rows], liquidity,
+                       out=np.zeros_like(liquidity), where=liquidity > 0)
+    # NumPy's pairwise sum depends on the column placement and row width.
+    weighted = np.zeros((len(lp_liquidity), num_ticks), dtype=np.float64)
+    weighted[rows, columns] = fees0 * shares
+    gross0 = weighted.sum(axis=1)
+    weighted[rows, columns] = fees1 * shares
+    gross1 = weighted.sum(axis=1)
+    if dense_shares:
+        weighted[rows, columns] = shares
+        shares = weighted
+    return gross0, gross1, shares
+
+
 class _PositionFeeInputs(NamedTuple):
     """Detached LP inputs in tracked tick order, padded with zeros across paths."""
 
@@ -39,19 +55,11 @@ class _PositionFeeInputs(NamedTuple):
         offsets = np.arange(self.pool_liquidity.shape[1])
         paths, offsets = np.nonzero(offsets < self.width[:, None])
         columns = self.start[paths] + offsets
-        liquidity = self.pool_liquidity[paths, offsets]
-        shares = np.divide(self.lp_liquidity[paths], liquidity,
-                           out=np.zeros_like(liquidity), where=liquidity > 0)
-
-        # NumPy's pairwise sum depends on the column placement and row width.
-        weighted = np.zeros((len(self.start), num_ticks), dtype=np.float64)
-        weighted[paths, columns] = self.fees0[paths, offsets] * shares
-        gross0 = weighted.sum(axis=1)
-        weighted[paths, columns] = self.fees1[paths, offsets] * shares
-        gross1 = weighted.sum(axis=1)
-        if include_shares:
-            weighted[paths, columns] = shares
-        return gross0, gross1, weighted if include_shares else None
+        gross0, gross1, shares = _tick_fees(
+            num_ticks, paths, columns, self.lp_liquidity, self.pool_liquidity[paths, offsets],
+            self.fees0[paths, offsets], self.fees1[paths, offsets], dense_shares=include_shares,
+        )
+        return gross0, gross1, shares if include_shares else None
 
     def changed_paths(self, previous):
         changed = np.zeros(len(self.start), dtype=bool)
@@ -113,6 +121,10 @@ class UniswapV3ModelDynamics(ModelDynamics):
     Uniswap V3 Model Dynamics: Constant Product Market Maker with Concentrated Liquidity.
 
     """
+
+    # Custom fee hooks run with the original full batch unless the concrete
+    # dynamics explicitly uses the standard collection and entry-snapshot rules.
+    _standard_rebalance_fees = True
 
     def __init__(
         self,
@@ -362,13 +374,15 @@ class UniswapV3ModelDynamics(ModelDynamics):
         )
         return sqrt_p_lower, sqrt_p_upper
 
-    def _position_fee_inputs(self, state):
-        """Gather only the intersection of each LP position with the tracked grid."""
-        lower = state[LP_TICK_LOWER_KEY].astype(np.int64)
-        upper = state[LP_TICK_UPPER_KEY].astype(np.int64)
+    def _tracked_range(self, lower, upper):
         start = np.clip(lower - self.tick_lower_global, 0, self.num_ticks)
         stop = np.clip(upper - self.tick_lower_global, 0, self.num_ticks)
-        width = np.maximum(stop - start, 0)
+        return start, np.maximum(stop - start, 0)
+
+    def _position_fee_inputs(self, state):
+        """Gather only the intersection of each LP position with the tracked grid."""
+        start, width = self._tracked_range(state[LP_TICK_LOWER_KEY].astype(np.int64),
+                                           state[LP_TICK_UPPER_KEY].astype(np.int64))
         offsets = np.arange(width.max(initial=0))
         valid = offsets < width[:, None]
         columns = np.minimum(start[:, None] + offsets, self.num_ticks - 1)
@@ -586,14 +600,16 @@ class UniswapV3ModelDynamics(ModelDynamics):
             rebalance_mask: Optional boolean mask (num_trajectories,). If provided,
                 only trajectories where mask is True are rebalanced; others are held.
         """
-        if rebalance_mask is not None and not np.any(rebalance_mask):
+        paths = np.arange(self.num_trajectories) if rebalance_mask is None else np.flatnonzero(rebalance_mask)
+        if not len(paths):
             return
 
-        # Save held trajectories' state so it can be restored after computation.
-        # When all trajectories rebalance (rebalance_mask is None or all True),
-        # no save/restore is needed.
-        has_held = rebalance_mask is not None and not np.all(rebalance_mask)
-        if has_held:
+        range_fees = vars(type(self)).get("_standard_rebalance_fees", False)
+        if range_fees or len(paths) == self.num_trajectories:
+            self._rebalance_positions(action[paths], paths, range_fees)
+        else:
+            # Custom hooks can inspect or mutate the entire batch. Preserve
+            # their original calling convention and restore held rows afterward.
             hold_mask = ~rebalance_mask
             _SAVE_KEYS = [
                 LP_LIQUIDITY_KEY, LP_TICK_LOWER_KEY, LP_TICK_UPPER_KEY,
@@ -603,12 +619,60 @@ class UniswapV3ModelDynamics(ModelDynamics):
                 POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY,
             ]
             saved = {k: self.state[k][hold_mask].copy() for k in _SAVE_KEYS}
+            self._rebalance_positions(action, np.arange(self.num_trajectories), range_fees)
+            for key, value in saved.items():
+                self.state[key][hold_mask] = value
 
-        num_traj = self.num_trajectories
-        sqrt_p = self.state[POOL_SQRT_PRICE_KEY]
-        external_price = self.state[ASSET_PRICE_KEY]
-        current_tick = self.state[POOL_CURRENT_TICK_KEY].astype(np.int64)
-        lp_liq = self.state[LP_LIQUIDITY_KEY]
+    def _range_ticks(self, lower, upper):
+        """Return unique (local row, tracked tick) pairs for half-open ranges."""
+        start, width = self._tracked_range(lower, upper)
+        rows, offsets = np.nonzero(np.arange(width.max(initial=0)) < width[:, None])
+        return rows, start[rows] + offsets
+
+    def _rebalance_tick_fees(self, paths, rows, ticks):
+        state = self.state
+        cells = (paths[rows], ticks)
+        if self._standard_fee_grids(state):
+            return _tick_fees(
+                self.num_ticks, rows, ticks, state[LP_LIQUIDITY_KEY][paths],
+                state[POOL_LIQUIDITY_ARRAY_KEY][cells], state[FEES0_KEY][cells], state[FEES1_KEY][cells],
+            )
+        # Preserve the original reduction order for nonstandard array layouts.
+        gross0, gross1, shares = self._compute_gross_lp_fees(state)
+        return gross0[paths], gross1[paths], shares[cells]
+
+    def _collect_rebalance_fees(self, paths, rows, ticks):
+        state = self.state
+        cells = (paths[rows], ticks)
+        gross0, gross1, shares = self._rebalance_tick_fees(paths, rows, ticks)
+        fee0 = np.maximum(gross0 - state[LP_FEE_SNAPSHOT0_KEY][paths], 0.0)
+        fee1 = np.maximum(gross1 - state[LP_FEE_SNAPSHOT1_KEY][paths], 0.0)
+        for key, net, gross in ((FEES0_KEY, fee0, gross0), (FEES1_KEY, fee1, gross1)):
+            ratio = np.divide(net, gross, out=np.zeros_like(net), where=gross > 0)
+            amounts = state[key][cells]
+            state[key][cells] = amounts - amounts * shares * ratio[rows]
+        return fee0, fee1
+
+    def _set_position_values(self, key, selection, values):
+        if isinstance(selection, slice):
+            # Full-batch hooks may retain references to the previous position.
+            self.state[key] = np.full(self.num_trajectories, values) if np.isscalar(values) else values
+            return
+        # Legacy states may store tick bounds or LP fields in another dtype.
+        target = self.state[key]
+        dtype = np.asarray(values).dtype
+        if target.dtype != dtype or not target.flags.writeable:
+            target = self.state[key] = target.astype(dtype)
+        target[selection] = values
+
+    def _rebalance_positions(self, action, paths, range_fees):
+        state = self.state
+        # A full-batch view preserves in-place updates made by custom fee hooks.
+        selection = paths if range_fees else slice(None)
+        sqrt_p = state[POOL_SQRT_PRICE_KEY][selection]
+        external_price = state[ASSET_PRICE_KEY][selection]
+        current_tick = state[POOL_CURRENT_TICK_KEY][selection].astype(np.int64)
+        lp_liq = state[LP_LIQUIDITY_KEY][selection]
 
         has_position = lp_liq > 0
 
@@ -616,14 +680,13 @@ class UniswapV3ModelDynamics(ModelDynamics):
         # Trajectories that have never deployed get initial_wealth as starting capital.
         # Trajectories that were previously deployed but are now bankrupt (lp_liq == 0
         # after gas costs drained their wealth) correctly start at 0, not initial_wealth.
-        ever_deployed = self.state[LP_EVER_DEPLOYED_KEY]
-        wealth = np.where(ever_deployed, 0.0, self.state[INITIAL_WEALTH_KEY])
-        alpha_current = np.zeros(num_traj)
+        ever_deployed = state[LP_EVER_DEPLOYED_KEY][paths]
+        wealth = np.where(ever_deployed, 0.0, state[INITIAL_WEALTH_KEY][paths])
 
         if np.any(has_position):
             # Compute position value for trajectories with existing positions
-            lp_lower = self.state[LP_TICK_LOWER_KEY].astype(np.int64)
-            lp_upper = self.state[LP_TICK_UPPER_KEY].astype(np.int64)
+            lp_lower = state[LP_TICK_LOWER_KEY][paths].astype(np.int64)
+            lp_upper = state[LP_TICK_UPPER_KEY][paths].astype(np.int64)
             sqrt_p_lower = np.sqrt(self.exponential_value ** lp_lower.astype(np.float64))
             sqrt_p_upper = np.sqrt(self.exponential_value ** lp_upper.astype(np.float64))
 
@@ -633,7 +696,11 @@ class UniswapV3ModelDynamics(ModelDynamics):
             # zeros snapshots). Cumulative LP_COLLECTED_FEES is updated per-step by
             # _accrue_lp_fees, so we do NOT re-add here — the delta between pre- and
             # post-rebalance unclaimed is already baked into the cumulative counter.
-            fee0, fee1 = self._collect_lp_fees()
+            # Empty ranges give undeployed paths no grid entries.
+            rows, ticks = self._range_ticks(lp_lower, np.where(has_position, lp_upper, lp_lower))
+            cells = (paths[rows], ticks)
+            fee0, fee1 = (self._collect_rebalance_fees(paths, rows, ticks) if range_fees
+                          else self._collect_lp_fees())
 
             # Convert fee0 (token0) to token1 value using external price
             fee_value = fee0 * external_price + fee1
@@ -642,7 +709,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
 
             alpha_pos = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_lower, sqrt_p_upper)
             token0_value = alpha_pos * pos_value + fee0 * external_price
-            alpha_current = np.zeros(num_traj, dtype=np.float64)
+            alpha_current = np.zeros(len(paths), dtype=np.float64)
             np.divide(
                 token0_value,
                 wealth_with_pos,
@@ -653,13 +720,7 @@ class UniswapV3ModelDynamics(ModelDynamics):
             wealth = np.where(has_position, wealth_with_pos, wealth)
 
             # Remove LP's liquidity from pool at old range
-            tick_indices = np.arange(self.num_ticks)
-            absolute_ticks = self.tick_lower_global + tick_indices
-            old_in_range = (absolute_ticks[None, :] >= lp_lower[:, None]) & \
-                           (absolute_ticks[None, :] < lp_upper[:, None])
-            # Only remove for trajectories that have a position
-            remove_mask = old_in_range & has_position[:, None]
-            self.state[POOL_LIQUIDITY_ARRAY_KEY] -= remove_mask * lp_liq[:, None]
+            self.state[POOL_LIQUIDITY_ARRAY_KEY][cells] -= lp_liq[rows]
 
         # --- Phase 2: Deploy new position ---
         new_lower = current_tick + np.round(action[:, 0]).astype(np.int64)
@@ -672,45 +733,42 @@ class UniswapV3ModelDynamics(ModelDynamics):
         if np.any(has_position):
             alpha_new = self._compute_token0_fraction_vec(sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper)
             swap_cost = self.swap_fee_rate * np.abs(alpha_new - alpha_current) * wealth
-            current_gas_cost = self.state.get(GAS_COST_KEY, self.gas_cost)
+            current_gas_cost = np.broadcast_to(self.state.get(GAS_COST_KEY, self.gas_cost),
+                                               (self.num_trajectories,))[paths]
             total_cost = np.where(has_position, current_gas_cost + swap_cost, 0.0)
             wealth = np.maximum(wealth - total_cost, 0.0)
 
         # Value per unit liquidity at new range
         value_per_L = get_position_value_vec(
-            np.ones(num_traj), external_price, sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper
+            np.ones(len(paths)), external_price, sqrt_p, sqrt_p_new_lower, sqrt_p_new_upper
         )
 
         # Compute new liquidity (handle zero value_per_L)
         new_L = np.where(value_per_L > 0, wealth / value_per_L, 0.0)
 
         # Add new liquidity to pool at new range
-        tick_indices = np.arange(self.num_ticks)
-        absolute_ticks = self.tick_lower_global + tick_indices
-        new_in_range = (absolute_ticks[None, :] >= new_lower[:, None]) & \
-                       (absolute_ticks[None, :] < new_upper[:, None])
-        self.state[POOL_LIQUIDITY_ARRAY_KEY] += new_in_range * new_L[:, None]
+        rows, ticks = self._range_ticks(new_lower, new_upper)
+        cells = (paths[rows], ticks)
+        self.state[POOL_LIQUIDITY_ARRAY_KEY][cells] += new_L[rows]
 
         # --- Phase 3: Update LP state ---
-        self.state[LP_LIQUIDITY_KEY] = new_L
-        self.state[LP_TICK_LOWER_KEY] = new_lower
-        self.state[LP_TICK_UPPER_KEY] = new_upper
-        self.state[LP_EVER_DEPLOYED_KEY] |= (new_L > 0)
+        self._set_position_values(LP_LIQUIDITY_KEY, selection, new_L)
+        self._set_position_values(LP_TICK_LOWER_KEY, selection, new_lower)
+        self._set_position_values(LP_TICK_UPPER_KEY, selection, new_upper)
+        self.state[LP_EVER_DEPLOYED_KEY][paths] |= new_L > 0
 
         # --- Phase 4: Snapshot pre-existing fees in new range ---
-        snapshot0, snapshot1 = self._gross_lp_fee_totals(self.state)
-        self.state[LP_FEE_SNAPSHOT0_KEY] = snapshot0
-        self.state[LP_FEE_SNAPSHOT1_KEY] = snapshot1
+        if range_fees:
+            snapshot0, snapshot1, _ = self._rebalance_tick_fees(paths, rows, ticks)
+        else:
+            snapshot0, snapshot1 = self._gross_lp_fee_totals(self.state)
+        self._set_position_values(LP_FEE_SNAPSHOT0_KEY, selection, snapshot0)
+        self._set_position_values(LP_FEE_SNAPSHOT1_KEY, selection, snapshot1)
 
         # Unclaimed bucket is absorbed into the new position; reset to zero so the next
         # per-step accrual measures only post-rebalance fee earnings.
-        self.state[LP_UNCLAIMED_FEES0_KEY] = np.zeros(num_traj, dtype=np.float64)
-        self.state[LP_UNCLAIMED_FEES1_KEY] = np.zeros(num_traj, dtype=np.float64)
-
-        # Restore held trajectories after computation
-        if has_held:
-            for k, v in saved.items():
-                self.state[k][hold_mask] = v
+        self._set_position_values(LP_UNCLAIMED_FEES0_KEY, selection, 0.0)
+        self._set_position_values(LP_UNCLAIMED_FEES1_KEY, selection, 0.0)
 
     def update_state(self, arrivals: np.ndarray, action: np.ndarray):
         """
