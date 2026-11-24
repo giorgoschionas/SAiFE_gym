@@ -835,6 +835,7 @@ def test_domain_randomized_script_defaults_propagate_to_environment_and_action_s
     np.testing.assert_array_equal(state[POOL_LIQUIDITY_ARRAY_KEY], 30_000.0)
     assert env.reward_function.per_step_inventory_aversion == args.inventory_phi
     assert env.model_dynamics.tau == 50
+    assert env.model_dynamics.price_impact_model.depth_window == 20
     assert args.tick_stride == 5
     np.testing.assert_array_equal(env.action_space.low, [-50.0, -49.0, -1.0])
     np.testing.assert_array_equal(env.action_space.high, [49.0, 50.0, 1.0])
