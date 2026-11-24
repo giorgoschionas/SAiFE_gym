@@ -1,0 +1,61 @@
+{
+  "output_dir": "experiments/results/lp_width_volatility_bg30000_sweep/sigma_0.04",
+  "total_timesteps": 10000000,
+  "num_trajectories": 100,
+  "terminal_time": 1.0,
+  "n_steps": 10000,
+  "decision_stride": 100,
+  "tau": 50,
+  "tick_stride": 5,
+  "alpha3": 4000.0,
+  "initial_wealth": 1000.0,
+  "inventory_phi": 0.4,
+  "seed": 42,
+  "evaluation_seed": 100042,
+  "n_eval_episodes": 10,
+  "convergence_eval_every_rollouts": 10,
+  "convergence_n_eval_episodes": 1,
+  "learning_rate": 0.0003,
+  "periodic_rebalance_every": 100,
+  "periodic_width": 50,
+  "normalise_obs": true,
+  "nominal_sigma": 0.04,
+  "nominal_arrival_rate": 300.0,
+  "nominal_gas_cost": 2.0,
+  "train_sigma_range": [
+    0.01,
+    0.05
+  ],
+  "train_arrival_rate_range": [
+    200.0,
+    400.0
+  ],
+  "train_domains_per_reset": null,
+  "arrival_alpha2": 0.0,
+  "kernel_beta": 0.5,
+  "kernel_window": 10,
+  "liquidity_scale": 1000000.0,
+  "trade_size_notional": 250.0,
+  "price_impact_depth_window": 10,
+  "price_impact_min_depth": 1e-12,
+  "eval_in_distribution_sigma_values": [
+    0.015,
+    0.03,
+    0.045
+  ],
+  "eval_in_distribution_arrival_rate_values": [
+    250.0,
+    300.0,
+    350.0
+  ],
+  "eval_stress_sigma_values": [
+    0.065,
+    0.08
+  ],
+  "eval_stress_arrival_rate_values": [
+    150.0,
+    450.0
+  ],
+  "smoke_test": false,
+  "background_liquidity": 30000.0
+}

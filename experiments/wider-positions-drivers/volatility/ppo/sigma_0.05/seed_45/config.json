@@ -1,0 +1,55 @@
+{
+  "action_mode": "symmetric_width",
+  "code_sha256": "8aca8c116dffc571678c78144f5eb6f7522948b26b34c04ffe7a6638b49e8d48",
+  "evaluation_seed": 200042,
+  "half_widths": [
+    2,
+    5,
+    10,
+    15,
+    20,
+    25,
+    30,
+    35,
+    40,
+    45,
+    50
+  ],
+  "inventory_phi": 0.0,
+  "policy_action_space": "half-width only; recenter and rebalance every decision",
+  "schema_version": 1,
+  "seed": 45,
+  "seeds": [
+    43,
+    44,
+    45
+  ],
+  "settings": {
+    "alpha3": 4000.0,
+    "background_liquidity": 30000.0,
+    "convergence_eval_every_rollouts": 5,
+    "convergence_n_eval_episodes": 1,
+    "decision_stride": 100,
+    "initial_wealth": 1000.0,
+    "learning_rate": 0.0003,
+    "n_eval_episodes": 10,
+    "n_steps": 10000,
+    "nominal_arrival_rate": 300.0,
+    "nominal_gas_cost": 2.0,
+    "num_trajectories": 100,
+    "price_impact_depth_window": 15,
+    "tau": 50,
+    "terminal_time": 1.0,
+    "total_timesteps": 10000000,
+    "trade_size_notional": 250.0
+  },
+  "sigma": 0.05,
+  "sigma_values": [
+    0.03,
+    0.035,
+    0.04,
+    0.045,
+    0.05
+  ],
+  "validation_seed": 100042
+}

@@ -1,0 +1,66 @@
+{
+  "action_mode": "structured",
+  "alpha3": 4000.0,
+  "arrival_alpha2": 0.0,
+  "background_liquidity": 25000.0,
+  "convergence_eval_every_rollouts": 10,
+  "convergence_n_eval_episodes": 1,
+  "decision_stride": 100,
+  "eval_in_distribution_arrival_rate_values": [
+    250.0,
+    300.0,
+    350.0
+  ],
+  "eval_in_distribution_sigma_values": [
+    0.015,
+    0.03,
+    0.045
+  ],
+  "eval_stress_arrival_rate_values": [
+    150.0,
+    450.0
+  ],
+  "eval_stress_sigma_values": [
+    0.065,
+    0.08
+  ],
+  "evaluation_seed": 100042,
+  "half_widths": null,
+  "initial_wealth": 1000.0,
+  "inventory_phi": 0.4,
+  "kernel_beta": 0.5,
+  "kernel_window": 10,
+  "learning_rate": 0.0003,
+  "liquidity_scale": 1000000.0,
+  "max_agent_decisions_per_episode": 10,
+  "n_eval_episodes": 10,
+  "n_steps": 1000,
+  "nominal_arrival_rate": 300.0,
+  "nominal_gas_cost": 2.0,
+  "nominal_sigma": 0.03,
+  "normalise_obs": true,
+  "num_trajectories": 100,
+  "output_dir": "experiments/results/rl_background_liquidity",
+  "periodic_rebalance_every": 100,
+  "periodic_width": 50,
+  "ppo_n_steps": 10,
+  "ppo_total_timesteps": 1000000,
+  "price_impact_depth_window": 15,
+  "price_impact_min_depth": 1e-12,
+  "seed": 42,
+  "smoke_test": false,
+  "tau": 50,
+  "terminal_time": 1.0,
+  "tick_stride": 5,
+  "total_timesteps": 100000000,
+  "trade_size_notional": 250.0,
+  "train_arrival_rate_range": [
+    200.0,
+    400.0
+  ],
+  "train_domains_per_reset": null,
+  "train_sigma_range": [
+    0.01,
+    0.05
+  ]
+}
