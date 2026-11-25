@@ -1,19 +1,12 @@
-# What draws an LP toward a wider position?
+# What drives LPs toward a wider positions?
 
-A concentrated-liquidity provider (LP) chooses how far its capital extends on either
-side of the pool price. A narrow range supplies more liquidity per tick while the
-price is inside it. A wider range covers more of the prices the pool might visit
-before the LP rebalances. When is that extra coverage worth buying?
 
-SAiFE Gym lets us change one market parameter at a time and observe both the ranges
-that trained LPs deploy and the returns to a fixed trading rule. We also examine
-one LP preference by changing how the same simulated profits and losses are valued.
 
 | Change within a sweep | What happens in these simulations? |
 | --- | --- |
-| [Less background liquidity per tick](background-liquidity/README.md) | Policies trained in shallower pools generally deploy wider ranges. For a periodic LP, spreading its capital across more ticks gives up less fee income as the pool gets shallower. |
+| [Less background liquidity per tick](background-liquidity/README.md) | Policies trained in thinner pools generally deploy wider ranges. For a periodic LP, spreading its capital across more ticks gives up less fee income as the pool gets thinner. |
 | [Higher midprice volatility](volatility/README.md) at background liquidity 30,000 | Policies trained in the more volatile markets deploy wider ranges on average. The wider of two periodic ranges spends more time in range and overtakes the narrower one in mean net PnL as volatility rises. |
-| [Greater LP risk aversion](risk-aversion/README.md) at a fixed market setting | A wider periodic range gives up some mean profit for a less variable payoff. An LP that puts more weight on poor outcomes can prefer that trade. |
+| [Greater LP risk aversion through exponential utility](risk-aversion/README.md) at a fixed market setting | A wider periodic range gives up some mean profit for a less variable payoff. An LP that puts more weight on poor outcomes can prefer that trade. |
 
 ![PPO policies deploy wider ranges at lower liquidity and higher volatility. The value of widening a fixed range changes from negative to positive as risk aversion increases.](overview.png)
 
