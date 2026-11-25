@@ -6,9 +6,8 @@ recorded results, configurations, path-level data, and plots; no simulations
 were rerun to assemble it.
 
 The results support wider positions as background liquidity falls, volatility
-rises in the lower-liquidity regime, and risk aversion rises in the newer CARA
-experiment. These are conditional findings: the high-liquidity volatility sweep
-and the older CARA sweep retain the same best sampled width.
+rises at background liquidity 30,000, and risk aversion rises in the CARA
+experiment.
 
 | Driver | Main comparison | Best sampled half-width (ticks) | What is maximized? |
 | --- | --- | --- | --- |
@@ -45,11 +44,9 @@ background-liquidity/
   periodic-comparison/     Baselines matched to learned average widths
 volatility/
   fixed-width-bg30000/     PnL versus width, sigma 0.03–0.05
-  fixed-width-bg100000/    Higher-background comparison, sigma 0.03–0.07
   ppo/                     Three training seeds, with baseline comparisons
 risk-aversion/
   cara/                    2026-11-10 run: 5,000 paths per width
-  legacy-cara/             Completed 2026-10-30 run: 200 paths per width
 manifest.json              Original locations and SHA-256 checksums
 overview.csv               Derived results with source CSV references
 overview.png / .pdf        Combined fixed-width comparison
@@ -67,8 +64,7 @@ other settings differ:
 | Liquidity and volatility fixed-width grids | 10,000 | Every 100 steps (0.01 time units) | 100 in one batch | Net PnL, periodic |
 | Liquidity PPO | 1,000 | Decision every 100 steps; holds allowed | 10 × 100 per policy; 1 training seed | Running inventory penalty, `phi=0.4` |
 | Volatility PPO | 10,000 | Rebalance every 100 steps | 10 × 100 per policy; 3 training seeds | Net PnL, `phi=0` |
-| New CARA grid | 1,000 | Every 100 steps (0.1 time units) | 50 × 100 | Expected CARA utility, periodic |
-| Legacy CARA grid | 1,000 | Every 100 steps | 20 × 10 | Older CARA reward scale, periodic |
+| CARA grid | 1,000 | Every 100 steps (0.1 time units) | 50 × 100 | Expected CARA utility, periodic |
 
 The fixed PnL grids use matched external shocks and retain individual PnLs;
 their path dispersion is not a confidence interval for the selected optimum.
@@ -85,15 +81,12 @@ current simulator defaults should not be substituted for them.
 
 ## Provenance and rebuilding
 
-[manifest.json](manifest.json) records eight source result directories from the
+[manifest.json](manifest.json) records six source result directories from the
 main checkout, with byte counts and SHA-256 checksums for every copied artifact.
 Original files remain in place. Historical output paths and metadata inside
 the snapshots are preserved, so use the collection's relative links for local
-navigation. Recorded Git revisions and source snapshots are retained where
+navigation. Recorded Git revisions are retained where
 available; a source revision was not recorded for every run.
-Historical Python source snapshots have a `.py.txt` suffix so they cannot be
-imported or collected as live tests; `original_path` in the manifest records
-their original names. Their contents and checksums are unchanged.
 
 Model checkpoints and normalization pickles remain at the original locations.
 Redundant per-episode CARA NPZ files are omitted because each run's

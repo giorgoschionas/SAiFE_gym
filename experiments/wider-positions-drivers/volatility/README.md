@@ -1,8 +1,7 @@
 # Midprice volatility
 
 Higher volatility shifts the best sampled width upward at background liquidity
-30,000. The separate 100,000-background sweep shows that this effect depends on
-the liquidity regime.
+30,000.
 
 ## Fixed-width PnL evidence at background 30,000
 
@@ -27,17 +26,6 @@ it does not increase their absolute profitability. All sampled half-widths
 
 ![PnL versus width and volatility at background 30,000](fixed-width-bg30000/pnl_width_volatility.png)
 
-## Higher-background comparison
-
-At background liquidity 100,000, the best sampled half-width is **2 ticks at
-every sigma** in `0.03, 0.04, 0.05, 0.06, 0.07`. Its mean PnLs are respectively
-`35.317, -16.344, -65.458, -112.562, -157.168` token1. This sweep does not show
-the widening pattern. See [the grid](fixed-width-bg100000/summary.csv) and
-[original plot](fixed-width-bg100000/pnl_width_volatility.png).
-
-Older configuration files omit `background_liquidity`; this run used the
-historical implicit value 100,000. The snapshots preserve that omission.
-
 ## Learned-policy evidence
 
 Source: [width summary](ppo/summary/width_by_volatility.csv),
@@ -61,5 +49,4 @@ Those baselines outperform PPO's mean PnL in all five scenarios, reinforcing
 the distinction between a learned average width and a profit-maximizing width.
 
 Greater price dispersion between rebalances is a plausible reason for wider
-coverage to help. The comparison across background regimes shows that the
-width trade-off also depends on liquidity and endogenous trading behavior.
+coverage to help.

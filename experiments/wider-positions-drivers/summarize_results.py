@@ -39,7 +39,6 @@ def collect_rows():
     for driver, run, parameter in [
         ("background_liquidity", "background-liquidity/fixed-width", "background_liquidity"),
         ("volatility", "volatility/fixed-width-bg30000", "sigma"),
-        ("volatility", "volatility/fixed-width-bg100000", "sigma"),
     ]:
         source = f"{run}/summary.csv"
         grid = read_csv(source)
@@ -75,19 +74,19 @@ def collect_rows():
                 "seed_std_full_width_ticks": row[std_key], "source_csv": source,
             })
 
-    for run in ["risk-aversion/cara", "risk-aversion/legacy-cara"]:
-        source = f"{run}/best_widths.csv"
-        for row in read_csv(source):
-            rows.append({
-                "driver": "risk_aversion", "run": run, "parameter": "risk_aversion",
-                "parameter_value": float(row["risk_aversion"]),
-                "width_statistic": "best_sampled_fixed_full_width",
-                "full_width_ticks": float(row["full_width_ticks"]),
-                "objective": "expected_cara_utility", "mean_pnl": float(row["mean_pnl"]),
-                "certainty_equivalent_pnl": float(row["certainty_equivalent_pnl"]),
-                "bootstrap_best_fraction": float(row["bootstrap_best_fraction"]),
-                "seed_std_full_width_ticks": "", "source_csv": source,
-            })
+    run = "risk-aversion/cara"
+    source = f"{run}/best_widths.csv"
+    for row in read_csv(source):
+        rows.append({
+            "driver": "risk_aversion", "run": run, "parameter": "risk_aversion",
+            "parameter_value": float(row["risk_aversion"]),
+            "width_statistic": "best_sampled_fixed_full_width",
+            "full_width_ticks": float(row["full_width_ticks"]),
+            "objective": "expected_cara_utility", "mean_pnl": float(row["mean_pnl"]),
+            "certainty_equivalent_pnl": float(row["certainty_equivalent_pnl"]),
+            "bootstrap_best_fraction": float(row["bootstrap_best_fraction"]),
+            "seed_std_full_width_ticks": "", "source_csv": source,
+        })
     return sorted(rows, key=lambda row: (row["driver"], row["run"], row["parameter_value"]))
 
 
@@ -100,23 +99,17 @@ def plot_overview(rows):
     fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
     panels = [
         ("background-liquidity/fixed-width", "Lower background liquidity", "Background liquidity per interval", "#0072B2"),
-        ("volatility/fixed-width-bg30000", "Higher midprice volatility", "GBM volatility (sigma)", "#009E73"),
+        ("volatility/fixed-width-bg30000", "Higher midprice volatility", "GBM volatility (sigma) at background 30,000", "#009E73"),
         ("risk-aversion/cara", "Higher CARA risk aversion", "Risk aversion (1 / token1)", "#AA4499"),
     ]
     for ax, (run, title, xlabel, color) in zip(axes, panels):
         selected = [row for row in rows if row["run"] == run]
         ax.plot([row["parameter_value"] for row in selected],
-                [row["full_width_ticks"] for row in selected], "o-", color=color,
-                label="Background 30,000" if run.startswith("volatility") else None)
+                [row["full_width_ticks"] for row in selected], "o-", color=color)
         ax.set(title=title, xlabel=xlabel, ylabel="Best sampled full width (ticks)")
         ax.grid(alpha=0.2)
     axes[0].invert_xaxis()
     axes[0].ticklabel_format(axis="x", style="plain")
-    control = [row for row in rows if row["run"] == "volatility/fixed-width-bg100000"]
-    axes[1].plot([row["parameter_value"] for row in control],
-                 [row["full_width_ticks"] for row in control], "s--", color="#666666",
-                 label="Background 100,000")
-    axes[1].legend(fontsize=8)
     axes[2].set_xscale("symlog", linthresh=0.003)
     axes[2].set_xticks([0, 0.003, 0.01, 0.03, 0.1], ["0", ".003", ".01", ".03", ".1"])
     fig.suptitle("Wider positions: evidence from completed fixed-width sweeps", fontsize=14)

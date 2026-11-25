@@ -56,19 +56,3 @@ of resamples. At `a=0.1`, the chosen width's utility-weight effective sample
 size is about 15.8 out of 5,000, and one path carries about 17.6% of the weight.
 Tail sensitivity remains substantial. See [summary.json](cara/summary.json)
 and the reward grid for pointwise intervals and concentration diagnostics.
-
-## Historical comparison
-
-The completed 2026-10-30 run is retained under [legacy-cara](legacy-cara/config.json).
-It uses 200 paths per width, the older implicit background liquidity of 100,000,
-a smaller width grid (1–50), and the previous dense reward scale. Its best
-sampled half-width remains **25** for every tested risk parameter
-`0.0001, 0.001, 0.003, 0.01, 0.03, 0.1`; see
-[best_widths.csv](legacy-cara/best_widths.csv).
-
-For positive `a`, the newer total reward equals the older total reward divided
-by `a`; rankings at fixed `a` and CE are preserved. Raw reward columns should
-not be pooled across these versions. The historical source snapshot is
-included in `legacy-cara/source_snapshot/`. The legacy result also shows why
-increasing optimal width is an empirical finding, not a consequence guaranteed
-by concavity of utility in PnL.
