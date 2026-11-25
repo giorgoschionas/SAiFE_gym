@@ -31,7 +31,8 @@ from SAiFE_gym.stochastic_processes.arrival_models import PoissonArrivalModel
 
 
 def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
-                      initial_wealth=1e6, tau=5, gas_cost=0.0, swap_fee_rate=0.0):
+                      initial_wealth=1e6, tau=5, gas_cost=0.0, swap_fee_rate=0.0,
+                      model_class=UniswapV3ModelDynamics):
     """Create a UniswapV3ModelDynamics instance for testing."""
     midprice_model = BrownianMotionMidpriceModel(
         drift=0.0,
@@ -49,7 +50,7 @@ def create_test_model(num_trajectories=1, num_ticks=100, initial_price=100.0,
         seed=42
     )
 
-    model = UniswapV3ModelDynamics(
+    model = model_class(
         midprice_model=midprice_model,
         arrival_model=arrival_model,
         num_trajectories=num_trajectories,
@@ -373,6 +374,26 @@ class TestFeeCollection:
 
 class TestPoolLiquidityModification:
     """Test that pool liquidity array is correctly modified."""
+
+    def test_withdrawal_uses_pool_and_position_updated_by_fee_hook(self):
+        class CreditLiquidityOnCollection(UniswapV3ModelDynamics):
+            def _collect_lp_fees(self):
+                pool = self.state[POOL_LIQUIDITY_ARRAY_KEY].copy()
+                # With no background liquidity, only this LP's ticks are occupied.
+                pool[pool > 0] += 10.0
+                self.state[POOL_LIQUIDITY_ARRAY_KEY] = pool
+                self.state[LP_LIQUIDITY_KEY] += 10.0
+                return super()._collect_lp_fees()
+
+        model = create_test_model(num_ticks=16, model_class=CreditLiquidityOnCollection)
+        initialize_state(model, liquidity_value=0.0)
+        model._rebalance(np.array([[-3, -1]]))
+        model._rebalance(np.array([[1, 3]]))
+
+        expected = np.zeros((1, 16))
+        expected[0, 9:11] = model.state[LP_LIQUIDITY_KEY][0]
+        assert expected[0, 9] > 0
+        np.testing.assert_array_equal(model.state[POOL_LIQUIDITY_ARRAY_KEY], expected)
 
     def test_liquidity_added_to_correct_range(self):
         """LP's liquidity should only be added within [lower, upper) range."""
@@ -920,6 +941,48 @@ class TestRebalancingCost:
 
 class TestHoldAction:
     """Test hold (no-rebalance) action via the 3rd action dimension."""
+
+    def test_partial_rebalance_touches_only_old_and_new_tick_ranges(self):
+        class TrackedGrid(np.ndarray):
+            def __getitem__(self, index):
+                self.reads[index] = True
+                return self.view(np.ndarray)[index]
+
+            def __setitem__(self, index, values):
+                self.writes[index] = True
+                self.view(np.ndarray)[index] = values
+
+        model = create_test_model(num_trajectories=4, num_ticks=16)
+        initialize_state(model)
+        state = model.state
+        anchor = model.tick_lower_global
+        ticks = np.array([1, 8, 6, 15])
+        state[POOL_CURRENT_TICK_KEY] = anchor + ticks
+        state[POOL_SQRT_PRICE_KEY] = model.sqrt_grid[ticks]
+        model._rebalance(np.tile([-3, 2], (4, 1)), np.array([True, True, False, True]))
+        # Path 1 now holds, path 2 makes its first deployment, and paths
+        # 0 and 3 move overlapping ranges at opposite grid boundaries.
+        for key in (FEES0_KEY, FEES1_KEY):
+            state[key][:] = np.arange(1, 17)
+        for key in (POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY):
+            grid = state[key].view(TrackedGrid)
+            grid.reads = np.zeros(grid.shape, dtype=bool)
+            grid.writes = np.zeros(grid.shape, dtype=bool)
+            state[key] = grid
+        held_before = {k: np.asarray(v)[1].copy() for k, v in state.items()}
+
+        model._rebalance(np.tile([-1, 4], (4, 1)), np.array([True, False, True, True]))
+
+        old_range = np.zeros((4, 16), dtype=bool)
+        old_range[0, :3] = old_range[3, 12:16] = True
+        new_range = np.zeros_like(old_range)
+        new_range[0, :5] = new_range[2, 5:10] = new_range[3, 14:16] = True
+        for key in (POOL_LIQUIDITY_ARRAY_KEY, FEES0_KEY, FEES1_KEY):
+            np.testing.assert_array_equal(state[key].reads, old_range | new_range)
+            expected = old_range | new_range if key == POOL_LIQUIDITY_ARRAY_KEY else old_range
+            np.testing.assert_array_equal(state[key].writes, expected)
+        for key, previous in held_before.items():
+            np.testing.assert_array_equal(np.asarray(state[key])[1], previous)
 
     def test_hold_preserves_position(self):
         """Deploy LP, hold next step -> LP_LIQUIDITY/bounds unchanged, no gas cost."""

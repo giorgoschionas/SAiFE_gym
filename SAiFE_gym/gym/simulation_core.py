@@ -1,6 +1,15 @@
 import numpy as np
 
-from SAiFE_gym.gym.ModelDynamics import ModelDynamics
+from SAiFE_gym.gym.ModelDynamics import ModelDynamics, UniswapV3ModelDynamics
+from SAiFE_gym.stochastic_processes.arrival_models import (
+    LiquidityKernelArrivalModel, PoissonArrivalModel, PoissonLinearArrivalModel,
+    PoissonNonLinearArrivalModel,
+)
+from SAiFE_gym.stochastic_processes.midprice_models import (
+    BrownianMotionMidpriceModel, GeometricBrownianMotionMidpriceModel,
+    OrnsteinUhlenbeckMidpriceModel,
+)
+from SAiFE_gym.stochastic_processes.gas_cost_models import OrnsteinUhlenbeckGasCostModel
 from SAiFE_gym.gym.helpers.AMM_utils import price_to_tick
 from SAiFE_gym.gym.index_names import (
     ASSET_PRICE_KEY,
@@ -29,6 +38,15 @@ from SAiFE_gym.gym.index_names import (
 
 
 DEFAULT_BACKGROUND_LIQUIDITY = 100_000.0
+
+# These built-in processes leave LP positions, pool liquidity and both fee
+# grids untouched. Custom processes can write to the state they receive.
+_FEE_PRESERVING_PROCESSES = (
+    BrownianMotionMidpriceModel, GeometricBrownianMotionMidpriceModel,
+    OrnsteinUhlenbeckMidpriceModel, LiquidityKernelArrivalModel,
+    PoissonArrivalModel, PoissonLinearArrivalModel, PoissonNonLinearArrivalModel,
+    OrnsteinUhlenbeckGasCostModel,
+)
 
 
 def validate_background_liquidity(value: float) -> float:
@@ -60,13 +78,25 @@ def validate_gas_cost_model(
         raise ValueError("gas_cost_model.step_size must match the environment timestep")
 
 
-def compute_derived_obs(state: dict, model_dynamics: ModelDynamics) -> None:
+def compute_derived_obs(state: dict, model_dynamics: ModelDynamics, *, after_market_update=False) -> None:
     """Compute derived LP observation keys in-place on ``state``."""
     state[POOL_SQRT_PRICE_KEY] = model_dynamics.get_pool_sqrt_price(state)
-    unclaimed0, unclaimed1 = model_dynamics.compute_unclaimed_fees(state)
+    dynamics_type = type(model_dynamics)
+    processes = (model_dynamics.midprice_model, model_dynamics.arrival_model, model_dynamics.gas_cost_model)
+    reuse_accrual = (after_market_update
+                     and dynamics_type is UniswapV3ModelDynamics
+                     and all(p is None or type(p) in _FEE_PRESERVING_PROCESSES for p in processes))
+    if reuse_accrual:
+        unclaimed0, unclaimed1 = state[LP_UNCLAIMED_FEES0_KEY], state[LP_UNCLAIMED_FEES1_KEY]
+    else:
+        unclaimed0, unclaimed1 = model_dynamics.compute_unclaimed_fees(state)
     state[LP_UNCLAIMED_FEES0_KEY] = unclaimed0
     state[LP_UNCLAIMED_FEES1_KEY] = unclaimed1
-    state[PORTFOLIO_VALUE_KEY] = model_dynamics.compute_portfolio_value(state)
+    if dynamics_type.compute_portfolio_value is UniswapV3ModelDynamics.compute_portfolio_value:
+        value = model_dynamics.compute_portfolio_value(state, unclaimed_fees=(unclaimed0, unclaimed1))
+    else:
+        value = model_dynamics.compute_portfolio_value(state)
+    state[PORTFOLIO_VALUE_KEY] = value
     state[LP_ALPHA_KEY] = model_dynamics.compute_lp_alpha(state)
     state[LP_TOKEN0_AMOUNT_KEY] = model_dynamics.compute_lp_token0_amount(state)
 
@@ -153,6 +183,8 @@ def reset_model_state(
     num_trajectories: int,
 ) -> None:
     model_dynamics.state = {k: v.copy() for k, v in initial_state.items()}
+    if isinstance(model_dynamics, UniswapV3ModelDynamics):
+        model_dynamics._fee_cache = None
     if model_dynamics.gas_cost_model is not None:
         model_dynamics.state[GAS_COST_KEY] = model_dynamics.gas_cost_model.current_gas_cost.copy()
     model_dynamics.last_arrivals = np.zeros((num_trajectories, 2), dtype=bool)

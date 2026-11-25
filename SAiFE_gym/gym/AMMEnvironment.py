@@ -231,7 +231,9 @@ class AMMEnvironment(gymnasium.Env):
                     f"expected batched action shape ({self.num_trajectories}, 3) "
                     f"(or legacy ({self.num_trajectories}, 2)), got {action.shape}"
                 )
-        current_state = {k: v.copy() for k, v in self.model_dynamics.state.items()}
+        state = self.model_dynamics.state
+        keys = vars(type(self.reward_function)).get("previous_state_keys")
+        current_state = {key: state[key].copy() for key in (state if keys is None else keys)}
 
         # Update state
         next_state = self._update_state(action)
@@ -246,9 +248,10 @@ class AMMEnvironment(gymnasium.Env):
         info = self._calculate_infos(next_state, action, rewards)
         return next_state, rewards, terminated, truncated, info
 
-    def _compute_derived_obs(self):
+    def _compute_derived_obs(self, *, after_market_update=False):
         """Compute portfolio_value, lp_alpha, and lp_token0_amount, store in state dict."""
-        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics,
+                            after_market_update=after_market_update)
 
     def _update_state(self, action: np.ndarray):
         # Step 1: Get arrivals from current model state (intensity at t)
@@ -262,7 +265,11 @@ class AMMEnvironment(gymnasium.Env):
         self.model_dynamics.state[TIME_KEY] += self.step_size
 
         # Step 4: Update derived observation features
-        self._compute_derived_obs()
+        if (type(self)._update_market_state is AMMEnvironment._update_market_state
+                and type(self)._compute_derived_obs is AMMEnvironment._compute_derived_obs):
+            self._compute_derived_obs(after_market_update=True)
+        else:
+            self._compute_derived_obs()
 
         return self.model_dynamics.state
 

@@ -1,8 +1,7 @@
 """Equivalent accounting shortcuts for fixed-policy RunningInventoryPenalty evals.
 
-Market evolution and rebalancing use the original implementations. Claimable
-fees only need the LP's occupied ticks; the full share matrix remains available
-through the original code when rebalancing needs to subtract fees from the pool.
+Market evolution and rebalancing use the simulator implementations. Between
+rebalances, this evaluator sums claimable fees over the LP's occupied ticks.
 """
 
 import numpy as np
@@ -18,6 +17,10 @@ from SAiFE_gym.rewards.RewardFunctions import RunningInventoryPenalty
 
 
 class RangeFeeDynamics(UniswapV3ModelDynamics):
+    # Only interim accrual changes here. Collection and entry snapshots use
+    # the simulator's standard full-width reduction.
+    _standard_rebalance_fees = True
+
     def _claimable_lp_fees(self, state=None, include_gross=False):
         if include_gross:
             return super()._claimable_lp_fees(state, include_gross=True)

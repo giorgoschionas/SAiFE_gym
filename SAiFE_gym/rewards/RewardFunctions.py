@@ -13,6 +13,10 @@ from SAiFE_gym.gym.index_names import (
 # ---------------------------------------------------------------------------
 
 class RewardFunction(metaclass=abc.ABCMeta):
+    # Only a declaration on the concrete reward opts into a partial snapshot.
+    # A subclass may read more fields than its parent.
+    previous_state_keys = None
+
     @abc.abstractmethod
     def calculate(
         self, current_state: Union[np.ndarray, dict], action: np.ndarray,
@@ -36,6 +40,8 @@ class PnL(RewardFunction):
     `AMMEnvironment._compute_derived_obs`.
     """
 
+    previous_state_keys = (PORTFOLIO_VALUE_KEY,)
+
     def calculate(
         self, current_state: dict, action: np.ndarray,
         next_state: dict, is_terminal_step: bool = False
@@ -52,6 +58,8 @@ class ExponentialUtility(RewardFunction):
     Gives 0 per-step reward and -exp(-a * W_T) at the terminal step,
     where W_T is the LP's mark-to-market portfolio value.
     """
+
+    previous_state_keys = ()
 
     def __init__(self, risk_aversion: float = 0.1):
         self.risk_aversion = risk_aversion
@@ -87,6 +95,8 @@ class DenseExponentialUtility(RewardFunction):
     Unrepresentable rewards raise FloatingPointError rather than silently
     clipping the utility and changing the objective.
     """
+
+    previous_state_keys = (PORTFOLIO_VALUE_KEY, INITIAL_WEALTH_KEY)
 
     def __init__(self, risk_aversion: float):
         if not np.isfinite(risk_aversion):
@@ -171,6 +181,8 @@ class RunningInventoryPenalty(RewardFunction):
     Penalizing x_t^p encourages ranges that reduce directional exposure,
     e.g. wider ranges or ranges shifted above current price.
     """
+
+    previous_state_keys = (PORTFOLIO_VALUE_KEY, TIME_KEY)
 
     def __init__(
         self,

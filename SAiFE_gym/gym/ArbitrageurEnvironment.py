@@ -179,7 +179,7 @@ class ArbitrageurEnvironment(gymnasium.Env):
         self.model_dynamics.update_state(arrivals, action=None)
         advance_market_state(self.model_dynamics, arrivals, action=None)
         self.model_dynamics.state[TIME_KEY] += self.step_size
-        compute_derived_obs(self.model_dynamics.state, self.model_dynamics)
+        compute_derived_obs(self.model_dynamics.state, self.model_dynamics, after_market_update=True)
 
         terminated = terminated_flags(
             self.model_dynamics.state,
