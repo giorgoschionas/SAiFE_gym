@@ -1,8 +1,8 @@
 """Rebuild the comparison from saved sweeps without running simulations.
 
 Run from any directory. Requires matplotlib only when generating plots.
-The original artifacts are immutable; only overview.csv and overview.{png,pdf}
-are regenerated. Widths in the overview use full spans in ticks.
+Rebuild overview.csv for detailed width lookups and overview.{png,pdf} for the
+qualitative comparison of deployed PPO ranges and periodic LP preferences.
 """
 
 import argparse
@@ -96,30 +96,48 @@ def plot_overview(rows):
     import matplotlib.pyplot as plt
 
     plt.rcParams.update({"font.size": 10, "axes.spines.top": False, "axes.spines.right": False})
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4.5))
-    panels = [
-        ("background-liquidity/fixed-width", "Lower background liquidity", "Background liquidity per interval", "#0072B2"),
-        ("volatility/fixed-width-bg30000", "Higher midprice volatility", "GBM volatility (sigma) at background 30,000", "#009E73"),
-        ("risk-aversion/cara", "Higher CARA risk aversion", "Risk aversion (1 / token1)", "#AA4499"),
-    ]
-    for ax, (run, title, xlabel, color) in zip(axes, panels):
-        selected = [row for row in rows if row["run"] == run]
-        ax.plot([row["parameter_value"] for row in selected],
-                [row["full_width_ticks"] for row in selected], "o-", color=color)
-        ax.set(title=title, xlabel=xlabel, ylabel="Best sampled full width (ticks)")
-        ax.grid(alpha=0.2)
-    axes[0].invert_xaxis()
-    axes[0].ticklabel_format(axis="x", style="plain")
-    axes[2].set_xscale("symlog", linthresh=0.003)
-    axes[2].set_xticks([0, 0.003, 0.01, 0.03, 0.1], ["0", ".003", ".01", ".03", ".1"])
-    fig.suptitle("Wider positions: evidence from completed fixed-width sweeps", fontsize=14)
-    fig.text(0.5, 0.035,
-             "Separate experiments: liquidity / volatility maximize mean net PnL; CARA maximizes expected utility.\n"
-             "Full width = 2 × half-width. Sampled maxima are estimates; experiment settings differ (see README).",
-             ha="center", fontsize=9)
-    fig.tight_layout(rect=(0, 0.13, 1, 0.93))
-    for suffix in ["png", "pdf"]:
-        fig.savefig(ROOT / f"overview.{suffix}", dpi=180)
+    fig, (depth_ax, vol_ax, risk_ax) = plt.subplots(1, 3, figsize=(12, 3.8), layout="constrained")
+
+    seed_rows = read_csv("volatility/ppo/summary/per_seed.csv")
+    for index, seed in enumerate(sorted({row["seed"] for row in seed_rows})):
+        series = sorted((row for row in seed_rows if row["seed"] == seed), key=lambda r: float(r["sigma"]))
+        vol_ax.plot([float(r["sigma"]) for r in series],
+                    [float(r["mean_deployed_width_ticks"]) for r in series],
+                    ".--", color="#81B5A6", linewidth=1,
+                    label="Individual PPO seed" if index == 0 else None)
+
+    for ax, run, color, label in [
+        (depth_ax, "background-liquidity/ppo", "#176491", "One PPO seed"),
+        (vol_ax, "volatility/ppo", "#137457", "Mean across three seeds"),
+    ]:
+        policies = [r for r in rows if r["run"] == run]
+        ax.plot([r["parameter_value"] for r in policies], [r["full_width_ticks"] for r in policies],
+                "o-", color=color, linewidth=2.4, label=label)
+        ax.set_ylabel("Mean deployed full width (ticks)")
+        ax.legend(frameon=False, fontsize=9)
+    depth_ax.set(title="Background liquidity", xlabel="Background liquidity per tick interval")
+    depth_ax.set_xticks([10_000, 15_000, 20_000, 25_000, 30_000], ["10k", "15k", "20k", "25k", "30k"])
+    depth_ax.set_yticks([75, 80, 85, 90, 95])
+    vol_ax.set(title="Midprice volatility", xlabel="Volatility (σ) at background 30,000")
+    vol_ax.set_xticks([0.03, 0.035, 0.04, 0.045, 0.05])
+
+    # Compare the same two payoff distributions at every risk preference.
+    utility_grid = read_csv("risk-aversion/cara/reward_grid.csv")
+    ce = {(float(r["risk_aversion"]), int(r["half_width_ticks"])): float(r["certainty_equivalent_pnl"])
+          for r in utility_grid}
+    risks = sorted({a for a, _ in ce})
+    risk_ax.axhline(0, color="#797979", linestyle="--", linewidth=1)
+    risk_ax.plot(risks, [ce[a, 100] - ce[a, 50] for a in risks], "o-", color="#943566",
+                 linewidth=2.4, label="Periodic LP, ±100 versus ±50 ticks")
+    risk_ax.set(title="Risk aversion", xlabel="CARA risk aversion (1/token1)",
+                ylabel="Gain in certainty-equivalent PnL (token1)")
+    risk_ax.legend(frameon=False, fontsize=9)
+
+    for ax in (depth_ax, vol_ax, risk_ax):
+        ax.grid(axis="y", alpha=0.2)
+    fig.suptitle("What draws an LP toward a wider range?", fontsize=15)
+    fig.savefig(ROOT / "overview.png", dpi=180)
+    fig.savefig(ROOT / "overview.pdf", metadata={"CreationDate": None})
     plt.close(fig)
 
 

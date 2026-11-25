@@ -1,58 +1,47 @@
 # CARA risk aversion
 
-In the 2026-11-10 sweep, increasing `risk_aversion` shifts the expected-utility
-maximizer from half-width 50 to 100 ticks. This is a change in risk-adjusted
-preference: the corresponding mean monetary PnL decreases.
+How much mean profit would an LP give up for a less variable outcome? Keep
+the market fixed at background liquidity 30,000 and volatility 0.03. Simulate
+each periodic policy once, then change the LP's **constant absolute risk aversion**
+(CARA) when scoring its recorded wealth paths. The LP recenters every 0.1 time
+units and starts with 1,000 token1.
 
-## Main sweep
+## Comparing two payoff distributions
 
-Source: [best widths](cara/best_widths.csv), [complete width/risk grid](cara/reward_grid.csv),
-[configuration](cara/config.json), and [per-path arrays](cara/path_results.npz).
-Background liquidity is 30,000, sigma 0.03, horizon 1, and starting wealth
-1,000 token1. The policy rebalances every 100 of 1,000 steps. Each width has
-50 episode batches of 100 trajectories (5,000 paths).
+A **certainty equivalent** (CE) is the sure PnL the LP values as highly as a
+policy's risky PnL. At zero risk aversion it equals mean PnL. Higher positive
+risk aversion puts more weight on the least favorable outcomes.
 
-The tested half-widths are
-`25, 40, 50, 60, 70, 80, 90, 100, 110, 125, 150, 200, 250`.
+| Fixed range around the pool price | Mean PnL, also CE at zero risk aversion | PnL standard deviation | CE at risk aversion 0.1 |
+| --- | ---: | ---: | ---: |
+| ±50 ticks | 115.85 | 32.95 | 53.97 |
+| ±100 ticks | 101.15 | 23.30 | 62.15 |
 
-| Risk aversion (1/token1) | Best sampled half-width | Mean PnL (token1) | CE PnL (token1) | Bootstrap selection fraction |
-| ---: | ---: | ---: | ---: | ---: |
-| 0 | 50 | 115.854 | 115.854 | 1.0000 |
-| 0.003 | 50 | 115.854 | 114.212 | 1.0000 |
-| 0.010 | 50 | 115.854 | 110.269 | 0.8620 |
-| 0.020 | 60 | 115.089 | 104.920 | 1.0000 |
-| 0.030 | 60 | 115.089 | 99.306 | 1.0000 |
-| 0.040 | 70 | 112.782 | 93.362 | 0.5325 |
-| 0.050 | 70 | 112.782 | 87.609 | 0.8220 |
-| 0.075 | 80 | 109.435 | 73.776 | 0.7435 |
-| 0.100 | 100 | 101.149 | 62.152 | 0.7845 |
+All amounts are in token1. Widening costs about 15 token1 in mean PnL and
+reduces its standard deviation by about 10. An LP with risk aversion 0.1 values
+the wider payoff at 62.15 token1 for certain, about 8 more than the narrower
+payoff. The simulation measures how preferences change the ranking of **fixed policies**.
+[Scores for every risk and width](cara/reward_grid.csv) · [Per-path payoffs](cara/path_results.npz)
 
-![CARA width selection and PnL distributions](cara/width_selection.png)
+![Certainty equivalents, sampled widths and PnL distributions for the CARA sweep](cara/width_selection.png)
 
-## What risk aversion changes
+## How the code scores risk
 
-The deterministic policy ignores rewards. Each width's wealth paths are
-simulated once, then the production reward is replayed for every risk parameter:
+The periodic agent's actions depend on the pool tick and its rebalance schedule.
+This lets the runner replay the production reward on identical wealth paths at
+each risk aversion. For terminal net PnL `G` and positive risk aversion `a`
+(in 1/token1), the estimated certainty equivalent is
+`-log(mean(exp(-a * G))) / a`. At any fixed `a`, maximizing CE gives the same
+ranking as maximizing mean CARA utility. [Sweep runner](../../sweep_dense_exponential_width.py) ·
+[Production reward](../../../SAiFE_gym/rewards/RewardFunctions.py)
 
-```text
-G = terminal wealth - initial wealth
-U_a(G) = (1 - exp(-a*G)) / a   for a != 0
-U_0(G) = G
-score = mean(U_a(G))
-CE_a = -log(mean(exp(-a*G))) / a
-CE_0 = mean(G)
-```
-
-For a fixed `a`, expected utility and CE rank widths identically. Greater
-positive `a` emphasizes unfavorable PnL outcomes. In this run, moving from
-half-width 50 to 100 reduces PnL standard deviation from 32.948 to 23.298
-token1, alongside lower mean PnL. Compare widths at the same `a`; raw utility
-levels across different risk preferences are not a common monetary score.
-
-The 2,000-resample bootstrap resamples paired episode batches. Selection
-fractions describe how often a width wins these resamples, not the probability
-that it is the population optimum. At `a=0.04`, half-width 70 wins only 53.25%
-of resamples. At `a=0.1`, the chosen width's utility-weight effective sample
-size is about 15.8 out of 5,000, and one path carries about 17.6% of the weight.
-Tail sensitivity remains substantial. See [summary.json](cara/summary.json)
-and the reward grid for pointwise intervals and concentration diagnostics.
+Across the 13 sampled half-widths from 25 to 250 ticks, each move to the next
+wider range gains more or gives up less CE at risk aversion 0.1 than at zero.
+Each width has 50 episode batches of 100 trajectories, with the same episode
+seeds across widths. The runner resamples paired episode batches 2,000 times.
+At risk aversion 0.04,
+the leading width wins about 53% of those resamples. At 0.1, one path carries
+about 18% of the utility weight at the leading width. These diagnostics matter
+when interpreting small differences between nearby widths.
+[Recorded settings](cara/config.json) · [Width rankings](cara/best_widths.csv) ·
+[Bootstrap and tail diagnostics](cara/summary.json)

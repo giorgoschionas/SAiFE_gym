@@ -1,109 +1,97 @@
-# Drivers of wider LP positions
+# What draws an LP toward a wider position?
 
-This collection brings together completed sweeps of **background liquidity**,
-**midprice volatility**, and **CARA risk aversion**. It contains copies of the
-recorded results, configurations, path-level data, and plots; no simulations
-were rerun to assemble it.
+A concentrated-liquidity provider (LP) chooses how far its capital extends on either
+side of the pool price. A narrow range supplies more liquidity per tick while the
+price is inside it. A wider range covers more of the prices the pool might visit
+before the LP rebalances. When is that extra coverage worth buying?
 
-The results support wider positions as background liquidity falls, volatility
-rises at background liquidity 30,000, and risk aversion rises in the CARA
-experiment.
+SAiFE Gym lets us change one market parameter at a time and observe both the ranges
+that trained LPs deploy and the returns to a fixed trading rule. We also examine
+one LP preference by changing how the same simulated profits and losses are valued.
 
-| Driver | Main comparison | Best sampled half-width (ticks) | What is maximized? |
-| --- | --- | --- | --- |
-| [Background liquidity](background-liquidity/README.md) | 100,000 → 20,000 per interval, at sigma 0.07 | 2 → 50 | Mean net PnL |
-| [Midprice volatility](volatility/README.md) | Sigma 0.03 → 0.05, at background 30,000 | 15 → 25 | Mean net PnL |
-| [CARA risk aversion](risk-aversion/README.md) | `risk_aversion` 0 → 0.1, at sigma 0.03 and background 30,000 | 50 → 100 | Expected utility / certainty-equivalent PnL |
+| Change within a sweep | What happens in these simulations? |
+| --- | --- |
+| [Less background liquidity per tick](background-liquidity/README.md) | Policies trained in shallower pools generally deploy wider ranges. For a periodic LP, spreading its capital across more ticks gives up less fee income as the pool gets shallower. |
+| [Higher midprice volatility](volatility/README.md) at background liquidity 30,000 | Policies trained in the more volatile markets deploy wider ranges on average. The wider of two periodic ranges spends more time in range and overtakes the narrower one in mean net PnL as volatility rises. |
+| [Greater LP risk aversion](risk-aversion/README.md) at a fixed market setting | A wider periodic range gives up some mean profit for a less variable payoff. An LP that puts more weight on poor outcomes can prefer that trade. |
 
-![Best sampled widths across the three drivers](overview.png)
+![PPO policies deploy wider ranges at lower liquidity and higher volatility. The value of widening a fixed range changes from negative to positive as risk aversion increases.](overview.png)
 
-## Reading the evidence
+The first two panels show the mean **full width** over the steps on which the LP
+has a position, including time spent out of range. A separate policy was trained
+for each market level and seed using proximal policy optimization (PPO).
+The liquidity result uses one training seed. The thin volatility lines follow
+the three training seeds, and the thick line is their mean. The last panel compares
+two periodic policies. Above zero, the wider range has a higher certainty-equivalent
+PnL, the sure profit the LP would value as highly as the simulated payoff.
 
-A symmetric half-width `w` means offsets `[-w, +w]` and a full span of `2*w`
-ticks. The figure and [combined CSV](overview.csv) use **full widths**. The
-driver tables explicitly label half-widths or full widths.
+## Try it with the simulator
 
-Fixed-width sweeps compare periodic baseline policies and report the best
-**sampled** width. PPO sweeps report average deployed full width, including
-out-of-range positions but excluding non-deployment; this is policy behavior,
-not a proven optimal fixed width. The CSV's `width_statistic`, `objective`, and
-`source_csv` columns keep those meanings explicit. A smaller loss can be the
-best result: “best” does not always mean positive PnL.
+Give two periodic LPs 1,000 token1 each. One deploys 15 ticks on either side of
+the pool price (±15, a full width of 30 ticks), the other ±25. A tick here is about
+0.01% in price. Both agents recenter every 0.01 time units. Hold background
+liquidity at 30,000, move volatility from 0.03 to 0.05 and compare mean net
+PnL over the same external price shocks.
 
-CARA changes the ranking of a given set of PnL distributions. Increasing
-`risk_aversion` does not itself raise a fixed policy's monetary profit. For
-terminal PnL `G` and positive `a`, maximizing mean utility is equivalent to
-maximizing `CE = -log(mean(exp(-a*G))) / a`; at `a=0`, CE is mean PnL.
+| Volatility | Mean PnL at ±15 (token1) | Mean PnL at ±25 (token1) | Paths where widening paid |
+| ---: | ---: | ---: | ---: |
+| 0.03 | 121.33 | 117.03 | 34 of 100 |
+| 0.05 | 30.32 | 36.60 | 72 of 100 |
 
-## Collection layout
+Both policies earn less in the more volatile market. Within that market, widening
+buys more time in range (59% to 72%) and increases mean net PnL by about 6 token1.
+[Per-path PnLs](volatility/fixed-width-bg30000/pnl_by_path.npz) ·
+[Policy diagnostics](volatility/fixed-width-bg30000/summary.csv)
 
-```text
-background-liquidity/
-  fixed-width/             PnL versus width at five background levels
-  ppo/                     Learned widths at five background levels
-  periodic-comparison/     Baselines matched to learned average widths
-volatility/
-  fixed-width-bg30000/     PnL versus width, sigma 0.03–0.05
-  ppo/                     Three training seeds, with baseline comparisons
-risk-aversion/
-  cara/                    2026-11-10 run: 5,000 paths per width
-manifest.json              Original locations and SHA-256 checksums
-overview.csv               Derived results with source CSV references
-overview.png / .pdf        Combined fixed-width comparison
-summarize_results.py        Verify snapshots and rebuild the overview
+With the [repository dependencies](../../README.md#installation) installed, run either
+comparison from the repository root.
+
+```bash
+python experiments/wider-positions-drivers/compare_ranges.py volatility
+python experiments/wider-positions-drivers/compare_ranges.py background-liquidity
 ```
 
-## Comparability and uncertainty
+Each command starts from one saved market configuration, changes the named input
+and prints time in range, fees, gas and net PnL for the same two ranges. The
+example calls the existing rollout, which couples a geometric Brownian midprice
+to a Uniswap v3 pool with liquidity-dependent price impact. It steps a periodic
+LP through a batch of 100 trajectories at the same evaluation seed. See the
+[example](compare_ranges.py), [rollout](../sweep_dense_exponential_width.py),
+[market factory](../domain_randomization_rl/train_domain_randomization_lp_agent.py)
+and [periodic agent](../../SAiFE_gym/agents/BaselineAgents.py).
 
-All main fixed-width sweeps start with 1,000 token1, horizon 1, gross trade
-size 250 token1, arrival-rate parameter 300 per side, and gas cost 2. Their
-other settings differ:
+## What stays fixed?
 
-| Evidence | Simulator steps | Rebalance / decision interval | Evaluated paths per condition | Objective / policy |
-| --- | ---: | ---: | ---: | --- |
-| Liquidity and volatility fixed-width grids | 10,000 | Every 100 steps (0.01 time units) | 100 in one batch | Net PnL, periodic |
-| Liquidity PPO | 1,000 | Decision every 100 steps; holds allowed | 10 × 100 per policy; 1 training seed | Running inventory penalty, `phi=0.4` |
-| Volatility PPO | 10,000 | Rebalance every 100 steps | 10 × 100 per policy; 3 training seeds | Net PnL, `phi=0` |
-| CARA grid | 1,000 | Every 100 steps (0.1 time units) | 50 × 100 | Expected CARA utility, periodic |
+The sweeps share a horizon of 1, starting wealth of 1,000 token1, gross trade
+notional of 250 token1, a base arrival-rate parameter of 300 per side, and a gas
+cost of 2 per paid rebalance. Compare levels **within a row**. Matching the external
+shocks lets us compare LP rules on the same market noise while swaps and pool
+prices respond to each position's liquidity.
 
-The fixed PnL grids use matched external shocks and retain individual PnLs;
-their path dispersion is not a confidence interval for the selected optimum.
-Although their configuration files contain `n_eval_episodes=10`, these grid
-artifacts contain one batch of 100 paths per cell. The CARA run uses a paired
-episode-batch bootstrap with 95% pointwise intervals. PPO standard deviations
-describe variation across training seeds, not confidence intervals for an
-optimal width. The liquidity PPO run has only one training seed.
+| Sweep | Input varied | Fixed market setting | LP decisions per horizon | Evaluation and objective |
+| --- | --- | --- | --- | --- |
+| Liquidity, periodic | Background liquidity | Volatility 0.07 | 100 scheduled deployments | 100 paths per width and level, mean net PnL |
+| Liquidity, PPO | Background liquidity | Volatility 0.03 | 10 opportunities to hold or choose both range bounds | 1 training seed, 1,000 evaluation paths per policy, inventory penalty with `phi=0.4` |
+| Volatility, periodic | Midprice volatility | Background 30,000 | 100 scheduled deployments | 100 paths per width and level, mean net PnL |
+| Volatility, PPO | Midprice volatility | Background 30,000 | 100 scheduled symmetric deployments | 3 training seeds, 1,000 evaluation paths per policy, net PnL |
+| Risk preference, periodic | CARA risk aversion | Volatility 0.03, background 30,000 | 10 scheduled deployments | 5,000 paths per width, same payoffs scored at each risk aversion |
 
-Compare levels **within** each sweep. Cadence, policy class, training objective,
-evaluation seeds, and code history prevent treating this collection as one
-controlled three-factor experiment. Original configurations are authoritative;
-current simulator defaults should not be substituted for them.
+All rows use a 100-step decision interval. The 100-deployment rows have 10,000
+simulator steps per horizon and the 10-decision rows have 1,000. The two market
+grids each recorded one batch of 100 paths per cell. CARA uses 50 batches of 100
+and resamples paired batches to assess uncertainty.
 
-## Provenance and rebuilding
+## Saved results and rebuilding
 
-[manifest.json](manifest.json) records six source result directories from the
-main checkout, with byte counts and SHA-256 checksums for every copied artifact.
-Original files remain in place. Historical output paths and metadata inside
-the snapshots are preserved, so use the collection's relative links for local
-navigation. Recorded Git revisions are retained where
-available; a source revision was not recorded for every run.
-
-Model checkpoints and normalization pickles remain at the original locations.
-Redundant per-episode CARA NPZ files are omitted because each run's
-`path_results.npz` retains the combined PnL and reward arrays and
-`episode_diagnostics.csv` retains episode diagnostics. The manifest lists these
-omissions. The incomplete early CARA run is excluded explicitly. Unrelated
-price-path, trade-size, and action-space experiments are outside this collection.
-
-From the repository root:
+Each driver page links its configurations, full width grids and evaluation data.
+The [overview CSV](overview.csv) retains the best sampled fixed widths and the
+mean deployed PPO widths for quantitative lookup. The [manifest](manifest.json)
+records the six source directories, artifact checksums and omitted files
+(including model checkpoints). Use the settings saved with each run.
 
 ```bash
 python experiments/wider-positions-drivers/summarize_results.py
-# Verify snapshots and rebuild the CSV without matplotlib:
-python experiments/wider-positions-drivers/summarize_results.py --no-plots
 ```
 
-This only reads the saved evidence and rewrites the overview artifacts. For new
-CARA simulations, use [the existing sweep runner](../sweep_dense_exponential_width.py)
-with explicit settings and a fresh output directory; the exact original
-configuration is in [cara/config.json](risk-aversion/cara/config.json).
+This verifies the snapshots and rebuilds the CSV and the PNG/PDF figure. Pass
+`--no-plots` to verify and rebuild the CSV using only the standard library.
