@@ -1,4 +1,4 @@
-# What drives LPs toward a wider positions?
+# What drives LPs toward wider positions?
 
 
 
