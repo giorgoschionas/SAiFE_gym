@@ -5,6 +5,41 @@ movement can the LP's range accommodate? Both sweeps hold background liquidity
 at 30,000, keep capital and trade size fixed, and recenter every 0.01 time units.
 Only the volatility of the external midprice changes between market levels.
 
+## Test the peak ordering on a finer grid
+
+The Slurm job evaluates every integer half-width from **10 through 35 ticks**
+at σ = 0.030, 0.035, 0.040, 0.045 and 0.050. It keeps the original market,
+including background liquidity of 30,000 and recentering every 100 of the
+10,000 steps. Each of the 130 cells gets the same 20 fresh batches of 100
+paths. Batch seeds start at 200042 and increase by 10 so the simulator's
+component seeds stay distinct across batches.
+
+Use an HPC checkout containing the new Slurm script, the fine-sweep analysis
+and its shared periodic runner. From that checkout's root, with the project
+environment configured, submit one CPU job. [Periodic runner](../periodic_width_sweep.py) ·
+[Cluster setup](../../../hpc/README.md#private-cluster-settings)
+
+```bash
+mkdir -p logs
+sbatch hpc/sbatch_fine_volatility_sweep.sh
+```
+
+The job requests one node, 8 CPUs, 16 GiB and 24 hours. It saves each
+completed batch under `experiments/results/periodic_widths/fine_volatility/<job-id>/batches/`.
+To resume after interruption, set `OUTPUT_DIR` to the original run directory
+and submit the same script again. It checks and reuses the saved batches.
+
+The figure `width_curves.png` plots mean terminal net PnL over all 2,000 paths
+per cell and marks the sampled peaks. The table `width_grid.csv` contains the
+130 scores. The Slurm log and `peak_order.json` report the pooled peak sequence,
+how many of the 20 individual batches have strictly increasing peaks, and how
+often all four adjacent increases hold in 10,000 bootstrap resamples. Each
+resample draws 20 whole batches with replacement and uses the same draws for
+all cells. This frequency measures the stability of the pooled ordering.
+Exact PnL ties select the smaller width. Equal selected widths at neighboring
+volatilities break strict ordering. Individual sequences are in `batch_peaks.csv`.
+[Job script](../../../hpc/sbatch_fine_volatility_sweep.sh) · [Analysis](../fine_volatility_sweep.py)
+
 ## What the trained LPs do
 
 At each volatility, PPO learns how wide a symmetric position to deploy at each

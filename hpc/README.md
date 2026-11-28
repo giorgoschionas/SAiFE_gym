@@ -1,10 +1,15 @@
-# Slurm jobs for domain-randomized LP PPO
+# Slurm jobs for LP experiments
 
-These templates run the domain-randomized PPO experiment on a Slurm cluster.
+These templates run periodic LP and domain-randomized PPO experiments on a Slurm cluster.
 They use Python 3.12 and the checkout's `requirements.txt`. Adapt paths,
 optional Python module loading, partitions, time limits, and resource requests
 to your allocation. Submit from the checkout root, with `logs/` already created
 so Slurm can open its output files before the job starts.
+
+For the periodic LP experiment, submit `sbatch hpc/sbatch_fine_volatility_sweep.sh`
+from the checkout root after creating `logs/` and configuring the environment
+below. One job runs the matched volatility sweep, plots the 130 grid cells
+and computes the strict peak-order frequencies. [Parameters, outputs and resuming a run](../experiments/wider-positions-drivers/volatility/README.md#test-the-peak-ordering-on-a-finer-grid)
 
 ## Private cluster settings
 
@@ -52,10 +57,11 @@ See the [Slurm sbatch documentation](https://slurm.schedmd.com/sbatch.html).
 The launchers keep `--export=ALL` so your exported settings reach the jobs.
 Avoid `--export=NONE` when relying on this configuration.
 
-The jobs preserve their single-node resource requests: 16 tasks for training
-and each sweep replicate, two for the smoke job, and one for aggregation.
-Their thread limits follow `SLURM_NTASKS`. Adjust resources and time limits
-with `sbatch` options as required by your allocation.
+The PPO jobs request 16 tasks for training and each seed replicate, two for
+the smoke job, and one for aggregation. Their thread limits follow
+`SLURM_NTASKS`. The fine volatility job requests one task and uses
+`SLURM_CPUS_PER_TASK` simulation workers, each with one numerical-library thread.
+Adjust resources and time limits with `sbatch` options as required by your allocation.
 
 New outputs default to these directories inside the checkout:
 

@@ -252,3 +252,17 @@ def test_setup_creates_environment_using_its_checkout_from_another_directory(clu
     assert all(call["cwd"] == str(project) for call in calls)
     assert (project / "logs").is_dir()
     assert (project / DEFAULT_RESULTS).is_dir()
+
+
+def test_fine_volatility_job_uses_allocated_processes_and_shared_output(cluster):
+    project, _, _, _, run = cluster
+    runner = "experiments/wider-positions-drivers/fine_volatility_sweep.py"
+    (project / runner).parent.mkdir()
+    (project / runner).touch()
+    result, calls = run("sbatch_fine_volatility_sweep.sh", {
+        "SLURM_CPUS_PER_TASK": "8", "OUTPUT_DIR": "output with spaces",
+    }, staged=True)
+    assert result.returncode == 0, result.stderr
+    assert len(calls) == 1 and calls[0]["cwd"] == str(project)
+    assert calls[0]["args"] == ["-u", runner, "--workers", "8", "--output-dir", "output with spaces"]
+    assert calls[0]["env"]["OPENBLAS_NUM_THREADS"] == calls[0]["env"]["OMP_NUM_THREADS"] == "1"
