@@ -18,17 +18,6 @@ risk_aversion,risk-aversion/cara,risk_aversion,0.04,best_sampled_fixed_full_widt
 risk_aversion,risk-aversion/cara,risk_aversion,0.05,best_sampled_fixed_full_width,140.0,expected_cara_utility,112.78248555153645,87.60863298280557,0.822,,risk-aversion/cara/best_widths.csv
 risk_aversion,risk-aversion/cara,risk_aversion,0.075,best_sampled_fixed_full_width,160.0,expected_cara_utility,109.43528965313767,73.77644550979913,0.7435,,risk-aversion/cara/best_widths.csv
 risk_aversion,risk-aversion/cara,risk_aversion,0.1,best_sampled_fixed_full_width,200.0,expected_cara_utility,101.1492032538056,62.15183242559462,0.7845,,risk-aversion/cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.0001,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,35.41307760545416,0.724,,risk-aversion/legacy-cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.001,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,35.13650387392744,0.7185,,risk-aversion/legacy-cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.003,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,34.517712726937404,0.696,,risk-aversion/legacy-cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.01,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,32.30583665517235,0.6495,,risk-aversion/legacy-cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.03,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,25.576290072174952,0.6555,,risk-aversion/legacy-cara/best_widths.csv
-risk_aversion,risk-aversion/legacy-cara,risk_aversion,0.1,best_sampled_fixed_full_width,50.0,expected_cara_utility,35.44373619173737,0.3896092719610511,0.816,,risk-aversion/legacy-cara/best_widths.csv
-volatility,volatility/fixed-width-bg100000,sigma,0.03,best_sampled_fixed_full_width,4.0,mean_net_pnl,35.31731364623618,,,,volatility/fixed-width-bg100000/summary.csv
-volatility,volatility/fixed-width-bg100000,sigma,0.04,best_sampled_fixed_full_width,4.0,mean_net_pnl,-16.344126308614758,,,,volatility/fixed-width-bg100000/summary.csv
-volatility,volatility/fixed-width-bg100000,sigma,0.05,best_sampled_fixed_full_width,4.0,mean_net_pnl,-65.458097120202,,,,volatility/fixed-width-bg100000/summary.csv
-volatility,volatility/fixed-width-bg100000,sigma,0.06,best_sampled_fixed_full_width,4.0,mean_net_pnl,-112.56184200928895,,,,volatility/fixed-width-bg100000/summary.csv
-volatility,volatility/fixed-width-bg100000,sigma,0.07,best_sampled_fixed_full_width,4.0,mean_net_pnl,-157.16815022958704,,,,volatility/fixed-width-bg100000/summary.csv
 volatility,volatility/fixed-width-bg30000,sigma,0.03,best_sampled_fixed_full_width,30.0,mean_net_pnl,121.33160030681505,,,,volatility/fixed-width-bg30000/summary.csv
 volatility,volatility/fixed-width-bg30000,sigma,0.035,best_sampled_fixed_full_width,40.0,mean_net_pnl,100.10601955556415,,,,volatility/fixed-width-bg30000/summary.csv
 volatility,volatility/fixed-width-bg30000,sigma,0.04,best_sampled_fixed_full_width,40.0,mean_net_pnl,79.14273688404133,,,,volatility/fixed-width-bg30000/summary.csv

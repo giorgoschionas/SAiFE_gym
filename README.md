@@ -13,6 +13,9 @@ The associated paper can be found at [https://arxiv.org/abs/2609.17788](https://
 - **Vectorized rollouts** - state, actions, arrivals, swaps, rewards and
   diagnostics are batched across `num_trajectories`.
 
+For a worked example, see how pool depth and volatility affect the ranges LPs
+deploy and run a comparison with two periodic agents. [What draws an LP toward a wider position?](experiments/wider-positions-drivers/README.md)
+
 ## Installation
 
 ```bash

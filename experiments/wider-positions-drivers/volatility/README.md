@@ -1,65 +1,55 @@
 # Midprice volatility
 
-Higher volatility shifts the best sampled width upward at background liquidity
-30,000. The separate 100,000-background sweep shows that this effect depends on
-the liquidity regime.
+When the external price moves more between rebalances, how much pool price
+movement can the LP's range accommodate? Both sweeps hold background liquidity
+at 30,000, keep capital and trade size fixed, and recenter every 0.01 time units.
+Only the volatility of the external midprice changes between market levels.
 
-## Fixed-width PnL evidence at background 30,000
+## What the trained LPs do
 
-Source: [summary.csv](fixed-width-bg30000/summary.csv),
-[full results](fixed-width-bg30000/summary.json), and
-[per-path PnL](fixed-width-bg30000/pnl_by_path.npz). Each cell has 100 paths,
-10,000 steps, and rebalancing every 100 steps. Widths share external paths at a
-given sigma; the underlying random shocks are matched across sigmas.
+At each volatility, PPO learns how wide a symmetric position to deploy at each
+decision. A new policy is trained for each of three seeds. At volatility 0.05,
+all three deploy a wider range on average than their counterparts at 0.03. The
+mean deployed full width grows from about 42 to 53 ticks, with some reversals
+at intermediate levels for individual seeds. The training objective is net
+PnL (`inventory_phi=0`). [Mean policy widths](ppo/summary/width_by_volatility.csv) ·
+[Individual training seeds](ppo/summary/per_seed.csv) · [Settings](ppo/summary/summary.json)
 
-| Sigma | Best sampled half-width (ticks) | Mean net PnL (token1) |
-| ---: | ---: | ---: |
-| 0.030 | 15 | 121.332 |
-| 0.035 | 20 | 100.106 |
-| 0.040 | 20 | 79.143 |
-| 0.045 | 25 | 57.527 |
-| 0.050 | 25 | 36.596 |
+Each policy is evaluated on 1,000 paths, using the same evaluation seeds as its
+periodic comparisons. At all five volatility levels, PPO earns more mean PnL
+than the default periodic range of ±50 ticks. A periodic range selected from
+the width grid earns more mean PnL than PPO at each level. The learned policies
+capture the direction of the shift even with this performance gap.
+[Policy comparison on shared evaluation seeds](ppo/periodic_comparison/comparison.csv)
 
-The maximizing width increases while the maximum mean PnL falls. Higher
-volatility favors wider positions relative to narrower ones in this regime;
-it does not increase their absolute profitability. All sampled half-widths
-`2, 5, 10, ..., 50` have positive mean PnL in these five scenarios.
+## What widening buys at the same volatility
 
-![PnL versus width and volatility at background 30,000](fixed-width-bg30000/pnl_width_volatility.png)
+Choose the same pair of periodic ranges at every level. Each starts with 1,000
+token1 and experiences the same external price shocks as the other range.
+The pool price can respond differently because each policy supplies a different
+amount of liquidity per tick.
 
-## Higher-background comparison
-
-At background liquidity 100,000, the best sampled half-width is **2 ticks at
-every sigma** in `0.03, 0.04, 0.05, 0.06, 0.07`. Its mean PnLs are respectively
-`35.317, -16.344, -65.458, -112.562, -157.168` token1. This sweep does not show
-the widening pattern. See [the grid](fixed-width-bg100000/summary.csv) and
-[original plot](fixed-width-bg100000/pnl_width_volatility.png).
-
-Older configuration files omit `background_liquidity`; this run used the
-historical implicit value 100,000. The snapshots preserve that omission.
-
-## Learned-policy evidence
-
-Source: [width summary](ppo/summary/width_by_volatility.csv),
-[per-seed results](ppo/summary/per_seed.csv), and
-[configuration](ppo/summary/summary.json). PPO chooses symmetric half-widths
-and recenters every decision; it cannot hold. Background liquidity is 30,000,
-`inventory_phi=0`, and there are three training seeds (43, 44, 45), each
-evaluated on 1,000 shared evaluation paths.
-
-| Sigma | Mean deployed full width (ticks) | Width SD across training seeds | Mean PnL (token1) |
+| Volatility | Mean net PnL at ±15 (token1) | Mean net PnL at ±25 (token1) | Paths where ±25 earns more, out of 100 |
 | ---: | ---: | ---: | ---: |
-| 0.030 | 41.639 | 7.632 | 114.577 |
-| 0.035 | 44.518 | 5.313 | 95.376 |
-| 0.040 | 45.099 | 3.052 | 75.200 |
-| 0.045 | 49.003 | 4.846 | 53.994 |
-| 0.050 | 52.970 | 4.603 | 34.481 |
+| 0.030 | 121.33 | 117.03 | 34 |
+| 0.035 | 98.40 | 97.50 | 50 |
+| 0.040 | 77.61 | 77.60 | 46 |
+| 0.045 | 54.05 | 57.53 | 63 |
+| 0.050 | 30.32 | 36.60 | 72 |
 
-The [periodic comparison](ppo/periodic_comparison/comparison.csv) evaluates
-the selected fixed half-widths `15, 20, 20, 25, 25` on the PPO evaluation seeds.
-Those baselines outperform PPO's mean PnL in all five scenarios, reinforcing
-the distinction between a learned average width and a profit-maximizing width.
+The comparison is nearly even at 0.04. At 0.05, widening increases time in
+range from 59% to 72%. Recorded mean fee income falls from 399 to 386 token1,
+and gas spend stays at 198. The remainder of PnL after accounting for those fees
+and gas improves from −170 to −152 token1, enough to cover the difference in
+fees. This remainder includes inventory and reinvestment valuation effects.
+Both ranges are less profitable here than at 0.03.
+[Policy diagnostics](fixed-width-bg30000/summary.csv) ·
+[Paired path PnLs](fixed-width-bg30000/pnl_by_path.npz)
 
-Greater price dispersion between rebalances is a plausible reason for wider
-coverage to help. The comparison across background regimes shows that the
-width trade-off also depends on liquidity and endogenous trading behavior.
+![Mean net PnL across sampled position widths at five volatility levels](fixed-width-bg30000/pnl_width_volatility.png)
+
+The full grid covers half-widths of 2, 5, 10, …, 50 ticks, using one batch of
+100 trajectories per cell. Of the ten moves to the next wider range, nine give
+a larger gain or a smaller loss in mean PnL at volatility 0.05 than at 0.03.
+[Full grid and configurations](fixed-width-bg30000/summary.json) ·
+[Path and accounting checks](fixed-width-bg30000/validation.json)
