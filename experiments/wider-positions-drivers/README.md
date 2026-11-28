@@ -4,9 +4,9 @@
 
 | Change within a sweep | What happens in these simulations? |
 | --- | --- |
-| [Less background liquidity per tick](background-liquidity/README.md) | Policies trained in thinner pools generally deploy wider ranges. For a periodic LP, spreading its capital across more ticks gives up less fee income as the pool gets thinner. |
-| [Higher midprice volatility](volatility/README.md) at background liquidity 30,000 | Policies trained in the more volatile markets deploy wider ranges on average. The wider of two periodic ranges spends more time in range and overtakes the narrower one in mean net PnL as volatility rises. |
-| [Greater LP risk aversion through exponential utility](risk-aversion/README.md) at a fixed market setting | A wider periodic range gives up some mean profit for a less variable payoff. An LP that puts more weight on poor outcomes can prefer that trade. |
+| [Less background liquidity](background-liquidity/README.md) | For a fixed initial capital, policies trained in thinner pools deploy wider ranges on average. For a periodic LP, spreading its capital across more ticks gives up less fee income as the pool gets thinner. |
+| [Higher midprice volatility](volatility/README.md)| Policies trained in the more volatile markets deploy wider ranges on average. The wider of two periodic ranges spends more time in range and overtakes the narrower one in mean net PnL as volatility rises. |
+| [Greater LP risk aversion through exponential utility](risk-aversion/README.md) | A wider periodic range gives up some mean profit for a less variable payoff. An LP that puts more weight on poor outcomes can prefer that trade. |
 
 ![PPO policies deploy wider ranges at lower liquidity and higher volatility. The value of widening a fixed range changes from negative to positive as risk aversion increases.](overview.png)
 
@@ -49,14 +49,13 @@ and prints time in range, fees, gas and net PnL for the same two ranges. The
 example calls the existing rollout, which couples a geometric Brownian midprice
 to a Uniswap v3 pool with liquidity-dependent price impact. It steps a periodic
 LP through a batch of 100 trajectories at the same evaluation seed. See the
-[example](compare_ranges.py), [rollout](../sweep_dense_exponential_width.py),
-[market factory](../domain_randomization_rl/train_domain_randomization_lp_agent.py)
+[example](compare_ranges.py), [rollout](../sweep_dense_exponential_width.py)
 and [periodic agent](../../SAiFE_gym/agents/BaselineAgents.py).
 
 ## What stays fixed?
 
 The sweeps share a horizon of 1, starting wealth of 1,000 token1, gross trade
-notional of 250 token1, a base arrival-rate parameter of 300 per side, and a gas
+notional of 250 token1, a baseline arrival-rate parameter of 300 per side, and a gas
 cost of 2 per paid rebalance. Compare levels **within a row**. Matching the external
 shocks lets us compare LP rules on the same market noise while swaps and pool
 prices respond to each position's liquidity.
