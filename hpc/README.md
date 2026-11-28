@@ -6,10 +6,13 @@ optional Python module loading, partitions, time limits, and resource requests
 to your allocation. Submit from the checkout root, with `logs/` already created
 so Slurm can open its output files before the job starts.
 
-For the periodic LP experiment, submit `sbatch hpc/sbatch_fine_volatility_sweep.sh`
-from the checkout root after creating `logs/` and configuring the environment
-below. One job runs the matched volatility sweep, plots the 130 grid cells
-and computes the strict peak-order frequencies. [Parameters, outputs and resuming a run](../experiments/wider-positions-drivers/volatility/README.md#test-the-peak-ordering-on-a-finer-grid)
+The periodic LP has two independent jobs. Each plots the mean net PnL curves
+and measures how often the best sampled half-widths strictly increase.
+
+| Submit from the checkout root | Market sweep |
+| --- | --- |
+| `sbatch hpc/sbatch_background_liquidity_sweep.sh` | Background liquidity falls from 50,000 to 10,000 at fixed midprice volatility 0.07. [Liquidity grid, outputs and resume instructions](../experiments/wider-positions-drivers/background-liquidity/README.md#five-level-periodic-lp-sweep) |
+| `sbatch hpc/sbatch_fine_volatility_sweep.sh` | Midprice volatility rises from 0.030 to 0.050 at fixed background liquidity 30,000. [Volatility grid, outputs and resume instructions](../experiments/wider-positions-drivers/volatility/README.md#test-the-peak-ordering-on-a-finer-grid) |
 
 ## Private cluster settings
 
@@ -59,7 +62,7 @@ Avoid `--export=NONE` when relying on this configuration.
 
 The PPO jobs request 16 tasks for training and each seed replicate, two for
 the smoke job, and one for aggregation. Their thread limits follow
-`SLURM_NTASKS`. The fine volatility job requests one task and uses
+`SLURM_NTASKS`. Each periodic LP job requests one task and uses
 `SLURM_CPUS_PER_TASK` simulation workers, each with one numerical-library thread.
 Adjust resources and time limits with `sbatch` options as required by your allocation.
 

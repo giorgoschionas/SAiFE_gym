@@ -4,6 +4,33 @@ How does the LP quote when other providers supply less liquidity per tick?
 Two sweeps change background liquidity while holding their respective volatility,
 LP capital, trade-size rule and decision cadence fixed.
 
+## Five-level periodic LP sweep
+
+Test **50,000, 40,000, 30,000, 20,000 and 10,000** units of background liquidity
+per tick. Hold midprice volatility at 0.07, initial wealth at 1,000 token1
+and the rebalance interval at 100 of the 10,000 steps. At each liquidity
+level, rank 17 symmetric half-widths by mean terminal net PnL in token1.
+The grid covers 5 through 60 ticks in increments of 5, then 70, 85, 100,
+125 and 150 ticks. The wider tail lets the experiment test where PnL falls
+again in the shallowest pool.
+
+From the configured HPC checkout root, submit the liquidity job.
+
+```bash
+mkdir -p logs
+sbatch hpc/sbatch_background_liquidity_sweep.sh
+```
+
+All 85 cells share the same 20 batch seeds and 100 external price paths per
+batch (2,000 paths per cell). Results go to
+`experiments/results/periodic_widths/background_liquidity_50k/<job-id>/`.
+`width_curves.png` marks the best sampled half-width for each level.
+`width_grid.csv` labels each peak as interior or at a grid edge.
+`batch_peaks.csv` and `peak_order.json` report how often all four steps widen
+strictly as liquidity falls, across the 20 batches and 10,000 paired bootstrap
+resamples. Exact PnL ties select the smaller width. To resume, set `OUTPUT_DIR`
+to the original liquidity run directory and resubmit. [Cluster setup](../../../hpc/README.md#private-cluster-settings)
+
 ## What the trained LPs do
 
 With less background liquidity, the PPO policies generally spread their capital

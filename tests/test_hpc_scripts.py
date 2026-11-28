@@ -254,15 +254,24 @@ def test_setup_creates_environment_using_its_checkout_from_another_directory(clu
     assert (project / DEFAULT_RESULTS).is_dir()
 
 
-def test_fine_volatility_job_uses_allocated_processes_and_shared_output(cluster):
+@pytest.mark.parametrize(("script", "driver"), [
+    ("sbatch_fine_volatility_sweep.sh", "volatility"),
+    ("sbatch_background_liquidity_sweep.sh", "background-liquidity"),
+])
+def test_periodic_job_uses_allocated_processes_and_shared_output(cluster, script, driver):
     project, _, _, _, run = cluster
     runner = "experiments/wider-positions-drivers/fine_volatility_sweep.py"
     (project / runner).parent.mkdir()
     (project / runner).touch()
-    result, calls = run("sbatch_fine_volatility_sweep.sh", {
+    # Emulate a cluster login profile that defines an unexported module function.
+    profile = project / "shell_profile"
+    profile.write_text('unset BASH_ENV\nmodule() { echo "$*" >> "$MODULE_CALLS"; }\n')
+    result, calls = run(script, {
+        "BASH_ENV": profile, "SAIFE_PYTHON_MODULE": "python/example",
         "SLURM_CPUS_PER_TASK": "8", "OUTPUT_DIR": "output with spaces",
     }, staged=True)
     assert result.returncode == 0, result.stderr
     assert len(calls) == 1 and calls[0]["cwd"] == str(project)
-    assert calls[0]["args"] == ["-u", runner, "--workers", "8", "--output-dir", "output with spaces"]
+    assert calls[0]["modules"] == ["purge", "load python/example"]
+    assert calls[0]["args"] == ["-u", runner, "--driver", driver, "--workers", "8", "--output-dir", "output with spaces"]
     assert calls[0]["env"]["OPENBLAS_NUM_THREADS"] == calls[0]["env"]["OMP_NUM_THREADS"] == "1"

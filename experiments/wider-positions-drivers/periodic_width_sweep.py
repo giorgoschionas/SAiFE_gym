@@ -25,6 +25,8 @@ PARAMETERS = {
     "risk-aversion": "risk_aversion",
 }
 EXTRA_LIQUIDITY_WIDTHS = (1, 3, 55, 60, 70, 85, 100)
+LIQUIDITY_LEVELS = (50_000, 40_000, 30_000, 20_000, 10_000)
+LIQUIDITY_WIDTHS = (5, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 70, 85, 100, 125, 150)
 PATH_FIELDS = ("sigma", "background_liquidity", "half_width_ticks", "episode_seed", "path", "pnl")
 # The environment uses the episode seed and offsets through +4 for its component RNGs.
 BATCH_SEED_STRIDE = 10
@@ -42,8 +44,7 @@ def sweep_defaults(driver):
     config = next(iter(source["configurations"].values()))
     if driver == "volatility":
         return config, source["sigma_values"], source["half_widths"], 1
-    widths = sorted([*source["half_widths"], *EXTRA_LIQUIDITY_WIDTHS])
-    return config, source["background_values"], widths, 1
+    return source["configurations"][str(LIQUIDITY_LEVELS[0])], LIQUIDITY_LEVELS, LIQUIDITY_WIDTHS, 1
 
 
 def grid_row(driver, level, width, n_paths, mean_pnl, ce="", bootstrap_fraction=""):
